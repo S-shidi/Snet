@@ -3,7 +3,7 @@
 > 日期：2026-11-07
 > 范围：`internal/server/store.go` 的 `RelayRouteNodePort` / `deliver` 闭包
 > 依据：`docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md` §3.1、§7 T12、§8.4；`docs/PROJECT-ATLAS.md` §3.2
-> 状态：只读分析 + 决策材料。本文不修改生产代码，不修改测试逻辑。
+> 状态：决策材料；方案 A 已实施（commit `a9b9163`）。
 
 ## 1. 评审原文与解释边界
 
@@ -50,15 +50,19 @@ T12 原文：
 
 ### 方案 A：exact-flow 失败后删除 hint，等待重新归因
 
-- **改动点**：`store.go:1527-1532` 的 exact-flow 分支，在 `ok == false` 时删除 `ns.relayFlowByNode[recipientID]`；如需彻底清理，再在确认 `ns.flowByNode[fl] == recipientID` 时删除 `ns.flowByNode[fl]`。
+- **状态**：**已实施**（commit `a9b9163`）。
+- **改动点**：`store.go:1527-1532` 的 exact-flow 分支，在 `ok == false` 时：
+  - 删除 `ns.relayFlowByNode[recipientID]`；
+  - 仅当 `ns.flowByNode[fl] == recipientID` 时删除 `ns.flowByNode[fl]`。
+- **flowByNode 选择：删除**。理由：`recipientFlows` 由 `relayFlowByNode[recipientID]` 和 `flowByNode[owner == recipientID]` 共同构建（`store.go:1457-1464`）。只删 `relayFlowByNode` 时，`flowByNode[fl]` 会在下一次调用把同一个 dead flow 重新加回 `recipientFlows`，失败会重复；删除 recipient-owned 的 `flowByNode[fl]` 才能让下次真正重学。删除前校验 owner，避免误删 sibling 的 flow。
 - **风险**：
   - UDP 发送失败可能是瞬时错误（缓冲区、临时网络），删除有效 hint 会让 `ListPeersFrom`/`OnRelayFlow` 重新学习，造成 churn。
   - 删除 `relayFlowByNode` 会同时影响 direct-punch hint，可能让 peer 暂时失去 relay 精确路径。
-  - 删除 `flowByNode[fl]` 必须校验 owner，避免误删 sibling 的 flow。
-- **需要的新测试**：
-  - `TestRelayRouteExactFlowFailureDeletesFlowHint`：失败后 `relayFlowByNode`/`flowByNode` 被清空。
-  - `TestRelayRouteExactFlowSuccessKeepsFlowHint`：成功发送不删除。
-  - `TestRelayRouteExactFlowFailureRelearnsOnNextFlow`：后续 `OnRelayFlow` 能恢复。
+  - 删除 `flowByNode[fl]` 已加 owner 校验，避免误删 sibling 的 flow。
+- **已加测试**：
+  - `TestRelayRouteExactFlowFailureDeletesHintAndReattributes`：失败后 `relayFlowByNode`/`flowByNode` 被清空，第二次触发不再尝试 dead flow，走广播回退。
+  - `TestRelayRouteExactFlowSuccessKeepsCandidate`：成功发送不删除。
+  - 待补：`TestRelayRouteExactFlowFailureRelearnsOnNextFlow`（后续 `OnRelayFlow` 恢复）。
 
 ### 方案 B：exact-flow 失败后允许广播回退
 
@@ -102,11 +106,13 @@ T12 原文：
 | 重复发送风险 | 低 | 中-高 | 低-中 |
 | 需要的测试量 | 少 | 中 | 多 |
 
-**倾向：方案 C**。它直接针对“stale exact flow 持续吞包”，同时避免方案 B 的广播放大和错误 sibling 收包；代价是需要新增 TTL 状态与清理逻辑。若要求最小 diff，**方案 A** 次之，但必须接受瞬时失败导致 hint 被删和重新归因 churn。**不建议默认采用方案 B**：它与 T12 的“无错误 sibling 持续收包”目标冲突最大。
+**原倾向：方案 C**。它直接针对“stale exact flow 持续吞包”，同时避免方案 B 的广播放大和错误 sibling 收包；代价是需要新增 TTL 状态与清理逻辑。若要求最小 diff，**方案 A** 次之，但必须接受瞬时失败导致 hint 被删和重新归因 churn。**不建议默认采用方案 B**：它与 T12 的“无错误 sibling 持续收包”目标冲突最大。
+
+**实际落地：先实施方案 A（`a9b9163`）**，作为最小止血；方案 C 仍保留为后续增强候选。
 
 ## 5. 结论
 
 - **exclusive host**：当前行为方向一致（失败 host 不再重试），但评审未逐字规定。
-- **exact flow**：当前行为是主要缺口；失败后既不删 hint 也不回退，`sentTo` 会阻止广播回退，可能形成静默丢包。评审 §3.1 未明确该场景，需决策。
-- **shared host**：当前行为是 best-effort；评审未明确失败后的处理。
-- 本文只提供决策材料，未修改 `store.go`、`deliver`、`relaySendFrom`，也未改测试断言。
+- **exact flow**：已按方案 A 实施（`a9b9163`）：失败后删除 `relayFlowByNode` 与 recipient-owned `flowByNode`，下一次不再重试 dead flow，可重新归因/回退。评审 §3.1 未明确该场景，本次按最小止血落地。
+- **shared host**：当前行为是 best-effort；评审未明确失败后的处理，未改。
+- 本次实施只动 exact-flow 分支；exclusive-host、shared-host、广播回退、`sentTo` 未改。方案 C 仍为后续增强候选。
