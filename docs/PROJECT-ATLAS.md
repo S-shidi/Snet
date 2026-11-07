@@ -210,6 +210,9 @@ Go 工具链注意：本环境 `go` 不在 PATH，`/tmp/opencode/golang/go/bin/g
   修复前不要把控制面 `peerPaths` 当作数据面真相。
 - **NAT 类型仅为观测值**：`DIRECT_REGISTER_ACK` 只能区分映射是否稳定/变化，无法可靠
   区分 full-cone 与 restricted-cone；不要用它做放行或安全决策。
+- **NAT 映射测试覆盖**：P0/P1（WAN IP 门禁、unclaim teardown、`/ctl/nat`、协议 fallback）
+  已由测试锁定；P2/P3（租约/续期、平台网关解析、`/ctl/status` 接线、失败日志限流窗口、
+  `teardownMapping` 的 ig1/ppp 分支）待补。详见 `docs/WORKSPACE-SNAPSHOT-MAP.md`。
 - **构建/验证断链**：`scripts/build-web.sh` 输出目录 `deploy/docker/web/` 已移出；
   `shared/web` 无自带 TypeScript；Android 平台文件保留但 `snetbind/` 绑定层缺失。
 
