@@ -355,4 +355,10 @@ KickNode 端口释放修复（2026-11-07）：
 - `TestKickNodeClearsRelayIndexes`、`TestRemoveNodeClearsRelayIndexes`、`TestAdminRemoveNodeClearsRelayIndexes`：节点移除后清 `relayFlowByNode`、`flowByNode`、`ctrlHost`、`nodeByHost`、`relayFlowBadUntil`；`nodeByHost` 删到空时 host + `hostSeen` 一起删。
 - 修复 commit `1aeeb51`；`clearNodeRelayIndexesLocked` 在 `releaseNodePortLocked` 后、`delete(ns.nodes)` 前调用。
 
+AdminDeleteDevice / reviveNode 清理（2026-11-07）：
+
+- `TestAdminDeleteDeviceReleasesPortAndClearsIndexes`：设备删除释放 per-node port，清 `relayFlowByNode`、`flowByNode`、`ctrlHost`、`nodeByHost`、`relayFlowBadUntil`。
+- `TestReviveNodeClearsRelayIndexes`：同 device 重复节点被 revive 删除时清全部 relay/host 索引。
+- 两处复用 `clearNodeRelayIndexesLocked`；`AdminDeleteDevice` 同时补 `releaseNodePortLocked`（修复同类端口泄漏）。commit `cc4f0c2`。
+
 结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Web 打包、Android 与发布链路仍待补缺失目录/工具后再验证。
