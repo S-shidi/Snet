@@ -387,3 +387,11 @@ PathManager direct 来源校验与候选优先级（2026-11-07）：
 - 测试命令：`go test ./internal/client -run 'TestPathManagerRejects|TestPathManagerAllows|TestPathManagerCandidatePriority|TestPathManagerLowPriority' -v` 全绿；`go test -race ./internal/client -run '...' -count=20` 全绿；`go test ./internal/client` 全绿。commit `746431c`。
 - 验证层级：同包直接调用 `noteDirectPeer`/`candidatesLocked`；`handleDirectFrame` 调用链由既有 `TestPathManagerRelayLoopbackShims` 覆盖。
 - 未发现来源校验或候选优先级缺口；10s 低优先级→高优先级主动升级探测仍为独立缺口，不在本次范围。
+
+PathManager DATA 低优先级来源与 relay 回退（2026-11-07）：
+
+- DATA 低优先级来源行为：`TestPathManagerAcceptsDataFromLowerPrioritySourceWhenHigherReady` 确认 LAN 已 ready 时，public 候选来源的 DATA 帧 `noteDirectPeer` 返回 true，payload 仍由 `shim.inject` 注入；`dp.kind`/`dp.addr` 保持 LAN。设计意图：不因路径抖动丢包；若评审要求严格单向，需改为 drop 并报告。
+- 对称 NAT/防火墙保持 relay：`TestPathManagerSymmetricNATStaysRelay` 用真实 UDP 候选但不回 ACK，连续 `maintainDirect(now)` 覆盖 >15s；`dp.ready` 始终 false、`dp.addr` 保持 nil，`sendToPeer` 只从 relay link 发出 DATA，`directSendFrames` 不增长；`Status().peerDirect["node-b"].path` 为 `discovering`（非 `direct`）。
+- 发送失败回退 relay：`TestPathManagerDirectSendFailureFallsBack` 让 `pm.directConn` 指向已关闭的 UDP conn；`sendToPeer` 的 `writeFrameTo` 失败后 `sendDrops` 增加，`markDirectFailed` 将 `dp.ready=false` 并清空 `lastProbe`，随后同一调用立即从 relay link 发出 DATA。注意 `markDirectFailed` 不清 `dp.addr`。
+- 测试命令：`go test ./internal/client -run 'TestPathManagerSymmetricNATStaysRelay' -v`、`go test ./internal/client -run 'TestPathManagerDirectSendFailureFallsBack' -v` 全绿；两条 `-race -count=20` 全绿；`go test ./internal/client` 全绿。commit `cd4ebb0`。
+- 未发现对称 NAT 保持 relay 或发送失败回退缺口。
