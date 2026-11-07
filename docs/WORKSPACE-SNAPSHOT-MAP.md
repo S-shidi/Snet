@@ -314,4 +314,10 @@ Go 环境（2026-11-07 固化）：
 
 Go 测试基线（2026-11-07）：`go vet ./...` exit 0；`go test ./...` 与 `go test -race ./...` 均为 10 个包，5 个有测试的包全部通过，0 失败，0 跳过，5 个包无测试文件。
 
+NAT 映射 unclaim 验证（2026-11-07）：
+
+- `TestUnclaimTearsDownUPnPMapping`：`unclaim` 的异步 teardown 实际调用 UPnP `DeletePortMapping`，deleted port 正确。
+- `TestUnclaimSkipsTeardownForNatPMPAndPCP`：NAT-PMP/PCP 依赖 lease，unclaim 不发 Delete。
+- `TestReclaimWaitsForPendingTeardown`：`pending[port]` 保护；`waitPending` 在旧 teardown 完成前阻塞，re-claim 不会先建立新映射。
+
 结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Web 打包、Android 与发布链路仍待补缺失目录/工具后再验证。
