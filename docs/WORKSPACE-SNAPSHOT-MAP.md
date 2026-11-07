@@ -365,4 +365,8 @@ Pending 跨重启持久化（2026-11-07）：
 
 - `TestPendingPersistsAcrossRestart`：`NewStoreAt` 创建 pending → `Close` → 同路径重开；`PendingStatus` 仍为 pending，`OwnerApprove` 成功并返回完整凭据/IP。commit `563049c`。
 
+Device 跨重启持久化（2026-11-07）：
+
+- `TestDeviceRecordPersistsAcrossRestart`：`NewStoreAt` + `BindDevice` + `CreateNetwork` → `Close` → 重开；`AdminDevices` 保留 ID/name/publicKey，`DeviceNetworks` 保留网络，`ValidateDeviceToken` 原 device token 仍有效。commit `04f675d`。
+
 结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Web 打包、Android 与发布链路仍待补缺失目录/工具后再验证。
