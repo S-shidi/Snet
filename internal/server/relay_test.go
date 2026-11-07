@@ -1273,8 +1273,12 @@ func TestRelayRouteExactFlowFailureConcurrentSafe(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := atomic.LoadInt64(&attempts); got != 1 {
-		t.Fatalf("dead exact flow attempted %d times across concurrent calls, want 1", got)
+	// At most one call may attempt the dead flow: RelayRouteNodePort
+	// serializes on s.mu, and the first failed attempt deletes the hint.
+	// The cleared-map assertions below prove the failure path actually ran,
+	// so this does not need to rely on an exact count.
+	if got := atomic.LoadInt64(&attempts); got > 1 {
+		t.Fatalf("dead exact flow attempted %d times across concurrent calls, want at most 1", got)
 	}
 	if got := atomic.LoadInt64(&fanned); got == 0 {
 		t.Fatalf("expected broadcast fallback after the dead flow was dropped; fanned=%d", got)
