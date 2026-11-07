@@ -1150,3 +1150,187 @@ func TestPathManagerReconnectsOnlySilentRelayLink(t *testing.T) {
 		t.Fatalf("pickRelayLocked = %v, want link A after B redial", picked)
 	}
 }
+
+func TestPathManagerDirectPingCadence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	key := protocol.RelayNodeKey("node-b")
+	directConn := mustUDPListener(t)
+	defer directConn.Close()
+	lan := mustUDPListener(t)
+	defer lan.Close()
+	lanAddr := lan.LocalAddr().(*net.UDPAddr)
+	now := time.Now()
+	dp := &directPeer{
+		addr:     lanAddr,
+		lanAddr:  lanAddr,
+		kind:     "lan",
+		ready:    true,
+		lastRecv: now,
+		lastPing: now.Add(-6 * time.Second),
+	}
+	pm.mu.Lock()
+	pm.directConn = directConn
+	pm.directPeers[key] = dp
+	pm.mu.Unlock()
+
+	pm.maintainDirect(now)
+
+	_ = lan.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 2048)
+	n, _, err := lan.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("LAN received no DIRECT_PING: %v", err)
+	}
+	f, err := protocol.ParseRelayFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.RelayTypeDirectPing {
+		t.Fatalf("frame = %+v, want DIRECT_PING", f)
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if !dp.lastPing.Equal(now) {
+		t.Fatalf("lastPing = %v, want %v", dp.lastPing, now)
+	}
+}
+
+func TestPathManagerDoesNotPingBeforeInterval(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	key := protocol.RelayNodeKey("node-b")
+	directConn := mustUDPListener(t)
+	defer directConn.Close()
+	lan := mustUDPListener(t)
+	defer lan.Close()
+	lanAddr := lan.LocalAddr().(*net.UDPAddr)
+	now := time.Now()
+	lastPing := now.Add(-2 * time.Second)
+	dp := &directPeer{
+		addr:     lanAddr,
+		lanAddr:  lanAddr,
+		kind:     "lan",
+		ready:    true,
+		lastRecv: now,
+		lastPing: lastPing,
+	}
+	pm.mu.Lock()
+	pm.directConn = directConn
+	pm.directPeers[key] = dp
+	pm.mu.Unlock()
+
+	before := pm.directSendFrames.Load()
+	pm.maintainDirect(now)
+	if got := pm.directSendFrames.Load(); got != before {
+		t.Fatalf("ping sent before 5s: before=%d after=%d", before, got)
+	}
+	_ = lan.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	buf := make([]byte, 2048)
+	if n, _, err := lan.ReadFromUDP(buf); err == nil {
+		t.Fatalf("unexpected frame before ping interval: %x", buf[:n])
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if !dp.lastPing.Equal(lastPing) {
+		t.Fatalf("lastPing changed before interval: %v, want %v", dp.lastPing, lastPing)
+	}
+}
+
+func TestPathManagerStatusPeerDirectFields(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	key := protocol.RelayNodeKey("node-b")
+	lan := mustPathAddr(t, "192.168.1.10:51820")
+	v6 := mustPathAddr(t, "[2001:db8::1]:51820")
+	public := mustPathAddr(t, "203.0.113.5:51820")
+	pm.mu.Lock()
+	pm.peerKeys[key] = "node-b"
+	pm.mu.Unlock()
+
+	setPeer := func(dp *directPeer) {
+		pm.mu.Lock()
+		pm.directPeers[key] = dp
+		pm.mu.Unlock()
+	}
+	entryFor := func() map[string]any {
+		t.Helper()
+		status := pm.Status()
+		peerDirect, ok := status["peerDirect"].(map[string]any)
+		if !ok {
+			t.Fatalf("peerDirect missing: %+v", status)
+		}
+		entry, ok := peerDirect["node-b"].(map[string]any)
+		if !ok {
+			t.Fatalf("peerDirect[node-b] missing: %+v", peerDirect)
+		}
+		return entry
+	}
+
+	t.Run("direct", func(t *testing.T) {
+		lastRecv := time.Now().Add(-3 * time.Second)
+		setPeer(&directPeer{
+			addr:      lan,
+			lanAddr:   lan,
+			v6Addr:    v6,
+			relayAddr: public,
+			kind:      "lan",
+			ready:     true,
+			lastRecv:  lastRecv,
+		})
+		entry := entryFor()
+		if got := entry["path"]; got != "direct" {
+			t.Fatalf("path = %v, want direct", got)
+		}
+		if got := entry["kind"]; got != "lan" {
+			t.Fatalf("kind = %v, want lan", got)
+		}
+		if got := entry["addr"]; got != lan.String() {
+			t.Fatalf("addr = %v, want %s", got, lan)
+		}
+		if got := entry["lan"]; got != lan.String() {
+			t.Fatalf("lan = %v, want %s", got, lan)
+		}
+		if got := entry["ipv6"]; got != v6.String() {
+			t.Fatalf("ipv6 = %v, want %s", got, v6)
+		}
+		if got := entry["public"]; got != public.String() {
+			t.Fatalf("public = %v, want %s", got, public)
+		}
+		sec, ok := entry["lastRecvSec"].(int)
+		if !ok || sec < 3 || sec > 5 {
+			t.Fatalf("lastRecvSec = %v, want ~3 seconds", entry["lastRecvSec"])
+		}
+	})
+
+	t.Run("probing", func(t *testing.T) {
+		setPeer(&directPeer{addr: lan, lanAddr: lan})
+		entry := entryFor()
+		if got := entry["path"]; got != "probing" {
+			t.Fatalf("path = %v, want probing", got)
+		}
+		if _, ok := entry["kind"]; ok {
+			t.Fatalf("probing kind should be absent: %+v", entry)
+		}
+		if got := entry["addr"]; got != lan.String() {
+			t.Fatalf("addr = %v, want %s", got, lan)
+		}
+	})
+
+	t.Run("discovering", func(t *testing.T) {
+		setPeer(&directPeer{})
+		entry := entryFor()
+		if got := entry["path"]; got != "discovering" {
+			t.Fatalf("path = %v, want discovering", got)
+		}
+		if _, ok := entry["addr"]; ok {
+			t.Fatalf("discovering addr should be absent: %+v", entry)
+		}
+	})
+}
