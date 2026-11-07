@@ -2319,6 +2319,17 @@ func (d *Daemon) publishDirectEndpoints(nid string, api *apiClient, token, nodeI
 	}
 }
 
+// mappedEndpointFor returns "externalIP:externalPort" only when a NAT
+// mapping exists for port, observedIP is non-empty, and the mapping's
+// external IP equals the observed public IP. Otherwise it returns "".
+func (d *Daemon) mappedEndpointFor(port int, observedIP string) string {
+	m, ok := d.nat.mapping(port)
+	if !ok || observedIP == "" || m.externalIP != observedIP {
+		return ""
+	}
+	return net.JoinHostPort(m.externalIP, strconv.Itoa(m.externalPort))
+}
+
 // probeLoop periodically asks the coordination server's UDP echo for this
 // node's public (NAT-observed) IP and advertises publicIP:wgPort as the
 // endpoint, so remote peers can attempt a direct hole-punched connection.
@@ -2390,10 +2401,7 @@ func (d *Daemon) probeLoop(nid string) {
 		// mismatch means carrier-grade NAT above the router — the mapping is
 		// unreachable from outside, so keep advertising the observed endpoint
 		// and let peers rely on relay windows as before.
-		mappedEP := ""
-		if m, ok := d.nat.mapping(port); ok && ip != "" && m.externalIP == ip {
-			mappedEP = net.JoinHostPort(m.externalIP, strconv.Itoa(m.externalPort))
-		}
+		mappedEP := d.mappedEndpointFor(port, ip)
 		if ip == lastIP && localEP == lastLocal && epV6 == lastV6 && mappedEP == lastMapped {
 			continue
 		}
