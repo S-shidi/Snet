@@ -1121,11 +1121,10 @@ func TestRelayRouteDropsFailedHostCandidateContinuesToNextSibling(t *testing.T) 
 	}
 }
 
-// TestRelayRouteExactFlowFailureDoesNotDeleteCandidate fixes the current
-// behaviour: a failed exact-flow send marks sentTo but does not remove the
-// flow from relayFlowByNode or flowByNode. This is known behaviour; changing
-// it needs review.
-func TestRelayRouteExactFlowFailureDoesNotDeleteCandidate(t *testing.T) {
+// TestRelayRouteExactFlowSuccessKeepsCandidate verifies the complement of
+// decision A: a successful exact-flow send must keep relayFlowByNode and
+// flowByNode intact.
+func TestRelayRouteExactFlowSuccessKeepsCandidate(t *testing.T) {
 	net3 := buildNetwork3(t)
 	s := net3.store
 	const exact = "223.160.208.21:39802"
@@ -1144,12 +1143,11 @@ func TestRelayRouteExactFlowFailureDoesNotDeleteCandidate(t *testing.T) {
 		net3.rec.sends = append(net3.rec.sends, sendRec{port: port, to: to, data: string(data)})
 		if to == exact {
 			attempted = true
-			return false
 		}
 		return true
 	})
 
-	payload := []byte("exact-flow-failure")
+	payload := []byte("exact-flow-success")
 	s.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", payload)
 
 	if !attempted {
@@ -1158,10 +1156,10 @@ func TestRelayRouteExactFlowFailureDoesNotDeleteCandidate(t *testing.T) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if got := ns.relayFlowByNode[net3.a.ID]; got != exact {
-		t.Fatalf("failed exact flow was removed from relayFlowByNode: got %q, want %q", got, exact)
+		t.Fatalf("successful exact flow was removed from relayFlowByNode: got %q, want %q", got, exact)
 	}
 	if got := ns.flowByNode[exact]; got != net3.a.ID {
-		t.Fatalf("failed exact flow was removed from flowByNode: got %q, want %q", got, net3.a.ID)
+		t.Fatalf("successful exact flow was removed from flowByNode: got %q, want %q", got, net3.a.ID)
 	}
 }
 

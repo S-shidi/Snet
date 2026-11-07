@@ -1528,6 +1528,16 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 				ok := s.relaySendFrom(senderPort, fl, data)
 				log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
 				sentTo[fl] = true
+				if !ok {
+					// Decision A: drop the failed exact-flow hint so the next
+					// packet can re-attribute instead of retrying a dead mapping.
+					// Also remove the recipient-owned reverse-index entry;
+					// otherwise it re-enters recipientFlows on the next call.
+					delete(ns.relayFlowByNode, recipientID)
+					if ns.flowByNode[fl] == recipientID {
+						delete(ns.flowByNode, fl)
+					}
+				}
 				continue
 			}
 			fh, _, err := net.SplitHostPort(fl)
