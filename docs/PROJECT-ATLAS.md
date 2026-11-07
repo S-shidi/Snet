@@ -8,7 +8,7 @@
 
 ```text
 last_verified:        2026-11-07
-verified_code_commit: c379790
+verified_code_commit: c379790（快照导入基线，与上游 c379790 未比对）
 verified_worktree:     clean（v1.3.0 release commit `c379790`；Go/Android/版本检查已通过，VPS + NAS 已部署）
 state:                2026-10-27 v1.3.0 已发布；VPS `server` 与 NAS `snetd` 均已升级到 1.3.0（commit `8359cb7`），Relay v2 未启用。VPS 备份 `/usr/local/snet/backups/1.3.0-20261027_015222`；NAS 使用版本化 runtime `snet-runtime-1.3.0-r2.tar.gz`（sha256 `dd63bba8…366011`，build `20261027-2`），旧 compose 备份 `/volume1/docker/snet/compose.yaml.bak-1.3.0-20261027_020932`，旧 tar `/srv/snet-runtime/snet-runtime-1.2.0-backup.tar.gz`；NAS 节点在线。本版包含 Relay v2 控制面直连端点/NAT 类型、同 LAN > IPv6 > 公网映射优先级、多 relay 全实例 session/选路、控制帧按 IP 限流。验证：`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`check-version 1.3.0`、`build-release`/checksums、Android 单测与 debug APK 30.7M（versionCode 10102）、VPS `/healthz` `serverVersion=1.3.0`。Relay v2 启用仍是 flag day，必须全部客户端先升级；当前生产仅 NAS 在线，phone/SDserver 约 33h 未上报，本次部署保持 Relay v2 关闭。
 verified_with:        go test ./...; go vet ./...; go build ./...;
