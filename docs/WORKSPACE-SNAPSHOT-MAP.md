@@ -345,4 +345,9 @@ NAT 映射覆盖收口（2026-11-07）：
 - #6 失败日志限流：只测窗口内重复抑制，未测超过 `natErrorLogInterval=10m` 后重新记录；阻塞：缺 clock 注入点。
 - #9 teardownMapping 平台分支：`ig2` 已验证，`ig1`/`ppp` 分支未测；阻塞：需可注入 client factory 或按 kind 的 fake UPnP service。
 
+KickNode 端口释放修复（2026-11-07）：
+
+- `TestKickNodeReleasesNodePort`：owner kick 后 `nodePorts`、`portToNode`、`netByPort`、`nodeRelayHost` 均清理，`relayRelease(port)` 被调用。
+- 修复 commit `20058cd`；`KickNode` 现在与 `RemoveNode`/`AdminRemoveNode` 一致，在删除节点前调用 `releaseNodePortLocked`。
+
 结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Web 打包、Android 与发布链路仍待补缺失目录/工具后再验证。
