@@ -226,3 +226,45 @@ func TestLastSeenTracking(t *testing.T) {
 		t.Fatal("lastSeen not updated by ListPeers")
 	}
 }
+
+func TestDeviceRecordPersistsAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snet.db")
+	s, err := NewStoreAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := genOneCode(t, s)
+	devTok, err := s.BindDevice(code, "dev-persist-1", testKey(1), "Device One")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateNetwork(testKey(1), "dev-persist-1", "net", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := NewStoreAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	devs := s2.AdminDevices()
+	if len(devs) != 1 {
+		t.Fatalf("devices after restart = %+v, want 1", devs)
+	}
+	d := devs[0]
+	if d.ID != "dev-persist-1" || d.Name != "Device One" || d.PublicKey != testKey(1) {
+		t.Fatalf("device after restart = %+v", d)
+	}
+	nets := s2.DeviceNetworks("dev-persist-1")
+	if len(nets) != 1 || nets[0].ID != created.NetworkID {
+		t.Fatalf("device networks after restart = %+v, want [%s]", nets, created.NetworkID)
+	}
+	if !s2.ValidateDeviceToken("dev-persist-1", devTok) {
+		t.Fatal("device token invalid after restart")
+	}
+}
