@@ -747,3 +747,106 @@ func TestPathManagerDirectSendFailureFallsBack(t *testing.T) {
 		t.Fatal("direct write failure did not increment sendDrops")
 	}
 }
+
+func TestPathManagerUpgradesToHigherPriorityCandidate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	key := protocol.RelayNodeKey("node-b")
+	directConn := mustUDPListener(t)
+	defer directConn.Close()
+	lan := mustUDPListener(t)
+	defer lan.Close()
+	public := mustPathAddr(t, "203.0.113.5:51820")
+	now := time.Now()
+	dp := &directPeer{
+		addr:      public,
+		lanAddr:   lan.LocalAddr().(*net.UDPAddr),
+		relayAddr: public,
+		kind:      "public",
+		ready:     true,
+		lastRecv:  now,
+		lastPing:  now,
+		lastProbe: now.Add(-11 * time.Second),
+	}
+	pm.mu.Lock()
+	pm.directConn = directConn
+	pm.directPeers[key] = dp
+	pm.mu.Unlock()
+
+	pm.maintainDirect(now)
+
+	_ = lan.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 2048)
+	n, _, err := lan.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("LAN candidate received no upgrade probe: %v", err)
+	}
+	probe, err := protocol.ParseRelayFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.Type != protocol.RelayTypeDirectProbe {
+		t.Fatalf("upgrade frame = %+v, want DIRECT_PROBE", probe)
+	}
+	if probe.RecipientID != key {
+		t.Fatalf("upgrade probe recipient = %x, want %x", probe.RecipientID, key)
+	}
+
+	pm.handleDirectFrame(directConn, protocol.RelayFrame{
+		Type:        protocol.RelayTypeDirectProbeAck,
+		SenderID:    key,
+		RecipientID: pm.ownKey,
+	}, lan.LocalAddr().(*net.UDPAddr))
+
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if dp.kind != "lan" || dp.addr == nil || !sameUDPAddr(dp.addr, lan.LocalAddr().(*net.UDPAddr)) {
+		t.Fatalf("public path did not upgrade to LAN: %+v", dp)
+	}
+}
+
+func TestPathManagerDoesNotUpgradeBeforeInterval(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	key := protocol.RelayNodeKey("node-b")
+	directConn := mustUDPListener(t)
+	defer directConn.Close()
+	lan := mustUDPListener(t)
+	defer lan.Close()
+	public := mustPathAddr(t, "203.0.113.5:51820")
+	now := time.Now()
+	dp := &directPeer{
+		addr:      public,
+		lanAddr:   lan.LocalAddr().(*net.UDPAddr),
+		relayAddr: public,
+		kind:      "public",
+		ready:     true,
+		lastRecv:  now,
+		lastPing:  now,
+		lastProbe: now.Add(-5 * time.Second),
+	}
+	pm.mu.Lock()
+	pm.directConn = directConn
+	pm.directPeers[key] = dp
+	pm.mu.Unlock()
+
+	before := pm.directSendFrames.Load()
+	pm.maintainDirect(now)
+	if got := pm.directSendFrames.Load(); got != before {
+		t.Fatalf("sent an upgrade probe before 10s: before=%d after=%d", before, got)
+	}
+	_ = lan.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	buf := make([]byte, 2048)
+	if n, _, err := lan.ReadFromUDP(buf); err == nil {
+		t.Fatalf("LAN candidate received unexpected frame: %x", buf[:n])
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if dp.kind != "public" || dp.addr == nil || !sameUDPAddr(dp.addr, public) {
+		t.Fatalf("path changed before upgrade interval: %+v", dp)
+	}
+}
