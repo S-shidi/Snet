@@ -325,4 +325,9 @@ POST /ctl/nat 验证（2026-11-07）：
 - `TestCtlSetNATMappingTearsDownOnDisable`：HTTP POST `/ctl/nat` enabled=false → 204；配置持久化 false；同步 teardown 实际调用 UPnP `DeletePortMapping`。
 - `TestCtlSetNATMappingEnablePersistsWithoutTeardown`：enabled=true → 204；配置持久化 true；不发 Delete。
 
+NAT 映射协议优先级验证（2026-11-07）：
+
+- `TestMapNATPortWith`：UPnP 成功 → `via=upnp`，NAT-PMP/PCP 各 0 次；UPnP 失败 → NAT-PMP；NAT-PMP 失败 → PCP；无 gateway → 返回错误且不 fallback。
+- `mapNATPortWith` 使用 `defaultGW func() string`，仅 UPnP 失败且 gw 为空时调用 `defaultGatewayIP()`，保持原调用时机。
+
 结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Web 打包、Android 与发布链路仍待补缺失目录/工具后再验证。
