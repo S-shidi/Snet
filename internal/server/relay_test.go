@@ -2684,3 +2684,55 @@ func TestRelayTopoHostStaleAfterAlternatesRemoved(t *testing.T) {
 		t.Fatalf("B stale host after collapse=%q, want empty", lb2.Self.RelayHostOverride)
 	}
 }
+
+func TestKickNodeReleasesNodePort(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	ns := s.networks[net3.a.NetworkID]
+	if ns == nil {
+		t.Fatal("network missing")
+	}
+	s.mu.Lock()
+	port := ns.nodePorts[net3.b.ID]
+	if port == 0 {
+		s.mu.Unlock()
+		t.Fatal("B has no per-node port")
+	}
+	if s.portToNode[port] != net3.b.ID || s.netByPort[port] != ns {
+		s.mu.Unlock()
+		t.Fatalf("port bookkeeping missing for B port %d", port)
+	}
+	if s.nodeRelayHost[ns.n.ID] == nil {
+		s.nodeRelayHost[ns.n.ID] = make(map[string]string)
+	}
+	s.nodeRelayHost[ns.n.ID][net3.b.ID] = "relay.example"
+	s.mu.Unlock()
+
+	var released []int
+	s.SetRelayRelease(func(p int) error {
+		released = append(released, p)
+		return nil
+	})
+
+	if err := s.KickNode(net3.aTok, net3.b.ID); err != nil {
+		t.Fatalf("KickNode: %v", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if got := ns.nodePorts[net3.b.ID]; got != 0 {
+		t.Fatalf("nodePorts[%s] = %d, want 0", net3.b.ID, got)
+	}
+	if got := s.portToNode[port]; got != "" {
+		t.Fatalf("portToNode[%d] = %q, want empty", port, got)
+	}
+	if s.netByPort[port] != nil {
+		t.Fatalf("netByPort[%d] still present", port)
+	}
+	if _, ok := s.nodeRelayHost[ns.n.ID][net3.b.ID]; ok {
+		t.Fatalf("nodeRelayHost[%s] still present", net3.b.ID)
+	}
+	if len(released) != 1 || released[0] != port {
+		t.Fatalf("relayRelease calls = %v, want [%d]", released, port)
+	}
+}
