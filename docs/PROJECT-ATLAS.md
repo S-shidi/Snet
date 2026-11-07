@@ -8,9 +8,9 @@
 
 ```text
 last_verified:        2026-11-07
-verified_code_commit: c379790（快照导入基线，与上游 c379790 未比对）
+verified_code_commit: c379790（快照导入基线 3fb8b97 起算，上游 c379790 未比对）
 verified_worktree:     clean（v1.3.0 release commit `c379790`；Go/Android/版本检查已通过，VPS + NAS 已部署）
-state:                2026-10-27 v1.3.0 已发布；VPS `server` 与 NAS `snetd` 均已升级到 1.3.0（commit `8359cb7`），Relay v2 未启用。VPS 备份 `/usr/local/snet/backups/1.3.0-20261027_015222`；NAS 使用版本化 runtime `snet-runtime-1.3.0-r2.tar.gz`（sha256 `dd63bba8…366011`，build `20261027-2`），旧 compose 备份 `/volume1/docker/snet/compose.yaml.bak-1.3.0-20261027_020932`，旧 tar `/srv/snet-runtime/snet-runtime-1.2.0-backup.tar.gz`；NAS 节点在线。本版包含 Relay v2 控制面直连端点/NAT 类型、同 LAN > IPv6 > 公网映射优先级、多 relay 全实例 session/选路、控制帧按 IP 限流。验证：`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`、`check-version 1.3.0`、`build-release`/checksums、Android 单测与 debug APK 30.7M（versionCode 10102）、VPS `/healthz` `serverVersion=1.3.0`。Relay v2 启用仍是 flag day，必须全部客户端先升级；当前生产仅 NAS 在线，phone/SDserver 约 33h 未上报，本次部署保持 Relay v2 关闭。
+state:                服务端 + snetd + Web 快照版；Android/Docker 部署/CI/产物已移出；VERSION 缺失，版本锚点不可验证；Go 工具链缺失，go build/test/vet 标待验证
 verified_with:        go test ./...; go vet ./...; go build ./...;
                       go test -race ./...;
                       ./scripts/check-version.sh; sh -n scripts/build-release.sh;
@@ -28,23 +28,20 @@ verified_with:        go test ./...; go vet ./...; go build ./...;
 3. `README.md`（使用、构建、部署入口）
 4. 本 atlas（全局索引与不变量）
 5. 领域 skill（操作规范；若与代码冲突，以代码为准并修正 skill）
-6. `PROJECT-STRUCTURE.md`（2026-09-13 的目录快照，可能过期，不作为事实源）
 
 遇到冲突：先验证代码，再修文档；不要根据旧文档猜实现。
 
 ## 1. 一句话与边界
 
 SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服务端只做协调、探测和中继；
-真正的数据面在 `snetd` 的 WireGuard 隧道里。所有 UI（Tauri、Android、Docker Web）
+真正的数据面在 `snetd` 的 WireGuard 隧道里。Web UI（Docker Web）
 只访问本机 `snetd` 的 `/ctl/*`，不直连协调服务器。
 
 核心边界：
 
 - 服务端不转发业务数据，除非客户端选择 relay fallback。
 - 客户端协调服务器地址是写死的，`snetctl` 不接受任意 `--server`。
-- Android 是原生 Compose + gomobile；Docker/桌面共享 TypeScript Web UI。
-- Rust 桌面端只做 HTTP 代理，不实现网络/隧道逻辑。
-- VPS 只运行协调服务端；成员客户端在 NAS、SDserver、手机、桌面等主机运行。
+- VPS 只运行协调服务端；成员客户端在 NAS、SDserver 等主机运行。
 
 ## 2. 组件地图
 
@@ -52,13 +49,9 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 |---|---|---|---|---|
 | 协调服务器 | `cmd/server/main.go` | HTTP API、bbolt、旧 relay、probe、ticket 签发、管理台 | `internal/server/` | `snet-go-core` |
 | Relay v2 | `cmd/relay/main.go` | 无状态 UDP session relay、按节点 ID 精确转发、metrics | `internal/relay/` | `snet-go-core`、`snet-deploy-ops` |
-| Go 守护进程 | `cmd/client/snetd/` | 隧道、peer 轮询、NAT 探测、密钥轮换、`/ctl/*`、Relay v2 shim | `internal/client/` | `snet-go-core` |
+| Go 守护进程（snetd） | `cmd/client/snetd/` | 隧道、peer 轮询、NAT 探测、密钥轮换、`/ctl/*`、Relay v2 shim | `internal/client/` | `snet-go-core` |
 | 协议层 | `internal/protocol/` | 共享类型、版本、`snet://` 链接、Relay v2 帧 | `types.go`、`link.go`、`relay.go` | `snet-go-core` |
-| 共享 Web UI | `shared/web/` | Docker 控制台与 `Backend` 契约 | `ui.ts`、`types.ts`、`subnet.ts` | `snet-web-ui` |
-| Docker 客户端 | `deploy/docker/` | snetd + nginx + 构建后的 Web 资产 | `deploy/docker/web/`, `deploy/docker/web-build/` | `snet-web-ui`、`snet-deploy-ops` |
-| 部署/运维 | `deploy/`、`scripts/` | VPS/NAS/macOS rollout、排障 | `scripts/rollout-*.sh`、`deploy/*.md` | `snet-deploy-ops` |
-| 版本/发布 | `VERSION`、`scripts/` | 版本同步、发布产物、CI/Release、回滚 | `internal/buildinfo/`、`docs/RELEASE.md` | `snet-deploy-ops` |
-| 架构图 | `.archify/` | 产品、用户全链路、生命周期、NAT 时序、bbolt ERD | 五个最终 HTML | 本 atlas |
+| 共享 Web UI | `shared/web/` | Web 控制台与 `Backend` 契约 | `ui.ts`、`types.ts`、`subnet.ts` | `snet-web-ui` |
 
 ## 3. 三条主流程
 
@@ -72,7 +65,7 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 ```
 
 - 固定协调地址：`https://snet.uizhi.eu.org:8090`。
-- 设备身份：Android 硬件派生；其他平台持久化 `device.id`，与 WireGuard 密钥共存。
+- 设备身份：持久化 `device.id`，与 WireGuard 密钥共存。
 - 设备授权（可选）：管理台生成 code → 客户端 `/ctl/bind` → `BindDevice` 绑定 deviceID/公钥并返回 deviceToken → `SyncNetworks` 拉取该设备已建/已入网络并恢复隧道。
 - 启动复查：有 `deviceToken` 时 `snetd` 启动后立即查 `auth-status`；有效则恢复/同步网络，过期则跳过本地恢复并保持离线；`Daemon.Start` 幂等，Android VPN 重启复用后台循环。
 - 启动网络同步：服务端 `DeviceNetworkDetails` 每次调用都会轮换节点 token，`SyncNetworks` 必须把新 token 写回已存在网络并清掉旧 `serverState`；`pingServerState` 的 404 若发生在 token 已变化之后要重试，不能直接标记“已删除”。
@@ -129,11 +122,9 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
   `snet-runtime.tar.gz`，校验固定 sha256 后解包到 `/` 再 `exec /entrypoint.sh`；
   NAS 必须同时发布 daemon 实际使用的 `51820/udp` 并设置 `SNET_LOCAL_IP`。
   代价是容器重启依赖该产物服务（`snet-runtime-http.service`），升级镜像前不要下线。
-- Android `RoutePlanner` 只注入已加入网络的 `subnet` + peer `allowedSubnets`，
-  不再固定注入 `10.0.0.0/8`；无网络 CIDR 时回退到 active IP `/32`。
-  本机 LAN 若覆盖 overlay 子网、包含 overlay IP、或与 peer 子网重叠则不排除并告警。
-  `excludeRoute` 仅 API 33+ 可用（之前误用 Q 门禁）。`DetectLocalSubnets` 的
-  nil 结果必须在 Go/Kotlin 两侧都归一化为空数组，不能把 `"null"` 传给 `JSONArray`。
+- `internal/client` 的 Android 平台文件（`device_android.go`、`tunnel_android.go`、
+  `tunnel_factory_android.go`、`gateway_proc.go` 的 android tag）保留，但 `snetbind/`
+  已移出，Android 目标交叉编译不可验证。
 - 同公网出口的 sibling（如 SDphone/SDnas/SDserver 共享 `39.180.206.133`）不能用
   公共 IP + 宿主端口做 hairpin 直连：握手会间歇成功但单播丢包极高。客户端对
   `Endpoint` 落在自身 `PublicIP` 的 peer 禁用该 direct 回退，固定走 relay。
@@ -141,22 +132,20 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 ### 3.3 UI 与本地控制
 
 ```text
-UI (Tauri / Android / Docker Web) → snetd /ctl/* (127.0.0.1:19432)
+Web UI (Docker Web) → snetd /ctl/* (127.0.0.1:19432)
 snetd → 协调服务器 /api/v1/* (HTTPS)
 ```
 
 - `/ctl/*` 由配置同目录的 `ctl-token` 鉴权；绝不输出 token。
 - Docker Web 的 `/ctl/*` 由 nginx 注入 `X-Ctl-Token` 与 `X-Snet-Web: 1`；
   `newCtlAuthHandler` 对 Web 请求额外要求有效 Web session（`Authorization: Bearer`），
-  Tauri/Android/snetctl 仍只用 ctl-token。无 Web 密码时保持首次设置开放。
+  snetctl 仍只用 ctl-token。无 Web 密码时保持首次设置开放。
 - Web create 的 `Backend.create` 必须返回 `snet://join?nid=...&code=...&server=...`；
   缺链接会导致创建后无法复制邀请。
 - 设备级开关走 `POST /ctl/nat`，不要塞进按网络维度的 `/ctl/settings`。
-- `shared/web/types.ts` 的 `Backend` 是 UI/平台唯一接缝；`desktop.ts` 和 `web.ts`
-  必须同时实现。
+- `shared/web/types.ts` 的 `Backend` 是 Web UI 唯一接缝；`deploy/docker/web-build/web.ts`
+  必须实现。
 - 改 `shared/web/*.ts` 后必须跑 `./scripts/build-web.sh`，否则 Docker 产物是旧版。
-- Android 的 Go↔Kotlin 契约是 JSON 字符串；`snetbind/snetcore.go` 与
-  `SnetBridge.kt` 必须成对修改。
 
 ## 4. 不可违反的全局不变量
 
@@ -164,120 +153,70 @@ snetd → 协调服务器 /api/v1/* (HTTPS)
 2. **端口规划**：`8090` HTTPS、`8091` UDP probe、`51820-52075` 旧 relay、
    `8092/udp` Relay v2、`8094` Relay v2 metrics、`52100+` 成员 Docker WG、
    `19432` 本地 ctl；Relay v2 metrics 默认只监听 127.0.0.1。
-3. **Android 路由**：只注入已加入网络 CIDR、active IP 与 peer `allowedSubnets`；
-   不添加 `0.0.0.0/0`，不再无条件注入 `10.0.0.0/8`；排除协调服务器 IP 和
-   不冲突的本机 LAN；`excludeRoute` 需 API 33+；路由集合变化时用
-   `HaltTunnels()` → 重建 TUN → `onTunFdReady` 热重启。
-4. **锁规则**：`Daemon.mu` / `Store.mu` 保护状态；持锁禁止网络 I/O、文件写入、
+3. **锁规则**：`Daemon.mu` / `Store.mu` 保护状态；持锁禁止网络 I/O、文件写入、
    进程 spawn；持 `d.mu` 时绝不能调 `hostname()`，用 `hostnameLocked()`。
-5. **持久化**：新增需要重启保留的字段必须同时更新内存缓存与 bbolt `persist*`。
-6. **API 版本**：不兼容 wire 变更要提升 `protocol.APIVersion`；主版本不匹配返回 426；
+4. **持久化**：新增需要重启保留的字段必须同时更新内存缓存与 bbolt `persist*`。
+5. **API 版本**：不兼容 wire 变更要提升 `protocol.APIVersion`；主版本不匹配返回 426；
    `/healthz` 的 `apiVersion` 同步。
-7. **鉴权与密钥**：`/ctl/*` 用 `ctl-token`；Docker Web 代理请求另需 Web session
+6. **鉴权与密钥**：`/ctl/*` 用 `ctl-token`；Docker Web 代理请求另需 Web session
    （`X-Snet-Web: 1`）；管理端用 bcrypt；日志经 `sanitizeLog`；绝不把 token、
    授权码、私钥写进仓库/日志/聊天。
-8. **gomobile 契约**：Go 导出方法与 Kotlin 包装方法成对修改；只改一边运行时才崩。
-9. **Web 构建**：`shared/web` 改动后必须 `scripts/build-web.sh`；不要手改
+7. **snetbind 已移出**：`snetbind/` 已移出，Go↔Kotlin 契约仅存于 `internal/client`
+   平台文件，无法端到端验证。
+8. **Web 构建**：`shared/web` 改动后必须 `scripts/build-web.sh`；不要手改
    `deploy/docker/web/` 产物。
-10. **Rust 边界**：桌面 Rust 只做 `/ctl/*` HTTP 代理；不要在里面实现隧道/协议。
-11. **NAT 映射**：默认开启；映射建立不等于可广播，必须校验 WAN IP == 观测公网 IP；
-    离开网络/端口时及时 `unclaim`，避免路由器残留规则。
-12. **平台 build tag**：`internal/client` 的平台文件必须成组补齐，否则交叉编译失败。
-13. **存储 bucket**：bbolt 8 个：`networks`、`nodes`、`tokens`、`devices`、
+9. **NAT 映射**：默认开启；映射建立不等于可广播，必须校验 WAN IP == 观测公网 IP；
+   离开网络/端口时及时 `unclaim`，避免路由器残留规则。
+10. **平台 build tag**：`internal/client` 的平台文件必须成组补齐，否则交叉编译失败。
+11. **存储 bucket**：bbolt 8 个：`networks`、`nodes`、`tokens`、`devices`、
     `pending`、`admin`、`authcodes`、`relaytopo`。
-14. **CI 现实**：`ci.yml` 跑 Go `test -race`/`vet`/`build`、Web 构建和版本校验；
-    Windows/Android 由独立 workflow 构建，`release.yml` 只在 `v*` tag 汇总发布。
-    Windows 安装包、Android 签名 APK 和生产部署仍需人工验证，不能只看 CI 绿灯。
-15. **版本**：`VERSION` 是唯一人工维护的产品版本；tag 必须是 `v$(cat VERSION)`。
-    `protocol.APIVersion` 独立于产品 SemVer；发布说明必须存在于
-    `docs/releases/vX.Y.Z.md`。不要手工改 `buildinfo.Version`，用
-    `scripts/bump-version.sh` + `scripts/check-version.sh`。
 
 ## 5. 存储、API 与代码入口
 
+- 入口：`cmd/server/`、`cmd/relay/`、`cmd/client/snetd/`、`cmd/client/snetctl/`；
+  共享 Web UI：`shared/web/`。
 - 服务端路由表：`internal/server/server.go`；本地 `/ctl` 路由：`internal/client/ctl.go`。
-  具体端点数量以审计脚本输出为准，不在本文件硬编码。
+  具体端点数量以代码为准，不在本文件硬编码。
 - 服务端存储：`internal/server/store.go`；relay：`internal/server/relay.go`；
   probe：`internal/server/probe.go`。
 - 客户端守护进程：`internal/client/daemon.go`；HTTP 客户端：`control.go`；
   NAT 映射：`natmgr.go`；平台网关：`gateway_*.go`。
-- 协议类型：`internal/protocol/types.go`；Android 桥：`snetbind/snetcore.go`。
-- 版本/发布：`VERSION`、`internal/buildinfo/buildinfo.go`、`scripts/{check-version,bump-version,build-release}.sh`、
-  `.github/workflows/{ci,release,build-windows,build-android}.yml`；runbook 在 `docs/RELEASE.md`。
-- 管理台：`internal/server/admin*` + `go:embed`；Docker Web 产物：`deploy/docker/web/`。
-- 架构图：`.archify/architecture-snet-product-20261020-162140/`、
-  `.archify/workflow-snet-user-lifecycle-20261022-143213/`、
-  `.archify/architecture-snet-lifecycle-20261020/`、
-  `.archify/architecture-snet-nat-path-20261020/`、
-  `.archify/architecture-snet-bbolt-erd-20261020/`。
+- 协议类型：`internal/protocol/types.go`。
+- 管理台：`internal/server/admin*` + `go:embed`；Docker Web 构建入口：
+  `deploy/docker/web-build/`。
+- 断链：`scripts/build-web.sh` 输出 `deploy/docker/web/`，该目录已移出；运行前需
+  `mkdir -p deploy/docker/web` 或改输出路径。
 
 ## 6. 构建、测试与验证矩阵
 
 | 目标 | 命令 | 说明 |
 |---|---|---|
-| Go 全量测试 | `go test ./...` | 当前主要验证手段 |
-| 竞态 | `CGO_ENABLED=1 go test -race ./...` | 需要 C 编译器；本环境曾用 apk 安装 gcc |
-| 静态检查 | `go vet ./...` | 无输出即通过 |
-| 全量构建 | `go build ./...` | 包含 `snetbind` |
-| 版本一致性 | `./scripts/check-version.sh [vX.Y.Z]` | 校验 VERSION/buildinfo/Web/Android |
-| 发布产物 | `./scripts/build-release.sh` | 生成 `dist/` 版本化二进制 + `checksums.txt` |
-| 交叉编译 | `GOOS=darwin GOARCH=arm64 go build ./...`；`GOOS=linux GOARCH=arm64 go build ./...` | 验证平台文件齐全 |
-| Web 资产 | `./scripts/build-web.sh` | 改 `shared/web` 后必须执行 |
-| Android | `./android/build-android.sh`；或 `cd android && ./gradlew testDebugUnitTest assembleDebug --no-daemon` | 需 JDK 17/Android SDK/NDK/gomobile；tag release 需签名 Secrets；2026-10-26 `testDebugUnitTest` 通过；arm64 debug APK 构建于 2026-10-22 |
-| 发布流程 | `release.yml`（`v*` tag） | GitHub Release + GHCR；部署不在 CI 内，需人工确认 |
-| 结构漂移 | `./scripts/project-audit.sh` | 文件、包、路由、skill、图链接、mode 检查 |
+| Go 全量测试 | `go test ./...` | 当前主要验证手段；本环境 Go 工具链缺失，标待验证 |
+| 竞态 | `CGO_ENABLED=1 go test -race ./...` | 需要 C 编译器；本环境 gcc 缺失，标待验证 |
+| 静态检查 | `go vet ./...` | 无输出即通过；Go 缺失，标待验证 |
+| 全量构建 | `go build ./...` | Go 缺失，标待验证 |
+| 版本一致性 | 待补 | `VERSION` 缺失，版本锚点不可验证 |
+| 交叉编译 | `GOOS=darwin GOARCH=arm64 go build ./...`；`GOOS=linux GOARCH=arm64 go build ./...` | 验证平台文件齐全；Go 缺失，标待验证 |
+| Web 资产 | `./scripts/build-web.sh` | 改 `shared/web` 后必须执行；输出目录 `deploy/docker/web/` 已移出，需先创建或改路径 |
+| Web 类型检查 | 借外部 tsc 已验通过（v5.9.3，exit 0）；项目自带 TypeScript 缺失，补：`cd shared/web && npm i -D typescript && npx tsc --noEmit` | `shared/web` 类型检查 |
 
-Go 工具链注意：本环境默认 PATH 可能没有 `go`；可用
-`/tmp/opencode/golang/go/bin/go`。依赖下载用
-`GOPROXY=https://goproxy.cn,direct`。
+Go 工具链注意：本环境 `go` 不在 PATH，`/tmp/opencode/golang/go/bin/go` 也不存在；
+安装后按上表执行。
 
 ## 7. 已知风险与当前 WIP
 
-- **1.1.0 发布基础设施已提交并打 tag**：`VERSION`、`internal/buildinfo`、CI/Release、
-  发布文档、Android 签名配置、桌面/Android 版本号均已本地验证；尚未部署。Windows
-  NSIS 与 Android signed release 未在本机复跑，需 CI/真机确认。
-- 生产 VPS/SDserver 仍为 v1.0.3；`v1.0.3` 是未提交源码部署的热修复，不补打 tag。
 - **Relay v2 是 flag day**：服务端一旦下发 `RelayV2.Enabled=true`，新客户端只走 Relay v2，
   不再加入旧 relay；同网络内旧客户端与新客户端无法互通。上线顺序必须是“全部客户端升级 →
   服务端设置 `SNET_RELAY_V2_ENDPOINT`/`SNET_RELAY_V2_ENDPOINTS`”，回滚先清空服务端这些变量。当前生产未启用。
-- **Relay v2 新直连路径待真机验证**：同 LAN/IPv6/多 relay（含跨实例注册）/限流已有单测与 race 覆盖，
-  但尚未在 NAS/phone/SDserver 上验证 NAT rebinding、IPv6 防火墙与 Docker 临时端口。
-  容器 bridge 客户端的 Relay v2 直连 socket 没有端口映射，同 LAN 直连预计只能回退 relay；
-  host network 或显式 DNAT 才可能生效。`待验证`：`go test ./...`、Android
-  `testDebugUnitTest`、四节点真机组合测试。
+- **relay 单向黑洞**：`SDserver→VPS` direct 0% loss，但 `VPS→SDserver` relay 100% loss；
+  VPS 把帧扇出到 NAS/phone 的共享出口映射，未到 SDserver 的实际映射。旧 atlas/旧评审中的
+  “VPS↔SDserver 双向 0% loss”只代表历史配置，不能作为当前验收依据。详细证据、根因、
+  方案对比与测试矩阵见 `docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md`。
+  修复前不要把控制面 `peerPaths` 当作数据面真相。
 - **NAT 类型仅为观测值**：`DIRECT_REGISTER_ACK` 只能区分映射是否稳定/变化，无法可靠
   区分 full-cone 与 restricted-cone；不要用它做放行或安全决策。
-- **2026-10-25 复测发现数据面回归**：`SDserver→VPS` direct 0% loss，但 `VPS→SDserver`
-  relay 100% loss；VPS 把帧扇出到 NAS/phone 的共享出口映射，未到 SDserver 的实际映射。
-  旧 atlas/旧评审中的“VPS↔SDserver 双向 0% loss”只代表历史配置，不能作为当前验收依据。
-  详细证据、根因、方案对比与测试矩阵见
-  `docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md`。修复前不要把控制面 `peerPaths`
-  当作数据面真相。
-- 自动 NAT 映射已随 v1.1.0 提交，涉及 Go 客户端/服务端/协议、Android 和桌面端；
-  新增文件：`internal/client/natmgr.go`、`natmgr_test.go`、`gateway_*.go`。
-  Go 侧已通过 `go test -race ./...`、`go vet ./...`、`go build ./...` 与 darwin/linux
-  arm64 交叉编译；Android 0.14 已通过 arm64 gomobile + Gradle 单测/assembleDebug，
-  Rust 桌面端仍待验证。
-- `.archify/*.html` 是 Archify finalize 产物，回执记录 SHA-256；不要手工格式化、
-  清行尾空格或改空白，否则图与回执哈希失配。要改图请重新走 Archify finalize。
-  `.archify/workflow-snet-user-lifecycle-20261022-143213/` 已随 v1.1.0 提交；不要
-  清理或重排该目录，否则 CI 的 `project-audit.sh` 会缺图。
-- `opencode.jsonc` 含 NAS 主机/用户信息，已加入 `.gitignore`，不要入库。
-- `.opencode/skills/` 被 `.gitignore` 忽略；本 atlas 是可追踪的持久副本，
-  skill 只是检索触发器。
-- `PROJECT-STRUCTURE.md` 是旧快照，含旧机器绝对路径与已删除的构建产物，不要照抄。
-- 服务端测试较慢（首次约 38s）；`-race` 全量约 70s。
-- NAS 当前通过启动时下载 VPS `snet-runtime.tar.gz` 完成升级（DSM `build_stream`
-  不重建镜像）；`snet-runtime-http.service` 或 `/srv/snet-runtime/snet-runtime.tar.gz`
-  不可用时 NAS 容器无法启动。sha256 已固定在 compose，更新产物必须同步改校验值。
-- 部署脚本里的 NAS 变体可能只存在于目标机；仓库内以 `scripts/` 实际文件为准。
-- 生产 `W4NSYT6E` 的 `10.7.86.0/24` 依赖 SDserver 宿主机路由
-  `10.88.1.0/24 via 172.22.0.2 dev br-<id>`；已用 `snet-subnet-route.timer`
-  每 30s 幂等补齐（脚本动态读取 snetd 容器 IP 与 `172.22.0.1` bridge）。
-  容器/网络重建后若网关变化，timer 会重算；不要只加一次性 `ip route`。
-- Web 登录密码未知时只能验证未登录 401；Playwright/Chromium 仍不可用，
-  不能声称已完成浏览器登录/交互验证。
-- Android/桌面/Go 三个平台可能同时存在未提交改动；提交前必须按范围审查，不要整仓盲提。
+- **构建/验证断链**：`scripts/build-web.sh` 输出目录 `deploy/docker/web/` 已移出；
+  `shared/web` 无自带 TypeScript；Android 平台文件保留但 `snetbind/` 绑定层缺失。
 
 ## 8. 记忆维护协议
 
@@ -349,3 +288,4 @@ skill 列表、`.archify` 图链接、`git diff --check`、mode change。
 | 2026-10-25 | 成员 `AllowedSubnets` 可见性修复；Docker Web `/ctl/*` 增加 Web session 门禁（nginx `X-Snet-Web` + `newCtlAuthHandler`）；Web create 返回邀请链接；VPS/SDserver 部署 v1.0.3；SDserver 生产子网 host route + `snet-subnet-route.timer` | `go test ./...`、`go vet ./...`、`go build ./...`、`sh scripts/build-web.sh`、`cd desktop && npx tsc --noEmit`；未登录 VPS/SDserver `/ctl/status` 401；VPS `/ctl/peers` 含 `allowedSubnets`；VPS→`10.7.86.1` 0% loss、HTTP 200；`10.7.86.222:18080` 200 |
 | 2026-10-25 | relay 共享出口最终修复：共享 host 的 pinned flow 不再归因单节点，歧义时 fan-out 全部 sibling node port；`OnRelayFlow` 拒绝为共享 host 写 pin；新增 `SNET_LOCAL_IP` 覆盖容器自报 LAN 端点、同出口 sibling 不再走公共 IP hairpin 直连；SDserver 上报 `10.7.86.222:52100`；禁用同公网出口 sibling 的公共 IP hairpin direct；验证 phone→sdserver 持续 60 包 0% loss，四方互通 | `go test ./...`、`go vet ./...`、VPS 部署、SDserver 重建、Android APK 重建安装、phone→{sdserver,nas,vps} 0% loss、sdserver→{phone,nas,vps} 0% loss |
 | 2026-10-24 | relay 共享出口修复：流归属按 `host:port` 独立节流、共享 host 不猜节点、歧义时从所有 sibling node port fan-out；客户端 direct 单通检测（3×10s TX≥512B/RX=0）回退 relay，并隔离失败候选直到 endpoint 变化；VPS 与 SDserver 客户端均已升级 | `go test ./...`、`go vet ./...`、`./scripts/project-audit.sh`；VPS↔SDserver 双向 0% loss、HTTP 20/20；SDserver→NAS `:8080` 20/20 |
+| 2026-11-07 | 收缩为 server+snetd+web；删除 Android/Docker 部署/CI/产物/过期文档；PROJECT-STRUCTURE.md 删除；tsc 借外部验证通过。 | 外部 tsc v5.9.3 `--noEmit` exit 0；Go build/test/vet 待验证 |
