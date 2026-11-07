@@ -142,3 +142,19 @@ scenario 2: broadcast fallback sent 3 copies to unrelated sibling
 - 当前只固化事实，未改 `SendFanned`/广播触发条件。是否收窄（按 host 去重、只发给 recipient 候选、或限制每包副本数）待决策。
 
 **关联**：评审 §4.3“扇出是概率性投递，会复制流量、污染 sibling”；T12“每包 ≤1 份有效副本，无错误 sibling 持续收包”。
+
+## 7. 跨 sibling port 同一 recipient flow 重复发送（待决策）
+
+**代码事实**：`sentTo` 在 `deliver(sp)` 内部创建（`store.go:1519`），每个 sibling 的 `deliver(sp)` 各有一份；共享 sender 的候选循环（`store.go:1578-1614`）对 B/C 分别调用 `deliver`，不共享 `sentTo`。
+
+**量化**：`TestRelayRouteDeduplicatesSameRecipientFlowAcrossSiblings`（commit `846daa6`）：
+
+- 同一 `Rf` 同时出现在 B 和 C 的 portflows → `Rf` 被发送 **2 次**。
+- 同一 `deliver(sp)` 内 portflows 有重复 `host:port` → 只发送 **1 次**（`sentTo` 单次内去重）。
+
+| 场景 | 副本数 |
+|---|---:|
+| 同一 flow 出现在两个 sibling port | 2 |
+| 同一 flow 在一个 port 的 flow 列表重复 | 1 |
+
+**含义**：跨 sibling port 没有去重；这是 T12“每包 ≤1 份有效副本”的另一个放大点。当前只固化事实，未改 `sentTo` 作用域、`deliver` 或候选循环；是否收窄待决策。
