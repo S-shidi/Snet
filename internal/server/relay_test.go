@@ -1186,16 +1186,16 @@ func TestRelayRouteDeduplicatesSameRecipientFlowAcrossSiblings(t *testing.T) {
 		return n
 	}
 
-	// Same recipient flow observed on both sibling ports: no cross-deliver
-	// dedup, so two copies are expected under the current implementation.
+	// Same recipient flow observed on both sibling ports: the shared sentTo
+	// map dedups across sibling candidates, so one copy is expected.
 	net3.flows[net3.bPort] = []string{rf}
 	net3.flows[net3.cPort] = []string{rf}
 	payload := []byte("cross-sibling-duplicate")
 	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload)
-	if got := countRF(); got != 2 {
-		t.Fatalf("same recipient flow across sibling ports sent %d times, want 2 (current behaviour; T12 narrowing pending); sends=%v", got, net3.rec.sends)
+	if got := countRF(); got != 1 {
+		t.Fatalf("same recipient flow across sibling ports sent %d times, want 1 after shared sentTo; sends=%v", got, net3.rec.sends)
 	}
-	t.Logf("same recipient flow %s appeared on both sibling ports and was sent 2 times (cross-sibling duplicate, T12 narrowing pending)", rf)
+	t.Logf("same recipient flow %s appeared on both sibling ports and was sent 1 time (shared sentTo dedup, decision 2B)", rf)
 
 	// Within one deliver(sp), duplicate entries in the same port's flow list
 	// are deduped by sentTo.
@@ -1205,6 +1205,39 @@ func TestRelayRouteDeduplicatesSameRecipientFlowAcrossSiblings(t *testing.T) {
 	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload)
 	if got := countRF(); got != 1 {
 		t.Fatalf("duplicate entries in one sibling port's flow list sent %d times, want 1; sends=%v", got, net3.rec.sends)
+	}
+}
+
+// TestRelayRouteSharesSentToAcrossSiblings verifies decision 2B: when the same
+// recipient flow appears on two sibling node ports, the shared sentTo map
+// sends it only once.
+func TestRelayRouteSharesSentToAcrossSiblings(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.ctrlHost[net3.b.ID] = "39.180.139.85"
+	ns.ctrlHost[net3.c.ID] = "39.180.139.85"
+	for _, id := range []string{net3.b.ID, net3.c.ID} {
+		ns.nodes[id].Endpoint = ""
+		ns.nodes[id].EndpointV6 = ""
+	}
+	s.mu.Unlock()
+
+	const rf = "223.160.209.21:32001"
+	net3.flows[net3.bPort] = []string{rf}
+	net3.flows[net3.cPort] = []string{rf}
+	payload := []byte("shared-sentto")
+	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload)
+
+	copies := 0
+	for _, sr := range net3.rec.sends {
+		if sr.to == rf {
+			copies++
+		}
+	}
+	if copies != 1 {
+		t.Fatalf("same recipient flow across sibling ports sent %d times, want 1 after shared sentTo; sends=%v", copies, net3.rec.sends)
 	}
 }
 

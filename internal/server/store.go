@@ -1435,7 +1435,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 	// rest. A host no known peer advertises is not a shared egress (e.g. an
 	// ambiguous self-endpoint) and is dropped to avoid spraying the network.
 	log.Printf("relay node %d: sender=%s sendernorm=%q senderID=%q sharedSender=%v", port, sender, senderNorm, senderID, sharedSender)
-	deliver := func(senderPort int) bool {
+	deliver := func(senderPort int, sentTo map[string]bool) bool {
 		// Destination: the recipient's inbound mapping on the sender's socket.
 		// The recipient opens it by keepaliving to relayHost:<sender's port>; it
 		// will appear as a flow on the sender's port whose host is the recipient.
@@ -1516,7 +1516,6 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 		// the recipient opens one inbound flow toward the sender's node port per
 		// egress it uses. Sending only the first matching flow means half the
 		// frames hit a mapping the peer no longer reads (~50% loss).
-		sentTo := make(map[string]bool, len(fls))
 		for _, fl := range fls {
 			if fl == sender {
 				continue
@@ -1605,6 +1604,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 		if len(candidates) == 0 {
 			return true
 		}
+		sentTo := make(map[string]bool)
 		sent := false
 		for id := range candidates {
 			if id == recipientID {
@@ -1614,7 +1614,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 			if sp == 0 || sp == port {
 				continue
 			}
-			if deliver(sp) {
+			if deliver(sp, sentTo) {
 				sent = true
 			}
 		}
@@ -1628,7 +1628,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 		s.relaySendFannedFrom(ns.relayPort, sender, data)
 		return true
 	}
-	if deliver(senderPort) {
+	if deliver(senderPort, make(map[string]bool)) {
 		return true
 	}
 	s.relaySendFannedFrom(ns.relayPort, sender, data)
