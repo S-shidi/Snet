@@ -754,13 +754,13 @@ func TestDeviceNetworkDetails(t *testing.T) {
 }
 
 // TestDeviceNetworkDetailsTokenRotation verifies that calling
-// DeviceNetworkDetails generates new tokens (old tokens are invalidated).
+// DeviceNetworkDetails generates new tokens and invalidates the old ones.
 func TestDeviceNetworkDetailsTokenRotation(t *testing.T) {
 	s := NewStore()
 	code1, _ := genOneCode(t, s)
-	tok1, _ := s.BindDevice(code1, "dev-rot1", testKey(8), "")
-	if !s.ValidateDeviceToken("dev-rot1", tok1) {
-		t.Fatal("initial token not valid")
+	devTok, _ := s.BindDevice(code1, "dev-rot1", testKey(8), "")
+	if !s.ValidateDeviceToken("dev-rot1", devTok) {
+		t.Fatal("initial device token not valid")
 	}
 
 	created, err := s.CreateNetwork(testKey(8), "dev-rot1", "net", "", false)
@@ -768,41 +768,41 @@ func TestDeviceNetworkDetailsTokenRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// capture the original node token from join (here owner creates, so node token is created at create)
-	// get network info to find the original token for the owner node
-	info, err := s.NetworkInfo(created.Token)
+	details1, err := s.DeviceNetworkDetails("dev-rot1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var oldNodeToken string
-	for _, n := range info.Nodes {
-		if n.DeviceID == "dev-rot1" {
-			// we can't get the raw token from nodes, but we know it exists
-			break
-		}
+	if len(details1) != 1 {
+		t.Fatalf("details count = %d, want 1", len(details1))
 	}
-	_ = oldNodeToken
-
-	// call DeviceNetworkDetails — should return a fresh token
-	details, err := s.DeviceNetworkDetails("dev-rot1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(details) != 1 {
-		t.Fatalf("details count = %d, want 1", len(details))
-	}
-	newToken := details[0].Token
-	if newToken == "" {
-		t.Fatal("new token empty")
+	tok1 := details1[0].Token
+	if tok1 == "" {
+		t.Fatal("first token empty")
 	}
 
-	// calling again should return yet another new token (rotation each time)
 	details2, err := s.DeviceNetworkDetails("dev-rot1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if details2[0].Token == "" {
+	tok2 := details2[0].Token
+	if tok2 == "" {
 		t.Fatal("second token empty")
+	}
+	if tok1 == tok2 {
+		t.Fatal("DeviceNetworkDetails returned the same token twice; want rotation")
+	}
+
+	// The original create token and the first rotated token must both be dead.
+	for name, tok := range map[string]string{
+		"create token":        created.Token,
+		"first rotated token": tok1,
+	} {
+		if _, err := s.ListPeers(tok); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("%s ListPeers err = %v, want ErrUnauthorized", name, err)
+		}
+	}
+	if _, err := s.ListPeers(tok2); err != nil {
+		t.Fatalf("latest token ListPeers err = %v, want nil", err)
 	}
 }
 
