@@ -1048,14 +1048,14 @@ func TestRelayRouteFansOutFromEverySiblingNodePort(t *testing.T) {
 	}
 }
 
-// TestRelayRouteDropsFailedCandidateAndFallsBack verifies the host-level
+// TestRelayRouteDropsFailedHostCandidateContinuesToNextSibling verifies the host-level
 // failure path: an exclusive-host send that fails removes that host from
 // recipientHosts, so a later flow under the same host is not attempted. The
 // outer candidate loop still falls through to the other sibling. "Fallback"
 // here means the next sibling candidate, not broadcast fan-out: current code
 // marks sentTo before the send and therefore does not call the broadcast
 // fallback for a failed send.
-func TestRelayRouteDropsFailedCandidateAndFallsBack(t *testing.T) {
+func TestRelayRouteDropsFailedHostCandidateContinuesToNextSibling(t *testing.T) {
 	net3 := buildNetwork3(t)
 	s := net3.store
 	s.mu.Lock()
