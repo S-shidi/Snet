@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -335,5 +336,315 @@ func TestPersistPendingAndDeviceRows(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func containsPort(ports []int, want int) bool {
+	for _, p := range ports {
+		if p == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestOwnerDeleteNetworkCleansUp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snet.db")
+	s, err := NewStoreAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetRelay("127.0.0.1", 51820, 8)
+	created, err := s.CreateNetwork(testKey(1), "dev-owner", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := s.Join(created.NetworkID, created.PairingCode, testKey(2), "dev-joiner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.Status != "pending" {
+		t.Fatalf("join = %+v, want pending", joined)
+	}
+	if _, err := s.ListPeersFrom(created.Token, "203.0.113.1", true); err != nil {
+		t.Fatal(err)
+	}
+	ns := s.networks[created.NetworkID]
+	s.mu.Lock()
+	port := ns.nodePorts[created.NodeID]
+	s.mu.Unlock()
+	if port == 0 {
+		t.Fatal("owner has no per-node port")
+	}
+	var released []int
+	s.SetRelayRelease(func(p int) error {
+		released = append(released, p)
+		return nil
+	})
+	if err := s.DeleteNetwork(created.Token); err != nil {
+		t.Fatalf("DeleteNetwork: %v", err)
+	}
+	if _, err := s.ListPeers(created.Token); err == nil {
+		t.Fatal("owner token still works after network delete")
+	}
+	if _, err := s.AdminNetworkInfo(created.NetworkID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("AdminNetworkInfo err = %v, want ErrNotFound", err)
+	}
+	s.mu.Lock()
+	if ns.nodePorts[created.NodeID] != 0 {
+		s.mu.Unlock()
+		t.Fatalf("nodePorts[%s] still set", created.NodeID)
+	}
+	if s.portToNode[port] != "" {
+		s.mu.Unlock()
+		t.Fatalf("portToNode[%d] still set", port)
+	}
+	if s.netByPort[port] != nil {
+		s.mu.Unlock()
+		t.Fatalf("netByPort[%d] still set", port)
+	}
+	s.mu.Unlock()
+	if !containsPort(released, port) {
+		t.Fatalf("relayRelease calls = %v, missing per-node port %d", released, port)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.View(func(tx *bbolt.Tx) error {
+		if tx.Bucket([]byte("networks")).Get([]byte(created.NetworkID)) != nil {
+			t.Fatal("network row still present")
+		}
+		if tx.Bucket([]byte("nodes")).Get([]byte(created.NetworkID+"/"+created.NodeID)) != nil {
+			t.Fatal("node row still present")
+		}
+		if tx.Bucket([]byte("tokens")).Get([]byte(hashToken(created.Token))) != nil {
+			t.Fatal("token row still present")
+		}
+		if tx.Bucket([]byte("pending")).Get([]byte(joined.PendingID)) != nil {
+			t.Fatal("pending row still present")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdminDeleteNetworkCleansUp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snet.db")
+	s, err := NewStoreAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetRelay("127.0.0.1", 51820, 8)
+	created, err := s.CreateNetwork(testKey(1), "dev-owner", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := s.Join(created.NetworkID, created.PairingCode, testKey(2), "dev-joiner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListPeersFrom(created.Token, "203.0.113.1", true); err != nil {
+		t.Fatal(err)
+	}
+	ns := s.networks[created.NetworkID]
+	s.mu.Lock()
+	port := ns.nodePorts[created.NodeID]
+	s.mu.Unlock()
+	if port == 0 {
+		t.Fatal("owner has no per-node port")
+	}
+	var released []int
+	s.SetRelayRelease(func(p int) error {
+		released = append(released, p)
+		return nil
+	})
+	if err := s.AdminDeleteNetwork(created.NetworkID); err != nil {
+		t.Fatalf("AdminDeleteNetwork: %v", err)
+	}
+	if _, err := s.AdminNetworkInfo(created.NetworkID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("AdminNetworkInfo err = %v, want ErrNotFound", err)
+	}
+	s.mu.Lock()
+	if ns.nodePorts[created.NodeID] != 0 {
+		s.mu.Unlock()
+		t.Fatalf("nodePorts[%s] still set", created.NodeID)
+	}
+	if s.portToNode[port] != "" {
+		s.mu.Unlock()
+		t.Fatalf("portToNode[%d] still set", port)
+	}
+	if s.netByPort[port] != nil {
+		s.mu.Unlock()
+		t.Fatalf("netByPort[%d] still set", port)
+	}
+	s.mu.Unlock()
+	if !containsPort(released, port) {
+		t.Fatalf("relayRelease calls = %v, missing per-node port %d", released, port)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.View(func(tx *bbolt.Tx) error {
+		if tx.Bucket([]byte("networks")).Get([]byte(created.NetworkID)) != nil {
+			t.Fatal("network row still present")
+		}
+		if tx.Bucket([]byte("nodes")).Get([]byte(created.NetworkID+"/"+created.NodeID)) != nil {
+			t.Fatal("node row still present")
+		}
+		if tx.Bucket([]byte("tokens")).Get([]byte(hashToken(created.Token))) != nil {
+			t.Fatal("token row still present")
+		}
+		if tx.Bucket([]byte("pending")).Get([]byte(joined.PendingID)) != nil {
+			t.Fatal("pending row still present")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdminRemoveNodeCleansUp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snet.db")
+	s, err := NewStoreAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetRelay("127.0.0.1", 51820, 8)
+	created, err := s.CreateNetwork(testKey(1), "dev-owner", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := s.Join(created.NetworkID, created.PairingCode, testKey(2), "dev-joiner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListPeersFrom(joined.Token, "203.0.113.2", true); err != nil {
+		t.Fatal(err)
+	}
+	ns := s.networks[created.NetworkID]
+	s.mu.Lock()
+	port := ns.nodePorts[joined.NodeID]
+	s.mu.Unlock()
+	if port == 0 {
+		t.Fatal("joiner has no per-node port")
+	}
+	flow := seedNodeRelayIndexes(t, s, ns, joined.NodeID)
+	var released []int
+	s.SetRelayRelease(func(p int) error {
+		released = append(released, p)
+		return nil
+	})
+	if err := s.AdminRemoveNode(created.NetworkID, joined.NodeID); err != nil {
+		t.Fatalf("AdminRemoveNode: %v", err)
+	}
+	s.mu.Lock()
+	if ns.nodePorts[joined.NodeID] != 0 {
+		s.mu.Unlock()
+		t.Fatalf("nodePorts[%s] still set", joined.NodeID)
+	}
+	if s.portToNode[port] != "" {
+		s.mu.Unlock()
+		t.Fatalf("portToNode[%d] still set", port)
+	}
+	if s.netByPort[port] != nil {
+		s.mu.Unlock()
+		t.Fatalf("netByPort[%d] still set", port)
+	}
+	if hosts := s.nodeRelayHost[ns.n.ID]; hosts != nil {
+		if _, ok := hosts[joined.NodeID]; ok {
+			s.mu.Unlock()
+			t.Fatalf("nodeRelayHost[%s] still contains node", ns.n.ID)
+		}
+	}
+	s.mu.Unlock()
+	if !containsPort(released, port) {
+		t.Fatalf("relayRelease calls = %v, missing per-node port %d", released, port)
+	}
+	assertNodeRelayIndexesCleared(t, s, ns, joined.NodeID, flow)
+	if _, err := s.ListPeers(joined.Token); err == nil {
+		t.Fatal("removed node token still works")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.View(func(tx *bbolt.Tx) error {
+		if tx.Bucket([]byte("nodes")).Get([]byte(created.NetworkID+"/"+joined.NodeID)) != nil {
+			t.Fatal("node row still present")
+		}
+		if tx.Bucket([]byte("tokens")).Get([]byte(hashToken(joined.Token))) != nil {
+			t.Fatal("token row still present")
+		}
+		if tx.Bucket([]byte("relaytopo")).Get([]byte(created.NetworkID+"/"+joined.NodeID)) != nil {
+			t.Fatal("relaytopo row still present")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSweepZombiesReleasesNetworkPorts(t *testing.T) {
+	s := NewStore()
+	s.SetRelay("127.0.0.1", 51820, 8)
+	created, err := s.CreateNetwork(testKey(1), "dev-owner", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListPeersFrom(created.Token, "203.0.113.1", true); err != nil {
+		t.Fatal(err)
+	}
+	ns := s.networks[created.NetworkID]
+	s.mu.Lock()
+	port := ns.nodePorts[created.NodeID]
+	old := time.Now().Add(-2 * time.Hour).Unix()
+	ns.lastActivityAt = old
+	ns.n.LastActivityAt = old
+	s.mu.Unlock()
+	if port == 0 {
+		t.Fatal("owner has no per-node port")
+	}
+	var released []int
+	s.SetRelayRelease(func(p int) error {
+		released = append(released, p)
+		return nil
+	})
+	victims, err := s.SweepZombies(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(victims) != 1 || victims[0] != created.NetworkID {
+		t.Fatalf("victims = %v, want [%s]", victims, created.NetworkID)
+	}
+	if s.networks[created.NetworkID] != nil {
+		t.Fatal("network still present after sweep")
+	}
+	s.mu.Lock()
+	if s.portToNode[port] != "" {
+		s.mu.Unlock()
+		t.Fatalf("portToNode[%d] still set", port)
+	}
+	if s.netByPort[port] != nil {
+		s.mu.Unlock()
+		t.Fatalf("netByPort[%d] still set", port)
+	}
+	s.mu.Unlock()
+	if !containsPort(released, port) {
+		t.Fatalf("relayRelease calls = %v, missing per-node port %d", released, port)
 	}
 }
