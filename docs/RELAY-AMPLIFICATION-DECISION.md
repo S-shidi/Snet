@@ -3,7 +3,7 @@
 > 日期：2026-11-07
 > 范围：`internal/server/store.go`（`RelayRouteNodePort` / `deliver`）、`internal/server/relay.go`（`SendFanned`）、`internal/client/pathmanager.go`（relay shim）
 > 依据：`docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md` §4.3、§5、§7 T12、§8.4、§9 阶段 1
-> 状态：只读分析 + 决策材料。未修改 `store.go`、`relay.go`，未新增/修改测试，未改现有决策文档。
+> 状态：已实施（2B、2B follow-up、1B+1C 计数、3C、3C legacy follow-up）。本文记录实施后状态。
 
 ## 1. 评审原文立场
 
@@ -47,11 +47,13 @@
 
 | 路径 | 代码 | 发送粒度 |
 |---|---|---|
-| `deliver(sp)` exact / exclusive / shared | `store.go:1519-1558` | 每个匹配的 `host:port` flow 一份；`sentTo` 在**单个 `deliver(sp)` 内**去重 |
-| 共享 sender 候选循环 | `store.go:1578-1614` | 对每个 sibling 分别调用 `deliver(sp)`；`sentTo` 不跨 sibling 共享 |
-| `relaySendFannedFrom` / `Relay.SendFanned` | `store.go:1058`、`relay.go:430-462` | 遍历 `p.seen`，对每个 `host:port` endpoint 一份，排除 sender/ctrlOnly |
+| `deliver(sp)` exact / exclusive / shared | `store.go:1519-1558` | 每个匹配的 `host:port` flow 一份；`sentTo` 跨 sibling 共享，且只在成功时置位（2B + follow-up） |
+| 共享 sender 候选循环 | `store.go:1578-1614` | 对每个 sibling 调用 `deliver(sp, sentTo)`；共享 `sentTo` 去重，失败不置位、允许下一 sibling 重试 |
+| `relaySendFannedFrom` / `Relay.SendFanned` | `store.go:1058`、`relay.go:430-462` | 遍历 `p.seen` 后按 host 去重，选最近 seen 的 endpoint；每 host 一份（3C） |
+| legacy `relayPair.handle` fan-out | `relay.go:350-367` | 同样按 host 去重，每 host 一份（3C follow-up） |
+| `Relay.SendFrom` unicast | `relay.go:404-423` | 精确 `host:port` 一份；不做 host 去重 |
 
-结论：relay/网络层可能产生多份副本；`SendFanned` 不做 host 去重，N 个 live flow 会收到 N 份。
+结论：广播路径（`SendFanned` 与 legacy `handle`）已按 host 去重，同 host N 个 flow 只收 1 份；unicast `SendFrom` 仍按 flow 精确发送，不做去重。
 
 ### 接收端 snetd
 
@@ -95,25 +97,25 @@ WireGuard 协议自带重放保护：
 
 | 选项 | 改动点 | 对 T12 的影响 | 延迟/带宽 | 风险 |
 |---|---|---|---|---|
-| **1A 保持现状** | 无 | 不满足"无错误 sibling 持续收包"；N 个 flow 收 N 份；WG 层有效副本仍 1 | 带宽/CPU 放大 N；拥塞时延迟上升 | 放大/污染持续；实现简单、兼容 |
-| **1B 按 host 去重** | `relay.go:437-452` 遍历 `p.seen` 时按 host 只选一个 endpoint | 减少同 host 多 flow 的副本；不同 host 的无关 sibling 仍会收到，不能完全满足 T12 | 降低同 host 放大；选错端口可能丢包 | 可能破坏 CGNAT 多出口/NAT 多映射；需要选端口策略 |
-| **1C 禁止盲扇出** | `store.go:1612/1618/1624` 的 fallback 改为只向已知 recipient 候选/flow 发送；无候选则丢弃并计数 | 最接近 §9 阶段 1 与 T12；不再向错误 sibling 盲扇出 | 带宽最小；首次握手可能因无候选而失败/延迟 | 可能牺牲 bootstrap/首次连通性；需要指标、重试或其他发现机制 |
+| **1A 保持现状**（未实施，被 1B/3C 取代） | 无 | 不满足"无错误 sibling 持续收包"；N 个 flow 收 N 份；WG 层有效副本仍 1 | 带宽/CPU 放大 N；拥塞时延迟上升 | 放大/污染持续；实现简单、兼容 |
+| **1B 按 host 去重**（已实施：908fca7 + cf933a2，作为 3C） | `relay.go:437-452` 遍历 `p.seen` 时按 host 只选一个 endpoint | 减少同 host 多 flow 的副本；不同 host 的无关 sibling 仍会收到，不能完全满足 T12 | 降低同 host 放大；选错端口可能丢包 | 可能破坏 CGNAT 多出口/NAT 多映射；需要选端口策略 |
+| **1C 禁止盲扇出**（部分：404f382 加计数/收窄；未 drop） | `store.go:1612/1618/1624` 的 fallback 改为只向已知 recipient 候选/flow 发送；无候选则丢弃并计数 | 最接近 §9 阶段 1 与 T12；不再向错误 sibling 盲扇出 | 带宽最小；首次握手可能因无候选而失败/延迟 | 可能牺牲 bootstrap/首次连通性；需要指标、重试或其他发现机制 |
 
 ### 决策 2：跨 sibling port 同一 recipient flow 重复发送
 
 | 选项 | 改动点 | 对 T12 的影响 | 延迟/带宽 | 风险 |
 |---|---|---|---|---|
-| **2A 保持现状** | 无；`sentTo` 仍是每个 `deliver(sp)` 独立（`store.go:1519`） | 同一 flow 在 B/C 两个 port 各发一份；WG 层有效副本 1 | 该 flow 2 倍带宽；可能增加队列延迟 | 放大；但保留多路径冗余 |
-| **2B 共享 `sentTo` 跨 sibling** | 把 `sentTo` 提升到候选循环作用域（`store.go:1578-1614`），或让 `deliver` 接受外部 map | 同一 flow 最多 1 份，直接满足"每包 ≤1 份有效副本" | 降低带宽；若第一份发送失败/路径不对称，失去冗余 | 需要失败重试/下一候选；共享 map 仍在 `s.mu` 下，锁风险低 |
-| **2C 全局/短窗口去重** | relay 层新增 flow+packet hash/TTL 缓存，`SendFrom`/`SendFanned` 前检查 | 最严格；跨 sibling、跨路径去重 | 带宽最小；CPU/内存增加 | 可能误丢合法重传/握手重试；缓存并发/TTL 复杂 |
+| **2A 保持现状**（未实施） | 无；`sentTo` 仍是每个 `deliver(sp)` 独立（`store.go:1519`） | 同一 flow 在 B/C 两个 port 各发一份；WG 层有效副本 1 | 该 flow 2 倍带宽；可能增加队列延迟 | 放大；但保留多路径冗余 |
+| **2B 共享 `sentTo` 跨 sibling**（已实施：9a33382 + 6652f87） | 把 `sentTo` 提升到候选循环作用域（`store.go:1578-1614`），或让 `deliver` 接受外部 map | 同一 flow 最多 1 份，直接满足"每包 ≤1 份有效副本" | 降低带宽；若第一份发送失败/路径不对称，失去冗余 | 需要失败重试/下一候选；共享 map 仍在 `s.mu` 下，锁风险低 |
+| **2C 全局/短窗口去重**（未实施） | relay 层新增 flow+packet hash/TTL 缓存，`SendFrom`/`SendFanned` 前检查 | 最严格；跨 sibling、跨路径去重 | 带宽最小；CPU/内存增加 | 可能误丢合法重传/握手重试；缓存并发/TTL 复杂 |
 
 ### 决策 3：全局去重策略（relay 层 vs 依赖 WG）
 
 | 选项 | 改动点 | 对 T12 的影响 | 延迟/带宽 | 风险 |
 |---|---|---|---|---|
-| **3A 依赖 WG 重放保护** | 无；relay 不做全局去重 | WG 层"有效副本"≤1；但 relay 层放大、错误 sibling 收包仍存在 | 放大成本保留 | 不满足"无错误 sibling 持续收包"；但不会误丢合法重传 |
-| **3B relay 层全局去重** | 新增 flow+packet hash/短 TTL 缓存；所有发送路径先查重 | 最接近 T12；每 flow 每包最多一份 | 带宽最小；CPU/内存/哈希成本 | 误丢合法重传（握手/重钥）、缓存一致性、并发/TTL |
-| **3C 混合：只对广播/多 flow 去重** | 在 `SendFanned` 和 shared-host fan-out 路径做 flow/host 去重；exact/unicast 交给 WG | 降低广播放大和跨 sibling 重复；同 flow 重复由 WG 处理 | 折中；实现中等 | 路径间行为不一致；需要清晰语义和测试 |
+| **3A 依赖 WG 重放保护**（未实施） | 无；relay 不做全局去重 | WG 层"有效副本"≤1；但 relay 层放大、错误 sibling 收包仍存在 | 放大成本保留 | 不满足"无错误 sibling 持续收包"；但不会误丢合法重传 |
+| **3B relay 层全局去重**（未实施） | 新增 flow+packet hash/短 TTL 缓存；所有发送路径先查重 | 最接近 T12；每 flow 每包最多一份 | 带宽最小；CPU/内存/哈希成本 | 误丢合法重传（握手/重钥）、缓存一致性、并发/TTL |
+| **3C 混合：只对广播/多 flow 去重**（已实施：908fca7 + cf933a2） | 在 `SendFanned` 和 shared-host fan-out 路径做 flow/host 去重；exact/unicast 交给 WG | 降低广播放大和跨 sibling 重复；同 flow 重复由 WG 处理 | 折中；实现中等 | 路径间行为不一致；需要清晰语义和测试 |
 
 ## 4. 倾向（待用户决策）
 
@@ -123,4 +125,19 @@ WireGuard 协议自带重放保护：
 - **决策 2：倾向 2B**。同一 recipient flow 的重复对 WG 没有收益，共享 `sentTo` 改动小、直接满足 T12；需要补"第一份失败后尝试下一候选"的测试。
 - **决策 3：倾向 3C**。relay 层重点处理广播/多 flow 放大；同一 flow 的重复交给 WG 重放保护，避免全局 packet-hash 误丢合法重传。
 
-**待用户决策**：是否按 1C + 2B + 3C 落地，或先只做 2B/3C 的低风险部分。
+**已落地**：2B（`9a33382` + `6652f87`）、3C（`908fca7` + `cf933a2`）、1B/1C 的计数与收窄（`404f382`）。1C 的“禁止盲扇出/无 flow 丢弃”未实施；全失败广播行为见 `RELAY-FAILURE-DECISION.md` §8。
+
+## 5. 实施后的副本数事实
+
+| 场景 | 当前副本数 | 依据 |
+|---|---:|---|
+| 广播对同 host N 个 live flow | **1** | `SendFanned` 与 legacy `handle` 均按 host 去重，选最近 seen 的 endpoint |
+| 跨 sibling port 同一 recipient flow | **1**（成功后才去重） | 共享 `sentTo`；失败不置位，下一 sibling 可重试 |
+| 同一 `deliver(sp)` 内重复 `host:port` | **1** | `sentTo` 单次内去重 |
+| unicast `SendFrom` 精确 flow | 每目标 1 份，**不做 host 去重** | `Relay.SendFrom` 未改 |
+| 所有 sibling 发送都失败 | 触发广播回退（当前行为） | 2B follow-up：失败不置位；是否改为 drop+count 待决策 |
+
+补充：
+- 广播回退的 host 去重选择“最近 seen”的 endpoint；CGNAT 同 host 多映射存在选错端口/可达性下降的风险。
+- `relayPair.handle` 的 legacy broadcast 也已按 host 去重；3C 不再只覆盖 `SendFanned`。
+- WireGuard 重放保护仍会丢弃重复密文；relay 层去重主要降低带宽/CPU/错误 sibling 收包，而不是防止 WG 重复处理。

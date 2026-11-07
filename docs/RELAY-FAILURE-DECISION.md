@@ -158,3 +158,25 @@ scenario 2: broadcast fallback sent 3 copies to unrelated sibling
 | 同一 flow 在一个 port 的 flow 列表重复 | 1 |
 
 **含义**：跨 sibling port 没有去重；这是 T12“每包 ≤1 份有效副本”的另一个放大点。当前只固化事实，未改 `sentTo` 作用域、`deliver` 或候选循环；是否收窄待决策。
+
+## 8. 2B follow-up：成功才置位与全失败广播
+
+**实施**：`store.go` 三处 `sentTo[fl] = true` 改为仅在 `ok == true` 时置位（commit `6652f87`）。
+
+**行为变更**：
+
+- 旧行为：exact-flow 失败 → `sentTo[fl]=true` → `deliver` 返回 true → 不广播。
+- 新行为：失败 → 不置位 → 若所有 sibling 都失败 → `deliver` 返回 false → `RelayRouteNodePort` 调用 `relaySendFannedFrom` 广播。
+- 副作用：全失败时会广播，可能重新引入错误 sibling 扇出和放大。
+
+**评审对照**：
+
+> §9 阶段 1：“共享出口不再向错误 sibling 盲扇出；无精确 flow 时明确丢弃并计数。”
+>
+> §5 方案 A：“禁止错误扇出。”
+>
+> §4.3：“扇出是概率性投递，会复制流量、污染 sibling。”
+
+评审只明确“无精确 flow 时丢弃并计数”，没有逐字规定“有 flow 但全失败”应广播还是丢弃。按 §5/§4.3 的反盲扇出、反污染方向，**全失败广播存在争议**，倾向改为“计数后丢弃”或“仅 bootstrap 无候选时广播”。
+
+**当前状态**：代码保留广播（2B follow-up 的直接结果）；是否收窄待用户决策。未在本次任务中改代码。
