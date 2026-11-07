@@ -310,6 +310,9 @@ type Store struct {
 	// endpoint seen there, except one. Set via SetRelaySendFanned; used as
 	// the broadcast fallback when unicast routing has no flow yet.
 	relaySendFanned func(port int, except string, data []byte) int
+	// relayFanoutFallbacks counts broadcast-fallback invocations. Callers hold
+	// s.mu; exposed via RelayFanoutFallbacks for status/tests.
+	relayFanoutFallbacks uint64
 	// netByPort maps a bound relay UDP port back to the network it serves.
 	// Registered for both the network's broadcast port and any per-node
 	// unicast relay ports (Phase 3).
@@ -1056,10 +1059,18 @@ func (s *Store) SetRelaySendFanned(fn func(port int, except string, data []byte)
 // lock discipline (callers hold s.mu; the relay collects its targets under
 // the pair mutex only).
 func (s *Store) relaySendFannedFrom(port int, except string, data []byte) int {
+	s.relayFanoutFallbacks++
 	if s.relaySendFanned == nil {
 		return 0
 	}
 	return s.relaySendFanned(port, except, data)
+}
+
+// RelayFanoutFallbacks returns the number of broadcast-fallback invocations.
+func (s *Store) RelayFanoutFallbacks() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.relayFanoutFallbacks
 }
 
 // relayEnabled reports whether relay mode is on.

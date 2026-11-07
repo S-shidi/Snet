@@ -1241,6 +1241,88 @@ func TestRelayRouteSharesSentToAcrossSiblings(t *testing.T) {
 	}
 }
 
+// TestRelayRouteNarrowsSharedFanoutAndCountsFallback verifies decision 1B+1C:
+// the shared-sender candidate loop only targets siblings sharing the sender's
+// host (never an unrelated E), while a recipient with no live flow still gets
+// the broadcast fallback, now counted.
+func TestRelayRouteNarrowsSharedFanoutAndCountsFallback(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+
+	info, err := s.NetworkInfo(net3.aTok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rjE, err := s.Join(info.ID, info.PairingCode, testKey(954), "device-e-9504")
+	if err != nil {
+		t.Fatal(err)
+	}
+	le, err := s.ListPeersFrom(rjE.Token, "203.0.113.99", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := *le.Self
+	ePort := e.RelayPort
+	if ePort == 0 || ePort == net3.aPort || ePort == net3.bPort || ePort == net3.cPort {
+		t.Fatalf("unrelated sibling got a bad node port: %d", ePort)
+	}
+
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.ctrlHost[net3.b.ID] = "39.180.139.85"
+	ns.ctrlHost[net3.c.ID] = "39.180.139.85"
+	for _, id := range []string{net3.b.ID, net3.c.ID} {
+		ns.nodes[id].Endpoint = ""
+		ns.nodes[id].EndpointV6 = ""
+	}
+	s.mu.Unlock()
+
+	const (
+		bFlow = "223.160.209.21:33001"
+		cFlow = "223.160.209.21:33002"
+		eFlow = "203.0.113.99:33003"
+	)
+	net3.flows[net3.bPort] = []string{bFlow}
+	net3.flows[net3.cPort] = []string{cFlow}
+	net3.flows[ePort] = []string{eFlow}
+
+	fanned := 0
+	s.SetRelaySendFanned(func(port int, except string, data []byte) int {
+		fanned++
+		return 1
+	})
+	before := s.RelayFanoutFallbacks()
+
+	// Scenario 1: B/C have live flows. E is on a different host and must not
+	// receive a copy; the candidate loop never includes it.
+	payload1 := []byte("narrow-1")
+	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload1)
+	if net3.rec.contains(eFlow, string(payload1)) {
+		t.Fatalf("unrelated sibling %s received a copy; sends=%v", eFlow, net3.rec.sends)
+	}
+	if fanned != 0 {
+		t.Fatalf("broadcast fallback ran %d times with B/C flows present", fanned)
+	}
+	if got := s.RelayFanoutFallbacks(); got != before {
+		t.Fatalf("fanout fallback counter = %d, want unchanged %d", got, before)
+	}
+
+	// Scenario 2: recipient has no flow. The broadcast fallback must still run
+	// and the counter must increment.
+	net3.rec.sends = nil
+	net3.flows[net3.bPort] = nil
+	net3.flows[net3.cPort] = nil
+	fanned = 0
+	payload2 := []byte("narrow-2")
+	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload2)
+	if fanned == 0 {
+		t.Fatalf("broadcast fallback did not run when recipient had no flow")
+	}
+	if got := s.RelayFanoutFallbacks(); got != before+1 {
+		t.Fatalf("fanout fallback counter = %d, want %d", got, before+1)
+	}
+}
+
 // TestRelayRouteDropsFailedHostCandidateContinuesToNextSibling verifies the host-level
 // failure path: an exclusive-host send that fails removes that host from
 // recipientHosts, so a later flow under the same host is not attempted. The
