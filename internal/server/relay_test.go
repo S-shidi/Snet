@@ -151,6 +151,64 @@ func TestRelayFanout(t *testing.T) {
 	}
 }
 
+// TestRelaySendFannedDeduplicatesByHost verifies decision 3C: broadcast
+// fan-out sends at most one datagram per host, even when that host has
+// multiple live flows. Unicast SendFrom is untouched.
+func TestRelaySendFannedDeduplicatesByHost(t *testing.T) {
+	port := freePort(t)
+	r := NewRelay(port, 1)
+	// Suppress automatic fan-out of registration packets; SendFanned is
+	// driven explicitly below.
+	r.SetNodeRoute(func(port int, sender string, data []byte) bool { return true })
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	dial := func() *net.UDPConn {
+		t.Helper()
+		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	a, b, c := dial(), dial(), dial()
+	defer a.Close()
+	defer b.Close()
+	defer c.Close()
+
+	relayAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
+	for _, conn := range []*net.UDPConn{a, b, c} {
+		if _, err := conn.WriteToUDP([]byte("reg"), relayAddr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(r.Flows(port)) != 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("registered flows = %v, want 3", r.Flows(port))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	sent := r.SendFanned(port, "192.0.2.1:1", []byte("fanout"))
+	if sent != 1 {
+		t.Fatalf("SendFanned wrote %d endpoints, want 1 after host dedup; flows=%v", sent, r.Flows(port))
+	}
+	received := 0
+	buf := make([]byte, 64)
+	for _, conn := range []*net.UDPConn{a, b, c} {
+		_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		if _, _, err := conn.ReadFromUDP(buf); err == nil {
+			received++
+		}
+	}
+	if received != 1 {
+		t.Fatalf("same-host endpoints received %d copies, want 1; flows=%v", received, r.Flows(port))
+	}
+}
+
 // TestRelayEnsureLazy verifies that a relay created without Start (the lazy
 // production path) binds its advertised port only when Ensure is first called,
 // and that Ensure is a cheap no-op on repeat calls.
@@ -1110,17 +1168,22 @@ func TestRelayRouteSharedHostDoesNotFanOutToUnrelatedSibling(t *testing.T) {
 	eCopies := 0
 	s.SetRelaySendFanned(func(port int, except string, data []byte) int {
 		fanned++
-		// Relay.SendFanned iterates p.seen per "host:port" endpoint and writes
-		// one datagram per endpoint (relay.go:437-452), so each live E flow
-		// receives its own copy. Model that here.
+		// Relay.SendFanned dedups by host (decision 3C): all E flows share
+		// one host, so only one endpoint receives a copy.
+		seenHosts := map[string]bool{}
 		for _, to := range eFlows {
 			if to == except {
 				continue
 			}
+			host, _, err := net.SplitHostPort(to)
+			if err != nil || seenHosts[host] {
+				continue
+			}
+			seenHosts[host] = true
 			net3.rec.sends = append(net3.rec.sends, sendRec{port: port, to: to, data: string(data)})
 			eCopies++
 		}
-		return len(eFlows)
+		return len(seenHosts)
 	})
 
 	// Scenario 1: B/C flows hit, so no broadcast fallback and E gets nothing.
@@ -1139,9 +1202,8 @@ func TestRelayRouteSharedHostDoesNotFanOutToUnrelatedSibling(t *testing.T) {
 	}
 
 	// Scenario 2: no recipient flow -> broadcast fallback. Relay.SendFanned
-	// sends one copy per live endpoint, so E with 3 live flows receives 3
-	// copies. This is the T12 amplification point; record it as a fact rather
-	// than failing, and leave narrowing to a separate decision.
+	// now dedups by host (decision 3C), so E's three same-host flows receive
+	// one copy.
 	net3.rec.sends = nil
 	net3.flows[net3.bPort] = nil
 	net3.flows[net3.cPort] = nil
@@ -1152,10 +1214,10 @@ func TestRelayRouteSharedHostDoesNotFanOutToUnrelatedSibling(t *testing.T) {
 	if fanned == 0 {
 		t.Fatalf("scenario 2 did not trigger broadcast fallback; sends=%v", net3.rec.sends)
 	}
-	if eCopies != len(eFlows) {
-		t.Fatalf("broadcast fallback sent %d copies to unrelated sibling, want %d (one per live flow); sends=%v", eCopies, len(eFlows), net3.rec.sends)
+	if eCopies != 1 {
+		t.Fatalf("broadcast fallback sent %d copies to unrelated sibling, want 1 after host dedup; sends=%v", eCopies, net3.rec.sends)
 	}
-	t.Logf("scenario 2: broadcast fallback sent %d copies to unrelated sibling %v (one per live flow; known amplification, pending decision)", eCopies, eFlows)
+	t.Logf("scenario 2: broadcast fallback sent %d copy to unrelated sibling %v (host-deduped, decision 3C)", eCopies, eFlows)
 }
 
 // TestRelayRouteDeduplicatesSameRecipientFlowAcrossSiblings checks T12's

@@ -435,11 +435,26 @@ func (r *Relay) SendFanned(port int, except string, data []byte) int {
 		return 0
 	}
 	p.mu.Lock()
-	var dsts []net.Conn
+	// Decision 3C: broadcast fan-out is per-host, not per-flow. A shared
+	// egress can expose several live NAT mappings for the same host; sending
+	// one copy per host avoids N-fold amplification while leaving unicast
+	// SendFrom untouched. Pick the most recently seen mapping per host.
+	byHost := make(map[string]string)
 	for ep := range p.seen {
 		if ep == except || p.ctrlOnly[ep] {
 			continue
 		}
+		host, _, err := net.SplitHostPort(ep)
+		if err != nil {
+			continue
+		}
+		prev, ok := byHost[host]
+		if !ok || p.seen[ep].After(p.seen[prev]) {
+			byHost[host] = ep
+		}
+	}
+	var dsts []net.Conn
+	for _, ep := range byHost {
 		addr, err := net.ResolveUDPAddr("udp", ep)
 		if err != nil {
 			continue
