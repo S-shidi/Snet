@@ -1,6 +1,7 @@
 package server
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -236,5 +237,52 @@ func TestSubnetReassign(t *testing.T) {
 	}
 	if j3.IP != "192.168.77.3" {
 		t.Fatalf("joiner after reassign = %q, want 192.168.77.3", j3.IP)
+	}
+}
+
+func TestPendingPersistsAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snet.db")
+	s, err := NewStoreAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateNetwork(testKey(1), "dev-owner", "office", "192.168.50.0/24", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := s.Join(created.NetworkID, created.PairingCode, testKey(2), "dev-joiner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.Status != "pending" || joined.PendingID == "" {
+		t.Fatalf("join = %+v, want pending", joined)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := NewStoreAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	st, err := s2.PendingStatus(joined.PendingID)
+	if err != nil {
+		t.Fatalf("PendingStatus after restart: %v", err)
+	}
+	if st.Status != "pending" || st.NetworkID != created.NetworkID {
+		t.Fatalf("pending after restart = %+v, want pending for %s", st, created.NetworkID)
+	}
+
+	approve, err := s2.OwnerApprove(created.Token, joined.PendingID)
+	if err != nil {
+		t.Fatalf("OwnerApprove after restart: %v", err)
+	}
+	if approve.Status != "approved" || approve.NodeID == "" || approve.IP == "" || approve.Token == "" {
+		t.Fatalf("approve after restart = %+v, want full credentials", approve)
+	}
+	if approve.IP != "192.168.50.2" {
+		t.Fatalf("approved IP = %q, want 192.168.50.2", approve.IP)
 	}
 }
