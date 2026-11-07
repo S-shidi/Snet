@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -1488,6 +1489,104 @@ func TestRelayRouteDropsWhenAllSiblingSendsFail(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("sibling sends attempted %d times, want 2", attempts)
 	}
+}
+
+// TestRelayRouteSuppressesBroadcastAfterHintDeletion verifies the TTL patch:
+// after a failed exact-flow send deletes the hint, the next trigger within
+// relayFlowBadTTL must drop+count instead of broadcasting. Expiry restores
+// the bootstrap broadcast.
+func TestRelayRouteSuppressesBroadcastAfterHintDeletion(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	const dead = "223.160.208.21:39802"
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.relayFlowByNode[net3.a.ID] = dead
+	if ns.flowByNode == nil {
+		ns.flowByNode = make(map[string]string)
+	}
+	ns.flowByNode[dead] = net3.a.ID
+	s.mu.Unlock()
+	net3.flows[net3.cPort] = []string{dead}
+
+	s.SetRelaySend(func(port int, to string, data []byte) bool {
+		return to != dead
+	})
+	fanned := 0
+	s.SetRelaySendFanned(func(port int, except string, data []byte) int {
+		fanned++
+		return 1
+	})
+	before := s.RelayFanoutFallbacks()
+	payload := []byte("ttl-after-hint-delete")
+
+	ok := s.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", payload)
+	if ok {
+		t.Fatalf("first trigger returned true, want false after failed exact flow")
+	}
+	if fanned != 0 {
+		t.Fatalf("first trigger broadcast %d times, want 0", fanned)
+	}
+	if got := s.RelayFanoutFallbacks(); got != before+1 {
+		t.Fatalf("counter after first trigger = %d, want %d", got, before+1)
+	}
+
+	// Second trigger: hint is gone, TTL suppresses broadcast.
+	ok = s.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", payload)
+	if ok {
+		t.Fatalf("second trigger returned true, want false during TTL")
+	}
+	if fanned != 0 {
+		t.Fatalf("second trigger broadcast %d times within TTL, want 0", fanned)
+	}
+	if got := s.RelayFanoutFallbacks(); got != before+2 {
+		t.Fatalf("counter after second trigger = %d, want %d", got, before+2)
+	}
+
+	until, hasTTL := relayFlowBadUntilForTest(t, ns, net3.a.ID)
+	if !hasTTL || !time.Now().Before(until) {
+		t.Fatalf("relayFlowBadUntil[%s] = %v (has=%v), want future TTL", net3.a.ID, until, hasTTL)
+	}
+
+	// Fast-forward TTL by expiring the entry directly; tests are in-package.
+	expireRelayFlowBadForTest(t, ns, net3.a.ID)
+	ok = s.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", payload)
+	if !ok {
+		t.Fatalf("third trigger returned false after TTL expiry, want true (broadcast)")
+	}
+	if fanned != 1 {
+		t.Fatalf("third trigger broadcast %d times after TTL expiry, want 1", fanned)
+	}
+	if got := s.RelayFanoutFallbacks(); got != before+3 {
+		t.Fatalf("counter after TTL expiry = %d, want %d", got, before+3)
+	}
+}
+
+func relayFlowBadUntilForTest(t *testing.T, ns *networkState, id string) (time.Time, bool) {
+	t.Helper()
+	v := reflect.ValueOf(ns).Elem().FieldByName("relayFlowBadUntil")
+	if !v.IsValid() {
+		t.Fatalf("relayFlowBadUntil field missing")
+	}
+	m, ok := v.Interface().(map[string]time.Time)
+	if !ok {
+		t.Fatalf("relayFlowBadUntil type = %s, want map[string]time.Time", v.Type())
+	}
+	until, ok := m[id]
+	return until, ok
+}
+
+func expireRelayFlowBadForTest(t *testing.T, ns *networkState, id string) {
+	t.Helper()
+	v := reflect.ValueOf(ns).Elem().FieldByName("relayFlowBadUntil")
+	if !v.IsValid() {
+		t.Fatalf("relayFlowBadUntil field missing")
+	}
+	m, ok := v.Interface().(map[string]time.Time)
+	if !ok {
+		t.Fatalf("relayFlowBadUntil type = %s, want map[string]time.Time", v.Type())
+	}
+	m[id] = time.Now().Add(-time.Second)
 }
 
 // TestRelayRouteNarrowsSharedFanoutAndCountsFallback verifies decision 1B+1C:
