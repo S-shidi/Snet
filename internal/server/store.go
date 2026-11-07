@@ -3715,6 +3715,9 @@ func (s *Store) KickNode(token, nodeID string) error {
 	if nodeID == ns.n.OwnerNodeID {
 		return errors.New("cannot remove the owner node")
 	}
+	// Release the node's per-node unicast relay port before dropping the node,
+	// matching RemoveNode/AdminRemoveNode. releaseNodePortLocked is idempotent.
+	s.releaseNodePortLocked(ns, nodeID)
 	delete(ns.nodes, nodeID)
 	for h, te := range s.byToken {
 		if te.NetworkID == ns.n.ID && te.NodeID == nodeID {
