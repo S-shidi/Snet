@@ -818,3 +818,104 @@ func TestCtlSetNATMappingEnablePersistsWithoutTeardown(t *testing.T) {
 		t.Fatalf("persisted NATMapping = %v, want true", cfg.NATMapping)
 	}
 }
+
+func TestMapNATPortWith(t *testing.T) {
+	const port = 51820
+	const lanIP = "192.168.1.5"
+	ctx := context.Background()
+
+	t.Run("prefers UPnP", func(t *testing.T) {
+		defaultCalls := 0
+		natpmpCalls := 0
+		pcpCalls := 0
+		upnp := func(context.Context, int, string) (string, natResult, error) {
+			return "192.0.2.1", natResult{externalIP: "203.0.113.10", externalPort: 40000, via: "upnp"}, nil
+		}
+		natpmp := func(context.Context, int, string, string) (natResult, error) {
+			natpmpCalls++
+			return natResult{via: "natpmp"}, nil
+		}
+		pcp := func(context.Context, int, string, string) (natResult, error) {
+			pcpCalls++
+			return natResult{via: "pcp"}, nil
+		}
+		res, err := mapNATPortWith(ctx, port, lanIP, func() string {
+			defaultCalls++
+			return "192.0.2.1"
+		}, upnp, natpmp, pcp)
+		if err != nil || res.via != "upnp" {
+			t.Fatalf("res=%+v err=%v, want via upnp", res, err)
+		}
+		if defaultCalls != 0 || natpmpCalls != 0 || pcpCalls != 0 {
+			t.Fatalf("calls default=%d natpmp=%d pcp=%d, want 0/0/0", defaultCalls, natpmpCalls, pcpCalls)
+		}
+	})
+
+	t.Run("falls back to NAT-PMP", func(t *testing.T) {
+		defaultCalls := 0
+		pcpCalls := 0
+		upnp := func(context.Context, int, string) (string, natResult, error) {
+			return "192.0.2.1", natResult{}, errors.New("upnp failed")
+		}
+		natpmp := func(context.Context, int, string, string) (natResult, error) {
+			return natResult{externalIP: "203.0.113.20", externalPort: 40001, via: "natpmp"}, nil
+		}
+		pcp := func(context.Context, int, string, string) (natResult, error) {
+			pcpCalls++
+			return natResult{via: "pcp"}, nil
+		}
+		res, err := mapNATPortWith(ctx, port, lanIP, func() string {
+			defaultCalls++
+			return "192.0.2.1"
+		}, upnp, natpmp, pcp)
+		if err != nil || res.via != "natpmp" || res.externalPort != 40001 {
+			t.Fatalf("res=%+v err=%v, want via natpmp port 40001", res, err)
+		}
+		if defaultCalls != 0 || pcpCalls != 0 {
+			t.Fatalf("calls default=%d pcp=%d, want 0/0", defaultCalls, pcpCalls)
+		}
+	})
+
+	t.Run("falls back to PCP", func(t *testing.T) {
+		upnp := func(context.Context, int, string) (string, natResult, error) {
+			return "192.0.2.1", natResult{}, errors.New("upnp failed")
+		}
+		natpmp := func(context.Context, int, string, string) (natResult, error) {
+			return natResult{}, errors.New("natpmp failed")
+		}
+		pcp := func(context.Context, int, string, string) (natResult, error) {
+			return natResult{externalIP: "203.0.113.30", externalPort: 40002, via: "pcp"}, nil
+		}
+		res, err := mapNATPortWith(ctx, port, lanIP, func() string { return "192.0.2.1" }, upnp, natpmp, pcp)
+		if err != nil || res.via != "pcp" || res.externalPort != 40002 {
+			t.Fatalf("res=%+v err=%v, want via pcp port 40002", res, err)
+		}
+	})
+
+	t.Run("no gateway", func(t *testing.T) {
+		defaultCalls := 0
+		natpmpCalls := 0
+		pcpCalls := 0
+		upnp := func(context.Context, int, string) (string, natResult, error) {
+			return "", natResult{}, errors.New("upnp failed")
+		}
+		natpmp := func(context.Context, int, string, string) (natResult, error) {
+			natpmpCalls++
+			return natResult{via: "natpmp"}, nil
+		}
+		pcp := func(context.Context, int, string, string) (natResult, error) {
+			pcpCalls++
+			return natResult{via: "pcp"}, nil
+		}
+		res, err := mapNATPortWith(ctx, port, lanIP, func() string {
+			defaultCalls++
+			return ""
+		}, upnp, natpmp, pcp)
+		if err == nil {
+			t.Fatalf("res=%+v err=nil, want gateway error", res)
+		}
+		if defaultCalls != 1 || natpmpCalls != 0 || pcpCalls != 0 {
+			t.Fatalf("calls default=%d natpmp=%d pcp=%d, want 1/0/0", defaultCalls, natpmpCalls, pcpCalls)
+		}
+	})
+}
