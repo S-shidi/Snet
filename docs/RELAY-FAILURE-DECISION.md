@@ -181,3 +181,12 @@ scenario 2: broadcast fallback sent 3 copies to unrelated sibling
 decision B 把“有候选 flow 但全部失败”也按 §9 的“丢弃并计数”处理，避免重新引入错误 sibling 扇出和放大；bootstrap 无候选场景保留广播以维持首次连通性。
 
 **当前状态**：已实施（`ff80f67`）。`RelayRouteNodePort` 在全失败时返回 false；`RelayFanoutFallbacks()` 计数递增；不再广播。
+
+### TTL 补丁（36aa257）
+
+- 新增 `networkState.relayFlowBadUntil map[string]time.Time`，随 `networkState` 初始化。
+- 常量 `relayFlowBadTTL = 30 * time.Second`。
+- exact-flow 失败删除 hint 时：`relayFlowBadUntil[recipientID] = time.Now().Add(relayFlowBadTTL)`。
+- 广播判定：`!attempted` 且 TTL 未过期 → `relayFanoutFallbacks++`，不广播，返回 false；TTL 过期后恢复 bootstrap 广播。
+- `pruneStaleRelayFlowsLocked` 顺带清理过期 `relayFlowBadUntil`，避免泄漏。
+- 评审依据：§9“无精确 flow 时明确丢弃并计数”；TTL 避免删 hint 后立刻退化为广播。

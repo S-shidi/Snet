@@ -125,7 +125,7 @@ WireGuard 协议自带重放保护：
 - **决策 2：倾向 2B**。同一 recipient flow 的重复对 WG 没有收益，共享 `sentTo` 改动小、直接满足 T12；需要补"第一份失败后尝试下一候选"的测试。
 - **决策 3：倾向 3C**。relay 层重点处理广播/多 flow 放大；同一 flow 的重复交给 WG 重放保护，避免全局 packet-hash 误丢合法重传。
 
-**已落地**：2B（`9a33382` + `6652f87`）、3C（`908fca7` + `cf933a2`）、1B/1C 的计数与收窄（`404f382`）、全失败 drop+count（`ff80f67`）。全失败行为详见 `RELAY-FAILURE-DECISION.md` §8。
+**已落地**：2B（`9a33382` + `6652f87`）、3C（`908fca7` + `cf933a2`）、1B/1C 的计数与收窄（`404f382`）、全失败 drop+count（`ff80f67`）、删 hint 后 TTL 抑制（`36aa257`）。全失败行为详见 `RELAY-FAILURE-DECISION.md` §8。
 
 ## 5. 实施后的副本数事实
 
@@ -136,6 +136,7 @@ WireGuard 协议自带重放保护：
 | 同一 `deliver(sp)` 内重复 `host:port` | **1** | `sentTo` 单次内去重 |
 | unicast `SendFrom` 精确 flow | 每目标 1 份，**不做 host 去重** | `Relay.SendFrom` 未改 |
 | 所有 sibling 发送都失败 | **0 份 + 计数** | decision B（`ff80f67`）：有候选但全失败 → drop+count，不广播；无候选 bootstrap 才广播 |
+| 删 hint 后 TTL 内（`relayFlowBadTTL=30s`） | **0 份 + 计数** | TTL 补丁（`36aa257`）：`!attempted` 且 TTL 未过期 → drop+count，不广播；TTL 过期后恢复 bootstrap 广播 |
 
 补充：
 - 广播回退的 host 去重选择“最近 seen”的 endpoint；CGNAT 同 host 多映射存在选错端口/可达性下降的风险。
