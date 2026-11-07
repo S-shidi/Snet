@@ -116,3 +116,29 @@ T12 原文：
 - **exact flow**：已按方案 A 实施（`a9b9163`）：失败后删除 `relayFlowByNode` 与 recipient-owned `flowByNode`，下一次不再重试 dead flow，可重新归因/回退。评审 §3.1 未明确该场景，本次按最小止血落地。
 - **shared host**：当前行为是 best-effort；评审未明确失败后的处理，未改。
 - 本次实施只动 exact-flow 分支；exclusive-host、shared-host、广播回退、`sentTo` 未改。方案 C 仍为后续增强候选。
+
+## 6. 广播回退副本放大（待决策）
+
+**代码事实**：`Relay.SendFanned`（`internal/server/relay.go:430-462`）遍历 `p.seen`，键是 `host:port` live endpoint；对每个 endpoint 写一份数据报，排除 `except` 和 `ctrlOnly`。**不是按 host 去重，而是按 live flow 逐条发送。**
+
+**量化**：`TestRelayRouteSharedHostDoesNotFanOutToUnrelatedSibling`（commit `1c37cb1`）的场景 2 给无关 sibling E 配 3 个 live flow（同一 host、不同端口），触发广播回退，测试记录：
+
+```text
+scenario 2: broadcast fallback sent 3 copies to unrelated sibling
+[203.0.113.99:31003 203.0.113.99:31004 203.0.113.99:31005]
+(one per live flow; known amplification, pending decision)
+```
+
+| E 的 live flow 数 | 广播回退时 E 收到副本数 |
+|---:|---:|
+| 0 | 0 |
+| 1 | 1 |
+| 3 | 3 |
+| N | N |
+
+**含义**：
+- 场景 1（B/C 有精确 flow 命中）不触发广播，E 收到 0 份。
+- 场景 2（recipient 无 flow）走广播回退，E 收到 N 份；这是 T12“每包 ≤1 份有效副本”的放大点。
+- 当前只固化事实，未改 `SendFanned`/广播触发条件。是否收窄（按 host 去重、只发给 recipient 候选、或限制每包副本数）待决策。
+
+**关联**：评审 §4.3“扇出是概率性投递，会复制流量、污染 sibling”；T12“每包 ≤1 份有效副本，无错误 sibling 持续收包”。
