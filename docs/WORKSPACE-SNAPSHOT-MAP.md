@@ -377,3 +377,13 @@ Device 跨重启持久化（2026-11-07）：
 - 已知少量内存残留：`s.nodeRelayHost[netID]` 空 map 在网络删除后保留，不影响功能。
 
 结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Web 打包、Android 与发布链路仍待补缺失目录/工具后再验证。
+
+PathManager direct 来源校验与候选优先级（2026-11-07）：
+
+- 来源校验正向：`TestPathManagerAllowsPublicPortRebinding`：public 候选 `203.0.113.5:51820`，来源 `203.0.113.5:40000` 同 IP 不同端口被接受，`dp.kind=public`、`dp.addr` 更新为新端口。
+- 来源校验负向：`TestPathManagerRejectsWrongLANPort`（LAN `192.168.1.10:51820` 拒绝 `:51821`）、`TestPathManagerRejectsUnknownPublicSource`（public 候选 `203.0.113.5` 拒绝 `198.51.100.7`）、`TestPathManagerRejectsDirectFrameWhenNoCandidate`（无候选直接拒绝）。拒绝后 `dp.ready`/`dp.addr` 均不变。
+- 匹配规则确认：LAN 候选要求 IP + 端口精确匹配；public/IPv6 候选只固定 IP，允许 NAT rebinding 改端口；`hintIP` 命中按 public 处理；无匹配返回空串，`noteDirectPeer` 返回 false。
+- 候选优先级：`TestPathManagerCandidatePriority` 断言 `candidatesLocked` 顺序为 `[lan, ipv6, public]`；`TestPathManagerLowPriorityAckDoesNotOverrideHighPriority` 断言 LAN 已 ready 时 public ACK 被接受但不应用，`kind`/`addr` 保持 LAN。
+- 测试命令：`go test ./internal/client -run 'TestPathManagerRejects|TestPathManagerAllows|TestPathManagerCandidatePriority|TestPathManagerLowPriority' -v` 全绿；`go test -race ./internal/client -run '...' -count=20` 全绿；`go test ./internal/client` 全绿。commit `746431c`。
+- 验证层级：同包直接调用 `noteDirectPeer`/`candidatesLocked`；`handleDirectFrame` 调用链由既有 `TestPathManagerRelayLoopbackShims` 覆盖。
+- 未发现来源校验或候选优先级缺口；10s 低优先级→高优先级主动升级探测仍为独立缺口，不在本次范围。
