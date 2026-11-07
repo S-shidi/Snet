@@ -2736,3 +2736,80 @@ func TestKickNodeReleasesNodePort(t *testing.T) {
 		t.Fatalf("relayRelease calls = %v, want [%d]", released, port)
 	}
 }
+
+func seedNodeRelayIndexes(t *testing.T, s *Store, ns *networkState, nodeID string) string {
+	t.Helper()
+	const flow = "203.0.113.50:5000"
+	const host = "203.0.113.50"
+	s.mu.Lock()
+	ns.relayFlowByNode[nodeID] = flow
+	ns.flowByNode[flow] = nodeID
+	ns.ctrlHost[nodeID] = host
+	if ns.nodeByHost[host] == nil {
+		ns.nodeByHost[host] = make(map[string]bool)
+	}
+	ns.nodeByHost[host][nodeID] = true
+	ns.hostSeen[host] = time.Now()
+	ns.relayFlowBadUntil[nodeID] = time.Now().Add(time.Minute)
+	s.mu.Unlock()
+	return flow
+}
+
+func assertNodeRelayIndexesCleared(t *testing.T, s *Store, ns *networkState, nodeID, flow string) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := ns.relayFlowByNode[nodeID]; ok {
+		t.Fatalf("relayFlowByNode[%s] still present", nodeID)
+	}
+	if _, ok := ns.flowByNode[flow]; ok {
+		t.Fatalf("flowByNode[%s] still present", flow)
+	}
+	if _, ok := ns.ctrlHost[nodeID]; ok {
+		t.Fatalf("ctrlHost[%s] still present", nodeID)
+	}
+	for host, ids := range ns.nodeByHost {
+		if ids[nodeID] {
+			t.Fatalf("nodeByHost[%s] still contains %s", host, nodeID)
+		}
+	}
+	if _, ok := ns.nodeByHost["203.0.113.50"]; ok {
+		t.Fatal("empty nodeByHost host key not removed")
+	}
+	if _, ok := ns.hostSeen["203.0.113.50"]; ok {
+		t.Fatal("hostSeen for empty host not removed")
+	}
+	if _, ok := ns.relayFlowBadUntil[nodeID]; ok {
+		t.Fatalf("relayFlowBadUntil[%s] still present", nodeID)
+	}
+}
+
+func TestKickNodeClearsRelayIndexes(t *testing.T) {
+	net3 := buildNetwork3(t)
+	ns := net3.store.networks[net3.a.NetworkID]
+	flow := seedNodeRelayIndexes(t, net3.store, ns, net3.b.ID)
+	if err := net3.store.KickNode(net3.aTok, net3.b.ID); err != nil {
+		t.Fatalf("KickNode: %v", err)
+	}
+	assertNodeRelayIndexesCleared(t, net3.store, ns, net3.b.ID, flow)
+}
+
+func TestRemoveNodeClearsRelayIndexes(t *testing.T) {
+	net3 := buildNetwork3(t)
+	ns := net3.store.networks[net3.a.NetworkID]
+	flow := seedNodeRelayIndexes(t, net3.store, ns, net3.b.ID)
+	if err := net3.store.RemoveNode(net3.bTok); err != nil {
+		t.Fatalf("RemoveNode: %v", err)
+	}
+	assertNodeRelayIndexesCleared(t, net3.store, ns, net3.b.ID, flow)
+}
+
+func TestAdminRemoveNodeClearsRelayIndexes(t *testing.T) {
+	net3 := buildNetwork3(t)
+	ns := net3.store.networks[net3.a.NetworkID]
+	flow := seedNodeRelayIndexes(t, net3.store, ns, net3.b.ID)
+	if err := net3.store.AdminRemoveNode(net3.a.NetworkID, net3.b.ID); err != nil {
+		t.Fatalf("AdminRemoveNode: %v", err)
+	}
+	assertNodeRelayIndexesCleared(t, net3.store, ns, net3.b.ID, flow)
+}
