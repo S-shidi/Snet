@@ -850,3 +850,303 @@ func TestPathManagerDoesNotUpgradeBeforeInterval(t *testing.T) {
 		t.Fatalf("path changed before upgrade interval: %+v", dp)
 	}
 }
+
+func TestPathManagerHelloTimeoutReconnects(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	relay := mustUDPListener(t)
+	defer relay.Close()
+	oldConn := mustDialUDP(t, relay.LocalAddr().(*net.UDPAddr))
+	base := time.Now()
+	link := &relayLink{
+		endpoint:  relay.LocalAddr().String(),
+		conn:      oldConn,
+		ready:     false,
+		attempt:   base.Add(-11 * time.Second),
+		lastHello: base,
+	}
+	pm.mu.Lock()
+	pm.relayLinks = []*relayLink{link}
+	pm.ticket = protocol.RelayTicketResp{Ticket: "ticket"}
+	pm.sessionID = [16]byte{5}
+	pm.mu.Unlock()
+
+	pm.maintainRelays(base)
+	pm.mu.RLock()
+	gotConn := link.conn
+	ready := link.ready
+	nextDial := link.nextDial
+	pm.mu.RUnlock()
+	if gotConn != nil || ready {
+		t.Fatalf("timed-out link still attached: conn=%v ready=%v", gotConn, ready)
+	}
+	if !nextDial.Equal(base.Add(5 * time.Second)) {
+		t.Fatalf("nextDial = %v, want %v", nextDial, base.Add(5*time.Second))
+	}
+
+	pm.maintainRelays(base.Add(5 * time.Second))
+	pm.mu.RLock()
+	newConn := link.conn
+	attempt := link.attempt
+	ready = link.ready
+	pm.mu.RUnlock()
+	if newConn == nil || newConn == oldConn || ready {
+		t.Fatalf("link was not redialed: conn=%v old=%v ready=%v", newConn, oldConn, ready)
+	}
+	if !attempt.After(base) {
+		t.Fatalf("attempt = %v, want after %v", attempt, base)
+	}
+	_ = relay.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 2048)
+	n, _, err := relay.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("redialed link sent no HELLO: %v", err)
+	}
+	f, err := protocol.ParseRelayFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.RelayTypeHello {
+		t.Fatalf("redial frame = %+v, want HELLO", f)
+	}
+}
+
+func TestPathManagerDoesNotReconnectBeforeHelloTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	relay := mustUDPListener(t)
+	defer relay.Close()
+	conn := mustDialUDP(t, relay.LocalAddr().(*net.UDPAddr))
+	base := time.Now()
+	attempt := base.Add(-5 * time.Second)
+	link := &relayLink{
+		endpoint:  relay.LocalAddr().String(),
+		conn:      conn,
+		ready:     false,
+		attempt:   attempt,
+		lastHello: base,
+	}
+	pm.mu.Lock()
+	pm.relayLinks = []*relayLink{link}
+	pm.mu.Unlock()
+
+	pm.maintainRelays(base)
+	pm.mu.RLock()
+	gotConn := link.conn
+	gotAttempt := link.attempt
+	nextDial := link.nextDial
+	pm.mu.RUnlock()
+	if gotConn != conn || !gotAttempt.Equal(attempt) || !nextDial.IsZero() {
+		t.Fatalf("link reconnected before 10s: conn=%v attempt=%v nextDial=%v", gotConn, gotAttempt, nextDial)
+	}
+	_ = relay.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	buf := make([]byte, 2048)
+	if n, _, err := relay.ReadFromUDP(buf); err == nil {
+		t.Fatalf("unexpected frame before HELLO timeout: %x", buf[:n])
+	}
+}
+
+func TestPathManagerSilentLinkReconnectAfter30s(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	relay := mustUDPListener(t)
+	defer relay.Close()
+	oldConn := mustDialUDP(t, relay.LocalAddr().(*net.UDPAddr))
+	base := time.Now()
+	link := &relayLink{
+		endpoint:  relay.LocalAddr().String(),
+		conn:      oldConn,
+		ready:     true,
+		attempt:   base.Add(-time.Minute),
+		lastHello: base,
+	}
+	link.lastRecv.Store(base.Add(-31 * time.Second).Unix())
+	pm.mu.Lock()
+	pm.relayLinks = []*relayLink{link}
+	pm.ticket = protocol.RelayTicketResp{Ticket: "ticket"}
+	pm.sessionID = [16]byte{6}
+	pm.mu.Unlock()
+
+	pm.maintainRelays(base)
+	pm.mu.RLock()
+	gotConn := link.conn
+	ready := link.ready
+	nextDial := link.nextDial
+	pm.mu.RUnlock()
+	if gotConn != nil || ready {
+		t.Fatalf("silent link still attached: conn=%v ready=%v", gotConn, ready)
+	}
+	if !nextDial.Equal(base.Add(5 * time.Second)) {
+		t.Fatalf("nextDial = %v, want %v", nextDial, base.Add(5*time.Second))
+	}
+
+	pm.maintainRelays(base.Add(5 * time.Second))
+	pm.mu.RLock()
+	newConn := link.conn
+	attempt := link.attempt
+	ready = link.ready
+	pm.mu.RUnlock()
+	if newConn == nil || newConn == oldConn || ready {
+		t.Fatalf("silent link was not redialed: conn=%v old=%v ready=%v", newConn, oldConn, ready)
+	}
+	if !attempt.After(base) {
+		t.Fatalf("attempt = %v, want after %v", attempt, base)
+	}
+	_ = relay.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 2048)
+	n, _, err := relay.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("redialed silent link sent no HELLO: %v", err)
+	}
+	f, err := protocol.ParseRelayFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.RelayTypeHello {
+		t.Fatalf("redial frame = %+v, want HELLO", f)
+	}
+}
+
+func TestPathManagerKeepsLinkBefore30sSilence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	relay := mustUDPListener(t)
+	defer relay.Close()
+	conn := mustDialUDP(t, relay.LocalAddr().(*net.UDPAddr))
+	base := time.Now()
+	attempt := base.Add(-time.Minute)
+	link := &relayLink{
+		endpoint:  relay.LocalAddr().String(),
+		conn:      conn,
+		ready:     true,
+		attempt:   attempt,
+		lastHello: base,
+	}
+	lastRecv := base.Add(-25 * time.Second)
+	link.lastRecv.Store(lastRecv.Unix())
+	pm.mu.Lock()
+	pm.relayLinks = []*relayLink{link}
+	pm.mu.Unlock()
+
+	pm.maintainRelays(base)
+	pm.mu.RLock()
+	gotConn := link.conn
+	ready := link.ready
+	gotAttempt := link.attempt
+	gotLastRecv := link.lastRecv.Load()
+	picked := pm.pickRelayLocked()
+	pm.mu.RUnlock()
+	if gotConn != conn || !ready || !gotAttempt.Equal(attempt) || gotLastRecv != lastRecv.Unix() {
+		t.Fatalf("link changed before 30s: conn=%v ready=%v attempt=%v lastRecv=%d", gotConn, ready, gotAttempt, gotLastRecv)
+	}
+	if picked != link {
+		t.Fatalf("pickRelayLocked = %v, want healthy link", picked)
+	}
+}
+
+func TestPathManagerReconnectsOnlySilentRelayLink(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	relayA := mustUDPListener(t)
+	defer relayA.Close()
+	relayB := mustUDPListener(t)
+	defer relayB.Close()
+	connA := mustDialUDP(t, relayA.LocalAddr().(*net.UDPAddr))
+	connB := mustDialUDP(t, relayB.LocalAddr().(*net.UDPAddr))
+	base := time.Now()
+	attemptA := base.Add(-time.Minute)
+	linkA := &relayLink{
+		endpoint:  relayA.LocalAddr().String(),
+		conn:      connA,
+		ready:     true,
+		attempt:   attemptA,
+		lastHello: base,
+	}
+	linkA.lastRecv.Store(base.Add(-time.Second).Unix())
+	linkB := &relayLink{
+		endpoint:  relayB.LocalAddr().String(),
+		conn:      connB,
+		ready:     true,
+		attempt:   base.Add(-time.Minute),
+		lastHello: base,
+	}
+	linkB.lastRecv.Store(base.Add(-31 * time.Second).Unix())
+	pm.mu.Lock()
+	pm.relayLinks = []*relayLink{linkA, linkB}
+	pm.ticket = protocol.RelayTicketResp{Ticket: "ticket"}
+	pm.sessionID = [16]byte{7}
+	pm.mu.Unlock()
+
+	pm.maintainRelays(base)
+	pm.mu.RLock()
+	gotConnA := linkA.conn
+	readyA := linkA.ready
+	gotAttemptA := linkA.attempt
+	gotLastRecvA := linkA.lastRecv.Load()
+	gotConnB := linkB.conn
+	readyB := linkB.ready
+	nextDialB := linkB.nextDial
+	picked := pm.pickRelayLocked()
+	pm.mu.RUnlock()
+	if gotConnB != nil || readyB {
+		t.Fatalf("silent link B still attached: conn=%v ready=%v", gotConnB, readyB)
+	}
+	if !nextDialB.Equal(base.Add(5 * time.Second)) {
+		t.Fatalf("link B nextDial = %v, want %v", nextDialB, base.Add(5*time.Second))
+	}
+	if gotConnA != connA || !readyA || !gotAttemptA.Equal(attemptA) || gotLastRecvA != base.Add(-time.Second).Unix() {
+		t.Fatalf("healthy link A changed: conn=%v ready=%v attempt=%v lastRecv=%d", gotConnA, readyA, gotAttemptA, gotLastRecvA)
+	}
+	if picked != linkA {
+		t.Fatalf("pickRelayLocked = %v, want link A", picked)
+	}
+
+	payload := []byte("must-use-healthy-relay")
+	pm.sendToPeer("node-b", payload)
+	_ = relayA.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 2048)
+	n, _, err := relayA.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("healthy relay A received nothing: %v", err)
+	}
+	f, err := protocol.ParseRelayFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.RelayTypeData || string(f.Payload) != string(payload) {
+		t.Fatalf("relay A frame = %+v, want DATA payload", f)
+	}
+
+	pm.maintainRelays(base.Add(5 * time.Second))
+	pm.mu.RLock()
+	newConnB := linkB.conn
+	attemptB := linkB.attempt
+	gotConnA = linkA.conn
+	readyA = linkA.ready
+	gotAttemptA = linkA.attempt
+	gotLastRecvA = linkA.lastRecv.Load()
+	picked = pm.pickRelayLocked()
+	pm.mu.RUnlock()
+	if newConnB == nil || newConnB == connB {
+		t.Fatalf("link B was not redialed after 5s: conn=%v old=%v", newConnB, connB)
+	}
+	if !attemptB.After(base) {
+		t.Fatalf("link B attempt = %v, want after %v", attemptB, base)
+	}
+	if gotConnA != connA || !readyA || !gotAttemptA.Equal(attemptA) || gotLastRecvA != base.Add(-time.Second).Unix() {
+		t.Fatalf("healthy link A changed after B redial: conn=%v ready=%v attempt=%v lastRecv=%d", gotConnA, readyA, gotAttemptA, gotLastRecvA)
+	}
+	if picked != linkA {
+		t.Fatalf("pickRelayLocked = %v, want link A after B redial", picked)
+	}
+}
