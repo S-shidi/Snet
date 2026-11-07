@@ -159,24 +159,25 @@ scenario 2: broadcast fallback sent 3 copies to unrelated sibling
 
 **含义**：跨 sibling port 没有去重；这是 T12“每包 ≤1 份有效副本”的另一个放大点。当前只固化事实，未改 `sentTo` 作用域、`deliver` 或候选循环；是否收窄待决策。
 
-## 8. 2B follow-up：成功才置位与全失败广播
+## 8. 2B follow-up + decision B：成功才置位与全失败 drop+count
 
-**实施**：`store.go` 三处 `sentTo[fl] = true` 改为仅在 `ok == true` 时置位（commit `6652f87`）。
+**实施**：
+
+- `store.go` 三处 `sentTo[fl] = true` 改为仅在 `ok == true` 时置位（commit `6652f87`）。
+- 全失败时改为 drop+count，不再广播（commit `ff80f67`，decision B）。
 
 **行为变更**：
 
 - 旧行为：exact-flow 失败 → `sentTo[fl]=true` → `deliver` 返回 true → 不广播。
-- 新行为：失败 → 不置位 → 若所有 sibling 都失败 → `deliver` 返回 false → `RelayRouteNodePort` 调用 `relaySendFannedFrom` 广播。
-- 副作用：全失败时会广播，可能重新引入错误 sibling 扇出和放大。
+- 2B follow-up：失败 → 不置位 → 所有 sibling 都失败 → `deliver` 返回 false。
+- decision B：`deliver` 返回 false 且 `attempted == true`（有候选 flow/endpoint，但全部发送失败）→ 递增 `relayFanoutFallbacks`，**不广播**，`RelayRouteNodePort` 返回 false。
+- 仅当 `attempted == false`（recipient 从未有 flow/endpoint，bootstrap 无候选）时才保留 `relaySendFannedFrom` 广播。
+- exact-flow 失败仍按 decision A 删除 `relayFlowByNode` / recipient-owned `flowByNode`。
 
-**评审对照**：
+**评审依据**：
 
 > §9 阶段 1：“共享出口不再向错误 sibling 盲扇出；无精确 flow 时明确丢弃并计数。”
->
-> §5 方案 A：“禁止错误扇出。”
->
-> §4.3：“扇出是概率性投递，会复制流量、污染 sibling。”
 
-评审只明确“无精确 flow 时丢弃并计数”，没有逐字规定“有 flow 但全失败”应广播还是丢弃。按 §5/§4.3 的反盲扇出、反污染方向，**全失败广播存在争议**，倾向改为“计数后丢弃”或“仅 bootstrap 无候选时广播”。
+decision B 把“有候选 flow 但全部失败”也按 §9 的“丢弃并计数”处理，避免重新引入错误 sibling 扇出和放大；bootstrap 无候选场景保留广播以维持首次连通性。
 
-**当前状态**：代码保留广播（2B follow-up 的直接结果）；是否收窄待用户决策。未在本次任务中改代码。
+**当前状态**：已实施（`ff80f67`）。`RelayRouteNodePort` 在全失败时返回 false；`RelayFanoutFallbacks()` 计数递增；不再广播。

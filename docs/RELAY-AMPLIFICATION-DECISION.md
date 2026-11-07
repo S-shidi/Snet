@@ -99,7 +99,7 @@ WireGuard 协议自带重放保护：
 |---|---|---|---|---|
 | **1A 保持现状**（未实施，被 1B/3C 取代） | 无 | 不满足"无错误 sibling 持续收包"；N 个 flow 收 N 份；WG 层有效副本仍 1 | 带宽/CPU 放大 N；拥塞时延迟上升 | 放大/污染持续；实现简单、兼容 |
 | **1B 按 host 去重**（已实施：908fca7 + cf933a2，作为 3C） | `relay.go:437-452` 遍历 `p.seen` 时按 host 只选一个 endpoint | 减少同 host 多 flow 的副本；不同 host 的无关 sibling 仍会收到，不能完全满足 T12 | 降低同 host 放大；选错端口可能丢包 | 可能破坏 CGNAT 多出口/NAT 多映射；需要选端口策略 |
-| **1C 禁止盲扇出**（部分：404f382 加计数/收窄；未 drop） | `store.go:1612/1618/1624` 的 fallback 改为只向已知 recipient 候选/flow 发送；无候选则丢弃并计数 | 最接近 §9 阶段 1 与 T12；不再向错误 sibling 盲扇出 | 带宽最小；首次握手可能因无候选而失败/延迟 | 可能牺牲 bootstrap/首次连通性；需要指标、重试或其他发现机制 |
+| **1C 禁止盲扇出**（已实施：404f382 + ff80f67，drop+count） | `store.go:1612/1618/1624` 的 fallback 改为只向已知 recipient 候选/flow 发送；无候选则丢弃并计数 | 最接近 §9 阶段 1 与 T12；不再向错误 sibling 盲扇出 | 带宽最小；首次握手可能因无候选而失败/延迟 | 可能牺牲 bootstrap/首次连通性；需要指标、重试或其他发现机制 |
 
 ### 决策 2：跨 sibling port 同一 recipient flow 重复发送
 
@@ -125,7 +125,7 @@ WireGuard 协议自带重放保护：
 - **决策 2：倾向 2B**。同一 recipient flow 的重复对 WG 没有收益，共享 `sentTo` 改动小、直接满足 T12；需要补"第一份失败后尝试下一候选"的测试。
 - **决策 3：倾向 3C**。relay 层重点处理广播/多 flow 放大；同一 flow 的重复交给 WG 重放保护，避免全局 packet-hash 误丢合法重传。
 
-**已落地**：2B（`9a33382` + `6652f87`）、3C（`908fca7` + `cf933a2`）、1B/1C 的计数与收窄（`404f382`）。1C 的“禁止盲扇出/无 flow 丢弃”未实施；全失败广播行为见 `RELAY-FAILURE-DECISION.md` §8。
+**已落地**：2B（`9a33382` + `6652f87`）、3C（`908fca7` + `cf933a2`）、1B/1C 的计数与收窄（`404f382`）、全失败 drop+count（`ff80f67`）。全失败行为详见 `RELAY-FAILURE-DECISION.md` §8。
 
 ## 5. 实施后的副本数事实
 
@@ -135,7 +135,7 @@ WireGuard 协议自带重放保护：
 | 跨 sibling port 同一 recipient flow | **1**（成功后才去重） | 共享 `sentTo`；失败不置位，下一 sibling 可重试 |
 | 同一 `deliver(sp)` 内重复 `host:port` | **1** | `sentTo` 单次内去重 |
 | unicast `SendFrom` 精确 flow | 每目标 1 份，**不做 host 去重** | `Relay.SendFrom` 未改 |
-| 所有 sibling 发送都失败 | 触发广播回退（当前行为） | 2B follow-up：失败不置位；是否改为 drop+count 待决策 |
+| 所有 sibling 发送都失败 | **0 份 + 计数** | decision B（`ff80f67`）：有候选但全失败 → drop+count，不广播；无候选 bootstrap 才广播 |
 
 补充：
 - 广播回退的 host 去重选择“最近 seen”的 endpoint；CGNAT 同 host 多映射存在选错端口/可达性下降的风险。
