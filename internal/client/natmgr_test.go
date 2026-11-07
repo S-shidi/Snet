@@ -684,3 +684,137 @@ func TestReclaimWaitsForPendingTeardown(t *testing.T) {
 		t.Fatalf("final mapping = %+v, %v; want new mapping %+v", got, ok, newRes)
 	}
 }
+
+func startCtlServer(t *testing.T, d *Daemon, token string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	srvCh := make(chan *http.Server, 1)
+	go func() {
+		_ = ServeCtl(d, token, addr, func(s *http.Server) { srvCh <- s })
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conn, err := net.Dial("tcp", addr)
+		if err == nil {
+			_ = conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ctl server did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Cleanup(func() {
+		req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/ctl/shutdown", nil)
+		req.Header.Set("X-Ctl-Token", token)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+		select {
+		case s := <-srvCh:
+			_ = s.Close()
+		case <-time.After(2 * time.Second):
+		}
+	})
+	return addr
+}
+
+func TestCtlSetNATMappingTearsDownOnDisable(t *testing.T) {
+	d, cfgPath := newTestDaemon(t)
+	f := newFakeUPnPService(t, false)
+	const port = 51820
+	d.nat.claim(port)
+	d.nat.setPort(port, natResult{
+		externalIP:   "203.0.113.10",
+		externalPort: port,
+		via:          "upnp",
+		upnpURL:      f.url(),
+		upnpKind:     "ig2",
+	}, true)
+
+	addr := startCtlServer(t, d, "test-token")
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/ctl/nat", bytes.NewBufferString(`{"enabled":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Ctl-Token", "test-token")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 204 (body %s)", resp.StatusCode, body)
+	}
+	if got := f.actionCount("DeletePortMapping"); got != 1 {
+		t.Fatalf("DeletePortMapping calls = %d, want 1", got)
+	}
+	if got := f.deleted(); len(got) != 1 || got[0] != port {
+		t.Fatalf("deleted ports = %v, want [%d]", got, port)
+	}
+	cfg, err := LoadConfigAt(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NATMapping == nil || *cfg.NATMapping {
+		t.Fatalf("persisted NATMapping = %v, want false", cfg.NATMapping)
+	}
+	cur := d.Config()
+	if cur.NATMapping == nil || *cur.NATMapping {
+		t.Fatalf("in-memory NATMapping = %v, want false", cur.NATMapping)
+	}
+}
+
+func TestCtlSetNATMappingEnablePersistsWithoutTeardown(t *testing.T) {
+	d, cfgPath := newTestDaemon(t)
+	f := newFakeUPnPService(t, false)
+	const port = 51820
+
+	off := false
+	d.mu.Lock()
+	d.cfg.NATMapping = &off
+	d.mu.Unlock()
+	d.nat.setEnabled(false)
+	d.nat.claim(port)
+	d.nat.setPort(port, natResult{
+		externalIP:   "203.0.113.10",
+		externalPort: port,
+		via:          "upnp",
+		upnpURL:      f.url(),
+		upnpKind:     "ig2",
+	}, true)
+
+	addr := startCtlServer(t, d, "test-token")
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/ctl/nat", bytes.NewBufferString(`{"enabled":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Ctl-Token", "test-token")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 204 (body %s)", resp.StatusCode, body)
+	}
+	if got := f.actionCount("DeletePortMapping"); got != 0 {
+		t.Fatalf("enable issued %d DeletePortMapping calls, want 0", got)
+	}
+	cfg, err := LoadConfigAt(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NATMapping == nil || !*cfg.NATMapping {
+		t.Fatalf("persisted NATMapping = %v, want true", cfg.NATMapping)
+	}
+}
