@@ -2813,3 +2813,83 @@ func TestAdminRemoveNodeClearsRelayIndexes(t *testing.T) {
 	}
 	assertNodeRelayIndexesCleared(t, net3.store, ns, net3.b.ID, flow)
 }
+
+func TestAdminDeleteDeviceReleasesPortAndClearsIndexes(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	ns := s.networks[net3.a.NetworkID]
+	s.mu.Lock()
+	port := ns.nodePorts[net3.b.ID]
+	s.mu.Unlock()
+	if port == 0 {
+		t.Fatal("B has no per-node port")
+	}
+	flow := seedNodeRelayIndexes(t, s, ns, net3.b.ID)
+
+	var released []int
+	s.SetRelayRelease(func(p int) error {
+		released = append(released, p)
+		return nil
+	})
+
+	if err := s.AdminDeleteDevice("device-b-9501"); err != nil {
+		t.Fatalf("AdminDeleteDevice: %v", err)
+	}
+
+	s.mu.Lock()
+	if got := ns.nodePorts[net3.b.ID]; got != 0 {
+		s.mu.Unlock()
+		t.Fatalf("nodePorts[%s] = %d, want 0", net3.b.ID, got)
+	}
+	if got := s.portToNode[port]; got != "" {
+		s.mu.Unlock()
+		t.Fatalf("portToNode[%d] = %q, want empty", port, got)
+	}
+	if s.netByPort[port] != nil {
+		s.mu.Unlock()
+		t.Fatalf("netByPort[%d] still present", port)
+	}
+	s.mu.Unlock()
+	if len(released) != 1 || released[0] != port {
+		t.Fatalf("relayRelease calls = %v, want [%d]", released, port)
+	}
+	assertNodeRelayIndexesCleared(t, s, ns, net3.b.ID, flow)
+}
+
+func TestReviveNodeClearsRelayIndexes(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	ns := s.networks[net3.a.NetworkID]
+	const dupID = "dup-node-1"
+	s.mu.Lock()
+	ns.nodes[dupID] = &protocol.Node{
+		ID:        dupID,
+		NetworkID: ns.n.ID,
+		IP:        "10.88.0.99",
+		PublicKey: testKey(40),
+		DeviceID:  "device-b-9501",
+		LastSeen:  1,
+	}
+	ns.nodes[net3.b.ID].LastSeen = time.Now().Unix()
+	s.mu.Unlock()
+	flow := seedNodeRelayIndexes(t, s, ns, dupID)
+
+	info, err := s.NetworkInfo(net3.aTok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rj, err := s.Join(info.ID, info.PairingCode, testKey(41), "device-b-9501")
+	if err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	if rj.NodeID != net3.b.ID {
+		t.Fatalf("revived node %s, want %s", rj.NodeID, net3.b.ID)
+	}
+	s.mu.Lock()
+	_, stillThere := ns.nodes[dupID]
+	s.mu.Unlock()
+	if stillThere {
+		t.Fatalf("duplicate node %s not removed", dupID)
+	}
+	assertNodeRelayIndexesCleared(t, s, ns, dupID, flow)
+}
