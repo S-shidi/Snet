@@ -361,4 +361,8 @@ AdminDeleteDevice / reviveNode 清理（2026-11-07）：
 - `TestReviveNodeClearsRelayIndexes`：同 device 重复节点被 revive 删除时清全部 relay/host 索引。
 - 两处复用 `clearNodeRelayIndexesLocked`；`AdminDeleteDevice` 同时补 `releaseNodePortLocked`（修复同类端口泄漏）。commit `cc4f0c2`。
 
+Pending 跨重启持久化（2026-11-07）：
+
+- `TestPendingPersistsAcrossRestart`：`NewStoreAt` 创建 pending → `Close` → 同路径重开；`PendingStatus` 仍为 pending，`OwnerApprove` 成功并返回完整凭据/IP。commit `563049c`。
+
 结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Web 打包、Android 与发布链路仍待补缺失目录/工具后再验证。
