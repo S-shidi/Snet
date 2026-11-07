@@ -2652,6 +2652,8 @@ func (s *Store) reviveNode(ns *networkState, host *protocol.Node, publicKey, dev
 	delete(ns.relayFlowBadUntil, host.ID)
 	for id, n := range ns.nodes {
 		if n.ID != host.ID && n.DeviceID == deviceID {
+			s.releaseNodePortLocked(ns, id)
+			s.clearNodeRelayIndexesLocked(ns, id)
 			delete(ns.nodes, id)
 			delete(ns.relayFlowBadUntil, id)
 			if err := s.deleteNode(ns.n.ID, id); err != nil {
@@ -4962,6 +4964,8 @@ func (s *Store) AdminDeleteDevice(deviceID string) error {
 	for nid, ns := range s.networks {
 		for nodeID, n := range ns.nodes {
 			if n.DeviceID == deviceID {
+				s.releaseNodePortLocked(ns, nodeID)
+				s.clearNodeRelayIndexesLocked(ns, nodeID)
 				delete(ns.nodes, nodeID)
 				for h, te := range s.byToken {
 					if te.NetworkID == nid && te.NodeID == nodeID {
