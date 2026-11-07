@@ -395,3 +395,11 @@ PathManager DATA 低优先级来源与 relay 回退（2026-11-07）：
 - 发送失败回退 relay：`TestPathManagerDirectSendFailureFallsBack` 让 `pm.directConn` 指向已关闭的 UDP conn；`sendToPeer` 的 `writeFrameTo` 失败后 `sendDrops` 增加，`markDirectFailed` 将 `dp.ready=false` 并清空 `lastProbe`，随后同一调用立即从 relay link 发出 DATA。注意 `markDirectFailed` 不清 `dp.addr`。
 - 测试命令：`go test ./internal/client -run 'TestPathManagerSymmetricNATStaysRelay' -v`、`go test ./internal/client -run 'TestPathManagerDirectSendFailureFallsBack' -v` 全绿；两条 `-race -count=20` 全绿；`go test ./internal/client` 全绿。commit `cd4ebb0`。
 - 未发现对称 NAT 保持 relay 或发送失败回退缺口。
+
+PathManager 升级探测与 Status 语义（2026-11-07）：
+
+- `markDirectFailed` 不清 `dp.addr` 的实际后果：direct 写失败后 `dp.ready=false`，但同一来源的 ACK 到达时，`noteDirectPeer` 的 `dp.addr != nil && sameUDPAddr` 分支会快速把 `dp.ready` 置回 true；这是快速恢复路径（入站 ACK 证明该来源可达），也可能在出站持续失败时反复重试。即使清空 `dp.addr`，`noteDirectPeer` 仍会因 `markReady=true` 重新学习该来源并置 ready，因此清 addr 不能阻止恢复；atlas 只要求“发送失败回退 relay”，未要求清 addr。
+- Status path 语义：`dp.ready && dp.addr != nil` → `direct`（并输出 `kind`）；`dp.addr != nil && !ready` → `probing`；`dp.addr == nil` → `discovering`。atlas §3.2 只枚举 `direct|probing|discovering`，未定义边界；当前代码语义与 `TestPathManagerSymmetricNATStaysRelay` 的 `discovering` 断言一致，无发现不符。
+- 10s 升级探测：`maintainDirect` 在 `dp.ready && dp.addr != nil` 时，用共享的 `dp.lastProbe` 判定，`lastProbe.IsZero()` 或距上次 >= `directUpgradeInterval`（10s）才向第一个 `pathRank` 更高的候选发 `DIRECT_PROBE`，并更新 `dp.lastProbe`；没有独立 `lastUpgrade` 字段。
+- 验证：`TestPathManagerUpgradesToHigherPriorityCandidate` 在 public ready、`lastProbe=now-11s` 时收到 LAN `DIRECT_PROBE`，模拟 LAN ACK 后 `dp.kind=lan`、`dp.addr` 切到 LAN；`TestPathManagerDoesNotUpgradeBeforeInterval` 在 `lastProbe=now-5s` 时 `directSendFrames` 不增长且 LAN 无帧。两条测试 `-race -count=20` 全绿；`go test ./internal/client` 全绿。commit `8124e15`。
+- 未发现 10s 升级探测缺口。
