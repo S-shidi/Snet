@@ -1008,6 +1008,46 @@ func TestRelayRouteFansOutAmbiguousSharedSender(t *testing.T) {
 	}
 }
 
+// TestRelayRouteFansOutFromEverySiblingNodePort verifies that a shared-host
+// sender with no exact flow is delivered from each sibling's own node port,
+// not merely to each sibling's flow. The sendRec port field is asserted here;
+// TestRelayRouteFansOutAmbiguousSharedSender only checks the target flow.
+func TestRelayRouteFansOutFromEverySiblingNodePort(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.ctrlHost[net3.b.ID] = "39.180.139.85"
+	ns.ctrlHost[net3.c.ID] = "39.180.139.85"
+	for _, id := range []string{net3.b.ID, net3.c.ID} {
+		ns.nodes[id].Endpoint = ""
+		ns.nodes[id].EndpointV6 = ""
+	}
+	s.mu.Unlock()
+	net3.flows[net3.bPort] = []string{"223.160.209.21:30001"}
+	net3.flows[net3.cPort] = []string{"223.160.209.21:30002"}
+
+	payload := []byte("ambiguous-sender-port-check")
+	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload)
+
+	want := []sendRec{
+		{port: net3.bPort, to: "223.160.209.21:30001", data: string(payload)},
+		{port: net3.cPort, to: "223.160.209.21:30002", data: string(payload)},
+	}
+	for _, w := range want {
+		found := false
+		for _, got := range net3.rec.sends {
+			if got == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("fanout did not send from node port %d to %s; sends=%v", w.port, w.to, net3.rec.sends)
+		}
+	}
+}
+
 // TestPruneStaleRelayFlowsClearsHint verifies that an idle NAT mapping is
 // removed from every relay index, including the authoritative per-node hint
 // peers use for direct punching.
