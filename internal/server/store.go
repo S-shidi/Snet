@@ -1537,7 +1537,9 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 			if recipientFlows[fl] {
 				ok := s.relaySendFrom(senderPort, fl, data)
 				log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
-				sentTo[fl] = true
+				if ok {
+					sentTo[fl] = true
+				}
 				if !ok {
 					// Decision A: drop the failed exact-flow hint so the next
 					// packet can re-attribute instead of retrying a dead mapping.
@@ -1558,7 +1560,9 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 			if recipientHosts[nh] {
 				ok := s.relaySendFrom(senderPort, fl, data)
 				log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
-				sentTo[fl] = true
+				if ok {
+					sentTo[fl] = true
+				}
 				if !ok {
 					// A failed send means the flow went stale between lookup and
 					// write; drop the host so a later host-level send is not
@@ -1573,7 +1577,9 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 				// copies are dropped by their own WG session.
 				ok := s.relaySendFrom(senderPort, fl, data)
 				log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v (shared-host fan-out)", port, recipientID, senderPort, fl, ok)
-				sentTo[fl] = true
+				if ok {
+					sentTo[fl] = true
+				}
 				continue
 			}
 		}

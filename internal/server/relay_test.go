@@ -1303,6 +1303,53 @@ func TestRelayRouteSharesSentToAcrossSiblings(t *testing.T) {
 	}
 }
 
+// TestRelayRouteSharedSentToRetriesNextSiblingOnFailure verifies the 2B
+// follow-up: a failed send must not mark the flow as sent in the shared map,
+// so the next sibling can retry it.
+func TestRelayRouteSharedSentToRetriesNextSiblingOnFailure(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.ctrlHost[net3.b.ID] = "39.180.139.85"
+	ns.ctrlHost[net3.c.ID] = "39.180.139.85"
+	for _, id := range []string{net3.b.ID, net3.c.ID} {
+		ns.nodes[id].Endpoint = ""
+		ns.nodes[id].EndpointV6 = ""
+	}
+	s.mu.Unlock()
+
+	const rf = "223.160.209.21:32001"
+	net3.flows[net3.bPort] = []string{rf}
+	net3.flows[net3.cPort] = []string{rf}
+
+	attempts := 0
+	successes := 0
+	s.SetRelaySend(func(port int, to string, data []byte) bool {
+		if to != rf {
+			return true
+		}
+		attempts++
+		// Candidate map iteration order is not stable; fail the first
+		// attempt and succeed the second, which is the retry semantics under
+		// test.
+		if attempts == 1 {
+			return false
+		}
+		successes++
+		return true
+	})
+
+	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", []byte("retry-next-sibling"))
+
+	if attempts != 2 {
+		t.Fatalf("same flow attempted %d times, want 2 (B fail, C retry)", attempts)
+	}
+	if successes != 1 {
+		t.Fatalf("same flow succeeded %d times, want 1", successes)
+	}
+}
+
 // TestRelayRouteNarrowsSharedFanoutAndCountsFallback verifies decision 1B+1C:
 // the shared-sender candidate loop only targets siblings sharing the sender's
 // host (never an unrelated E), while a recipient with no live flow still gets
@@ -1550,8 +1597,8 @@ func TestRelayRouteExactFlowFailureDeletesHintAndReattributes(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("dead exact flow attempted %d times on first trigger, want 1; sends=%v", attempts, net3.rec.sends)
 	}
-	if fanned != 0 {
-		t.Fatalf("broadcast fallback called %d times on first trigger, want 0; sends=%v", fanned, net3.rec.sends)
+	if fanned != 1 {
+		t.Fatalf("broadcast fallback called %d times on first trigger, want 1 (failed send no longer marks sentTo); sends=%v", fanned, net3.rec.sends)
 	}
 
 	// Second trigger: the dead flow must not be retried; with no remaining
@@ -1560,8 +1607,8 @@ func TestRelayRouteExactFlowFailureDeletesHintAndReattributes(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("dead exact flow attempted again on second trigger: attempts=%d; sends=%v", attempts, net3.rec.sends)
 	}
-	if fanned != 1 {
-		t.Fatalf("broadcast fallback calls after second trigger = %d, want 1; sends=%v", fanned, net3.rec.sends)
+	if fanned != 2 {
+		t.Fatalf("broadcast fallback calls after second trigger = %d, want 2; sends=%v", fanned, net3.rec.sends)
 	}
 }
 
