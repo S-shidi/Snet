@@ -5,9 +5,16 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type fakeUpnp struct {
@@ -459,4 +466,221 @@ func TestMappedEndpointFor(t *testing.T) {
 			t.Fatalf("mappedEndpointFor = %q, want empty", got)
 		}
 	})
+}
+
+type fakeUPnPService struct {
+	server        *httptest.Server
+	mu            sync.Mutex
+	actions       []string
+	deletedPorts  []int
+	deleteStarted chan struct{}
+	releaseDelete chan struct{}
+}
+
+func newFakeUPnPService(t *testing.T, blockDelete bool) *fakeUPnPService {
+	t.Helper()
+	f := &fakeUPnPService{}
+	if blockDelete {
+		f.deleteStarted = make(chan struct{}, 1)
+		f.releaseDelete = make(chan struct{})
+	}
+	f.server = httptest.NewServer(http.HandlerFunc(f.handle))
+	t.Cleanup(f.server.Close)
+	return f
+}
+
+func (f *fakeUPnPService) url() string { return f.server.URL + "/rootDesc.xml" }
+
+func (f *fakeUPnPService) actionCount(action string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, a := range f.actions {
+		if a == action {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *fakeUPnPService) deleted() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int(nil), f.deletedPorts...)
+}
+
+func (f *fakeUPnPService) handle(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/rootDesc.xml":
+		w.Header().Set("Content-Type", "text/xml")
+		_, _ = io.WriteString(w, fakeUPnPRootDesc)
+		return
+	case "/control":
+		body, _ := io.ReadAll(r.Body)
+		action := strings.Trim(r.Header.Get("SOAPACTION"), `"`)
+		if i := strings.LastIndex(action, "#"); i >= 0 {
+			action = action[i+1:]
+		}
+		f.mu.Lock()
+		f.actions = append(f.actions, action)
+		if action == "DeletePortMapping" {
+			if p := soapPort(body, "NewExternalPort"); p != 0 {
+				f.deletedPorts = append(f.deletedPorts, p)
+			}
+		}
+		started := f.deleteStarted
+		release := f.releaseDelete
+		f.mu.Unlock()
+		if action == "DeletePortMapping" && started != nil {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			if release != nil {
+				<-release
+			}
+		}
+		w.Header().Set("Content-Type", "text/xml")
+		if action == "GetExternalIPAddress" {
+			_, _ = io.WriteString(w, `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetExternalIPAddressResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:2"><NewExternalIPAddress>203.0.113.10</NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>`)
+			return
+		}
+		_, _ = io.WriteString(w, `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:`+action+`Response xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:2"/></s:Body></s:Envelope>`)
+		return
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func soapPort(body []byte, tag string) int {
+	s := string(body)
+	start := strings.Index(s, "<"+tag+">")
+	if start < 0 {
+		return 0
+	}
+	start += len(tag) + 2
+	end := strings.Index(s[start:], "</"+tag+">")
+	if end < 0 {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(s[start : start+end]))
+	return n
+}
+
+const fakeUPnPRootDesc = `<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:2</deviceType>
+    <friendlyName>fake</friendlyName>
+    <manufacturer>fake</manufacturer>
+    <UDN>uuid:fake</UDN>
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:WANIPConnection:2</serviceType>
+        <serviceId>urn:upnp-org:serviceId:WANIPConnection2</serviceId>
+        <SCPDURL>/scpd.xml</SCPDURL>
+        <controlURL>/control</controlURL>
+        <eventSubURL>/event</eventSubURL>
+      </service>
+    </serviceList>
+  </device>
+</root>`
+
+func TestUnclaimTearsDownUPnPMapping(t *testing.T) {
+	f := newFakeUPnPService(t, false)
+	n := newNatManager(&Config{}, context.Background())
+	const port = 51820
+	n.claim(port)
+	n.setPort(port, natResult{
+		externalIP:   "203.0.113.10",
+		externalPort: port,
+		via:          "upnp",
+		upnpURL:      f.url(),
+		upnpKind:     "ig2",
+	}, true)
+
+	n.unclaim(port)
+	n.waitPending(port)
+
+	if got := f.actionCount("DeletePortMapping"); got != 1 {
+		t.Fatalf("DeletePortMapping calls = %d, want 1", got)
+	}
+	if got := f.deleted(); len(got) != 1 || got[0] != port {
+		t.Fatalf("deleted ports = %v, want [%d]", got, port)
+	}
+}
+
+func TestUnclaimSkipsTeardownForNatPMPAndPCP(t *testing.T) {
+	f := newFakeUPnPService(t, false)
+	n := newNatManager(&Config{}, context.Background())
+	for _, via := range []string{"natpmp", "pcp"} {
+		const port = 51820
+		n.claim(port)
+		n.setPort(port, natResult{
+			externalIP:   "203.0.113.10",
+			externalPort: port,
+			via:          via,
+			upnpURL:      f.url(),
+			upnpKind:     "ig2",
+		}, true)
+		n.unclaim(port)
+		n.waitPending(port)
+	}
+	if got := f.actionCount("DeletePortMapping"); got != 0 {
+		t.Fatalf("NAT-PMP/PCP unclaim issued %d DeletePortMapping calls, want 0", got)
+	}
+}
+
+func TestReclaimWaitsForPendingTeardown(t *testing.T) {
+	f := newFakeUPnPService(t, true)
+	n := newNatManager(&Config{}, context.Background())
+	const port = 51820
+	n.claim(port)
+	n.setPort(port, natResult{
+		externalIP:   "203.0.113.10",
+		externalPort: port,
+		via:          "upnp",
+		upnpURL:      f.url(),
+		upnpKind:     "ig2",
+	}, true)
+
+	n.unclaim(port)
+	select {
+	case <-f.deleteStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("DeletePortMapping did not start")
+	}
+
+	n.claim(port)
+	waitDone := make(chan struct{})
+	go func() {
+		n.waitPending(port)
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+		t.Fatal("waitPending returned before old teardown finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(f.releaseDelete)
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitPending did not return after teardown finished")
+	}
+
+	newRes := natResult{
+		externalIP:   "203.0.113.11",
+		externalPort: 51821,
+		via:          "upnp",
+		upnpURL:      f.url(),
+		upnpKind:     "ig2",
+	}
+	n.setPort(port, newRes, true)
+	got, ok := n.mapping(port)
+	if !ok || got != newRes {
+		t.Fatalf("final mapping = %+v, %v; want new mapping %+v", got, ok, newRes)
+	}
 }
