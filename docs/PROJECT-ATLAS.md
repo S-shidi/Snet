@@ -2,21 +2,16 @@
 
 > 这是跨会话的项目记忆索引，不是完整设计文档。
 > 读取顺序：本文件 → 匹配的 `.opencode/skills/snet-*` → 代码/测试。
-> 维护规则见 §8；结构漂移用 `./scripts/project-audit.sh` 检查。
+> 维护规则见 §8；结构漂移用 git status + 人工核对（审计脚本已随收缩移出）。
 
 ## 0. 新鲜度与真相源
 
 ```text
 last_verified:        2026-11-07
 verified_code_commit: c379790（快照导入基线 3fb8b97 起算，上游 c379790 未比对）
-verified_worktree:     clean（v1.3.0 release commit `c379790`；Go/Android/版本检查已通过，VPS + NAS 已部署）
+verified_worktree:     快照收缩版，git status --porcelain 空
 state:                服务端 + snetd + Web 快照版；Android/Docker 部署/CI/产物已移出；VERSION 缺失，版本锚点不可验证；Go 工具链缺失，go build/test/vet 标待验证
-verified_with:        go test ./...; go vet ./...; go build ./...;
-                      go test -race ./...;
-                      ./scripts/check-version.sh; sh -n scripts/build-release.sh;
-                      sh -n scripts/rollout-vps.sh; ./scripts/project-audit.sh
-                      （2026-10-27 本地验证通过；Windows NSIS、Android signed release、
-                      Docker/cargo、真机 Relay v2 未验证）
+verified_with:        2026-11-07 收缩后：git log 干净；Go build/vet/test 待工具链；Web 类型检查借外部 tsc v5.9.3 通过
 
 `verified_code_commit` 是最后一次跑完整验证的**代码**提交，不要求等于 HEAD；
 只改文档/atlas 的提交不会让它失效。若代码路径有变化，必须重新验证并更新该字段。
@@ -223,7 +218,7 @@ Go 工具链注意：本环境 `go` 不在 PATH，`/tmp/opencode/golang/go/bin/g
 每次任务开始时：
 
 1. 读本文件 + 一个匹配的领域 skill。
-2. 跑 `./scripts/project-audit.sh`，先看 worktree、包列表、缺失文件和 mode 变化。
+2. 用 `git status --porcelain` 确认工作区干净。
 3. 用 `explore` 子代理做广度搜索；主上下文只保留决策和结论。
 
 每次任务结束时：
@@ -232,7 +227,7 @@ Go 工具链注意：本环境 `go` 不在 PATH，`/tmp/opencode/golang/go/bin/g
 2. 若领域 skill 的事实过时，修正 skill；不要只改 atlas。
 3. 在 §10 追加一行变更记录（日期、改动、验证命令）。
 4. 更新 §0 的 `last_verified`、`verified_code_commit`（仅代码变化时）、`state`。
-5. 再次运行 `./scripts/project-audit.sh` 和至少一个相关验证命令。
+5. 至少跑一个相关验证命令（Go 可用时 `go test ./...`；Web 用外部 tsc）。
 6. 不确定的事实标 `待验证` 并写出验证命令，不要写成结论。
 
 上下文控制：
@@ -244,14 +239,9 @@ Go 工具链注意：本环境 `go` 不在 PATH，`/tmp/opencode/golang/go/bin/g
 
 ## 9. 漂移审计
 
-```bash
-./scripts/project-audit.sh
-```
-
-检查内容：Git HEAD/worktree、Go 包列表、关键文件存在性、服务端/`ctl` 路由注册数、
-skill 列表、`.archify` 图链接、`git diff --check`、mode change。
-
-它不替代测试；结构审计后仍要跑 §6 中与改动相关的验证。
+审计脚本已随收缩移出。当前用 `git status --porcelain`、
+`find cmd internal -name '*.go' | wc -l`、`ls shared/web` 人工核对结构；
+Go 工具链可用后再引入脚本化审计。
 
 ## 10. 变更日志
 
