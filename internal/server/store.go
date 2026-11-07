@@ -62,6 +62,7 @@ const (
 	lastActThrot    = 60 * time.Second // throttle network activity DB writes
 	netAliveTTL     = 90 * time.Second // a network is "online" if active within this window
 	hostStaleTTL    = 5 * time.Minute  // reverse-index host idle this long is pruned
+	relayFlowBadTTL = 30 * time.Second // suppress broadcast after an exact-flow hint is deleted
 	idAlphabet      = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 	tokenBytes      = 32
 	networkIDLen    = 8
@@ -162,6 +163,9 @@ type networkState struct {
 	// relayFlowByNode is the most recent attributed relay flow per node,
 	// stored as the full "host:port" NAT mapping ("39.180.139.85:4302").
 	relayFlowByNode map[string]string
+	// relayFlowBadUntil suppresses broadcast fallback for a recipient whose
+	// exact-flow hint was just deleted after a failed send. Keyed by node ID.
+	relayFlowBadUntil map[string]time.Time
 	// flowByNode is the reverse index at full-address granularity: the exact
 	// "host:port" NAT mapping -> node ID. Unlike nodeByHost (host only), it
 	// distinguishes nodes that share a public IP behind a common egress (e.g.
@@ -418,19 +422,20 @@ func (s *Store) load() error {
 						failCount:   r.FailCount,
 						lockedUntil: r.LockedUntil,
 					},
-					nodes:           make(map[string]*protocol.Node),
-					pending:         make(map[string]*pendingNode),
-					ipam:            r.IPAM,
-					relayPort:       r.RelayPort,
-					lastActivityAt:  lastAct,
-					subnetBase:      base,
-					relaySeen:       make(map[string]time.Time),
-					ctrlHost:        make(map[string]string),
-					hostSeen:        make(map[string]time.Time),
-					nodeByHost:      make(map[string]map[string]bool),
-					relayFlowByNode: make(map[string]string),
-					flowByNode:      make(map[string]string),
-					nodePorts:       make(map[string]int),
+					nodes:             make(map[string]*protocol.Node),
+					pending:           make(map[string]*pendingNode),
+					ipam:              r.IPAM,
+					relayPort:         r.RelayPort,
+					lastActivityAt:    lastAct,
+					subnetBase:        base,
+					relaySeen:         make(map[string]time.Time),
+					ctrlHost:          make(map[string]string),
+					hostSeen:          make(map[string]time.Time),
+					nodeByHost:        make(map[string]map[string]bool),
+					relayFlowByNode:   make(map[string]string),
+					flowByNode:        make(map[string]string),
+					relayFlowBadUntil: make(map[string]time.Time),
+					nodePorts:         make(map[string]int),
 				}
 				s.networks[r.ID] = ns
 			}
@@ -1073,6 +1078,16 @@ func (s *Store) RelayFanoutFallbacks() uint64 {
 	return s.relayFanoutFallbacks
 }
 
+// relayFlowBadActive reports whether a recipient's post-hint-deletion
+// broadcast suppression window is still active. Callers hold s.mu.
+func relayFlowBadActive(ns *networkState, recipientID string) bool {
+	if ns == nil {
+		return false
+	}
+	until, ok := ns.relayFlowBadUntil[recipientID]
+	return ok && time.Now().Before(until)
+}
+
 // relayEnabled reports whether relay mode is on.
 func (s *Store) relayEnabled() bool {
 	return s.relayHost != "" && s.relayCount > 0
@@ -1550,6 +1565,10 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 					if ns.flowByNode[fl] == recipientID {
 						delete(ns.flowByNode, fl)
 					}
+					if ns.relayFlowBadUntil == nil {
+						ns.relayFlowBadUntil = make(map[string]time.Time)
+					}
+					ns.relayFlowBadUntil[recipientID] = time.Now().Add(relayFlowBadTTL)
 				}
 				continue
 			}
@@ -1645,10 +1664,11 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 			}
 		}
 		if !sent {
-			if attempted {
-				// Decision B: the recipient had candidate flows but every
-				// sibling send failed. Drop and count instead of broadcasting
-				// to unrelated endpoints.
+			if attempted || relayFlowBadActive(ns, recipientID) {
+				// Decision B / TTL: candidate flows existed but every sibling
+				// send failed, or the recipient's exact-flow hint was just
+				// deleted and the suppression window is still active. Drop and
+				// count instead of broadcasting to unrelated endpoints.
 				s.relayFanoutFallbacks++
 				return false
 			}
@@ -1665,9 +1685,10 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 	if sentNow {
 		return true
 	}
-	if attemptedNow {
-		// Decision B: candidate flows existed but all sends failed; drop and
-		// count instead of broadcasting.
+	if attemptedNow || relayFlowBadActive(ns, recipientID) {
+		// Decision B / TTL: candidate flows existed but all sends failed, or
+		// the recipient's exact-flow hint was just deleted and the suppression
+		// window is still active. Drop and count instead of broadcasting.
 		s.relayFanoutFallbacks++
 		return false
 	}
@@ -2110,6 +2131,11 @@ func (s *Store) pruneStaleRelayFlowsLocked(ns *networkState, now time.Time) {
 			delete(ns.relayFlowByNode, id)
 		}
 	}
+	for id, until := range ns.relayFlowBadUntil {
+		if !now.Before(until) {
+			delete(ns.relayFlowBadUntil, id)
+		}
+	}
 }
 
 // pruneStaleHostsLocked removes reverse-index hosts that have seen no
@@ -2315,17 +2341,18 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 			remaining: codeMaxUse,
 			expiresAt: now.Add(codeTTL),
 		},
-		nodes:           make(map[string]*protocol.Node),
-		pending:         make(map[string]*pendingNode),
-		lastActivityAt:  now.Unix(),
-		subnetBase:      base,
-		relaySeen:       make(map[string]time.Time),
-		ctrlHost:        make(map[string]string),
-		hostSeen:        make(map[string]time.Time),
-		nodeByHost:      make(map[string]map[string]bool),
-		relayFlowByNode: make(map[string]string),
-		flowByNode:      make(map[string]string),
-		nodePorts:       make(map[string]int),
+		nodes:             make(map[string]*protocol.Node),
+		pending:           make(map[string]*pendingNode),
+		lastActivityAt:    now.Unix(),
+		subnetBase:        base,
+		relaySeen:         make(map[string]time.Time),
+		ctrlHost:          make(map[string]string),
+		hostSeen:          make(map[string]time.Time),
+		nodeByHost:        make(map[string]map[string]bool),
+		relayFlowByNode:   make(map[string]string),
+		flowByNode:        make(map[string]string),
+		relayFlowBadUntil: make(map[string]time.Time),
+		nodePorts:         make(map[string]int),
 	}
 	s.netSeq++
 	ns.seq = s.netSeq
@@ -3874,17 +3901,18 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, s
 			codeHash:  hashCode(code),
 			remaining: codeUnlimited,
 		},
-		nodes:           make(map[string]*protocol.Node),
-		pending:         make(map[string]*pendingNode),
-		lastActivityAt:  now.Unix(),
-		subnetBase:      base,
-		relaySeen:       make(map[string]time.Time),
-		ctrlHost:        make(map[string]string),
-		hostSeen:        make(map[string]time.Time),
-		nodeByHost:      make(map[string]map[string]bool),
-		relayFlowByNode: make(map[string]string),
-		flowByNode:      make(map[string]string),
-		nodePorts:       make(map[string]int),
+		nodes:             make(map[string]*protocol.Node),
+		pending:           make(map[string]*pendingNode),
+		lastActivityAt:    now.Unix(),
+		subnetBase:        base,
+		relaySeen:         make(map[string]time.Time),
+		ctrlHost:          make(map[string]string),
+		hostSeen:          make(map[string]time.Time),
+		nodeByHost:        make(map[string]map[string]bool),
+		relayFlowByNode:   make(map[string]string),
+		flowByNode:        make(map[string]string),
+		relayFlowBadUntil: make(map[string]time.Time),
+		nodePorts:         make(map[string]int),
 	}
 	s.netSeq++
 	ns.seq = s.netSeq
