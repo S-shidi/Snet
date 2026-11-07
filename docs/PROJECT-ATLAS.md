@@ -213,6 +213,11 @@ Go 工具链注意：本环境 `go` 不在 PATH，`/tmp/opencode/golang/go/bin/g
 - **NAT 映射测试覆盖**：P0/P1（WAN IP 门禁、unclaim teardown、`/ctl/nat`、协议 fallback）
   已由测试锁定；P2/P3（租约/续期、平台网关解析、`/ctl/status` 接线、失败日志限流窗口、
   `teardownMapping` 的 ig1/ppp 分支）待补。详见 `docs/WORKSPACE-SNAPSHOT-MAP.md`。
+- **Relay v2 直连路径**：单元层已由 pathmanager 测试锁定（候选优先级、10s 升级探测、
+  direct 来源校验、5s ping、15s 回退、发送失败回退、对称 NAT 保持 relay、10s/30s relay
+  重连边界、`peerDirect` 字段）；真实 NAT rebinding、IPv6 防火墙、Docker 临时端口与
+  多 relay 跨实例仍待真机验证。真机验证按 `docs/WORKSPACE-SNAPSHOT-MAP.md`
+  “PathManager 覆盖收口”执行四节点 ping/iperf3/跨 relay 选路。
 - **构建/验证断链**：`scripts/build-web.sh` 输出目录 `deploy/docker/web/` 已移出；
   `shared/web` 无自带 TypeScript；Android 平台文件保留但 `snetbind/` 绑定层缺失。
 

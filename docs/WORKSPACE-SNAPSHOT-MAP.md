@@ -412,3 +412,31 @@ PathManager relay 重连边界（2026-11-07）：
 - 多 link：`maintainRelays` 逐 link 独立处理；超时/静默只清该 link 的 conn/ready/nextDial，healthy link 的 conn/ready/attempt/lastRecv 不变。`pickRelayLocked` 仍返回第一个 ready 且 `lastRecv` 在 30s 内的 link；`sendToPeer` 继续走该 link。
 - 验证：`TestPathManagerHelloTimeoutReconnects`、`TestPathManagerDoesNotReconnectBeforeHelloTimeout`、`TestPathManagerSilentLinkReconnectAfter30s`、`TestPathManagerKeepsLinkBefore30sSilence`、`TestPathManagerReconnectsOnlySilentRelayLink` 全绿；`-race -count=20` 全绿；`go test ./internal/client` 全绿。commit `ed9c0c7`。
 - 未发现 relay 重连边界缺口。
+
+PathManager 覆盖收口（2026-11-07）：
+
+| # | 缺口 | 状态 | 对应测试 |
+|---|---|---|---|
+| #1 | 候选优先级 `lan > ipv6 > public` | 已闭环 | `TestPathManagerCandidatePriority`、`TestPathManagerLowPriorityAckDoesNotOverrideHighPriority` |
+| #2 | 已建立低优先级路径时每 10s 升级探测 | 已闭环 | `TestPathManagerUpgradesToHigherPriorityCandidate`、`TestPathManagerDoesNotUpgradeBeforeInterval` |
+| #3 | direct 帧来源校验正/负向 | 已闭环 | `TestPathManagerRejectsWrongLANPort`、`TestPathManagerRejectsUnknownPublicSource`、`TestPathManagerAllowsPublicPortRebinding`、`TestPathManagerRejectsDirectFrameWhenNoCandidate` |
+| #4 | 5s DIRECT_PING 节奏 | 已闭环 | `TestPathManagerDirectPingCadence`、`TestPathManagerDoesNotPingBeforeInterval` |
+| #5 | direct 发送失败回退 relay | 已闭环 | `TestPathManagerDirectSendFailureFallsBack` |
+| #6 | 对称 NAT/防火墙保持 relay | 已闭环 | `TestPathManagerSymmetricNATStaysRelay` |
+| #7 | 10s HELLO_ACK 超时重拨 | 已闭环 | `TestPathManagerHelloTimeoutReconnects`、`TestPathManagerDoesNotReconnectBeforeHelloTimeout` |
+| #8 | 30s 静默重拨 | 已闭环 | `TestPathManagerSilentLinkReconnectAfter30s`、`TestPathManagerKeepsLinkBefore30sSilence` |
+| #9 | 多 link 只重连失败实例 | 已闭环 | `TestPathManagerReconnectsOnlySilentRelayLink` |
+| #10 | `peerDirect` 全字段 | 已闭环 | `TestPathManagerStatusPeerDirectFields`（direct/probing/discovering 子测试） |
+| #11 | 真实 NAT rebinding/IPv6 防火墙/Docker 临时端口/多 relay 跨实例 | **需真机，待验证** | 建议 `TestRelayV2FourNodeHardware`（未实现）；atlas §7“Relay v2 直连路径” |
+
+补充说明：
+
+- #4 ping 分支：`dp.ready && dp.addr != nil` 时，`dp.lastPing.IsZero()` 或 `now.Sub(dp.lastPing) >= directPingInterval`（5s）才发送 `DIRECT_PING`；`lastPing` 在锁内先更新为 `now`，再实际写 socket。15s 回退由 `sendToPeer` 的 `lastRecv <= directDeadAfter` 判定；`maintainDirect` 在 `>15s` 无接收时清 `ready=false`/`addr=nil`。
+- #10 字段：`path` 为 `direct|probing|discovering`；`kind` 仅在 direct 时输出；`addr` 在 `dp.addr != nil` 时输出；候选地址实际是分开的 `lan`/`ipv6`/`public` 字符串字段，**没有聚合的 `candidates` 数组**；`lastRecvSec` 是相对秒数（`int(now.Sub(lastRecv).Seconds())`），不是 Unix 秒；`peerDirect` 条目仅在 `peerKeys[key]` 非空时出现。
+- `markDirectFailed` 不清 `dp.addr`：写失败后同一来源 ACK 会经 `sameUDPAddr` 分支快速恢复 `ready`；这是快速恢复，但出站持续失败时会反复重试。清 `addr` 也不能阻止，因为 ACK 会重新学习来源。
+- Status 语义边界：`ready && addr != nil` → `direct`；`addr != nil && !ready` → `probing`；`addr == nil` → `discovering`。
+- #11 验证命令（真机，尚未执行）：
+  - 四节点（同 LAN / 公网 / IPv6 / Docker）互 ping：`ping -c 20 <peer>`
+  - 吞吐：`iperf3 -c <peer> -t 30`
+  - 跨 relay：配置两个 `SNET_RELAY_V2_ENDPOINTS`，检查 `curl -s http://127.0.0.1:19432/ctl/status | jq '.relayPath.peerDirect, .relayPath.relayIndex'`
+  - NAT rebinding / IPv6 防火墙 / Docker 临时端口：改变映射后确认 `peerDirect.addr` 更新或回退 relay；不得把本轮单元测试当作真机已验证。
