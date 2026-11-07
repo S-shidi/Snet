@@ -330,4 +330,19 @@ NAT 映射协议优先级验证（2026-11-07）：
 - `TestMapNATPortWith`：UPnP 成功 → `via=upnp`，NAT-PMP/PCP 各 0 次；UPnP 失败 → NAT-PMP；NAT-PMP 失败 → PCP；无 gateway → 返回错误且不 fallback。
 - `mapNATPortWith` 使用 `defaultGW func() string`，仅 UPnP 失败且 gw 为空时调用 `defaultGatewayIP()`，保持原调用时机。
 
+NAT 映射覆盖收口（2026-11-07）：
+
+已闭环（P0/P1）：
+- #2 WAN IP 门禁：`TestMappedEndpointFor`（matching WAN → `externalIP:externalPort`；mismatch/empty observed/no mapping → ""）。
+- #3 unclaim teardown：`TestUnclaimTearsDownUPnPMapping`、`TestUnclaimSkipsTeardownForNatPMPAndPCP`、`TestReclaimWaitsForPendingTeardown`（UPnP Delete 实际发生；NAT-PMP/PCP 不 Delete；`pending` 等待旧 teardown）。
+- #5 POST /ctl/nat：`TestCtlSetNATMappingTearsDownOnDisable`、`TestCtlSetNATMappingEnablePersistsWithoutTeardown`（204；持久化；disable 同步 teardown；enable 不 teardown）。
+- #7 协议 fallback：`TestMapNATPortWith`（UPnP > NAT-PMP > PCP；无 gateway 不 fallback）。
+
+待补（P2/P3）：
+- #1 租约/续期：未断言 `natMapLeaseSec=5m` 进入请求，未测试 `natRenewInterval=2m` 的 loop/续期；阻塞：缺 ticker/clock 注入点。
+- #8 平台网关解析：`gateway_darwin.go` / `gateway_proc.go` / `gateway_other.go` 的 `defaultGatewayIP` 无测试；阻塞：硬编码 `/proc/net/route`、`netstat`，需文件/命令注入点。
+- #4 `/ctl/status.natMapping`：仅测 `natManager.status()`，未测 HTTP `/ctl/status` JSON 接线；阻塞：需完整 ctl 路由测试（可复用 `ServeCtl`）。
+- #6 失败日志限流：只测窗口内重复抑制，未测超过 `natErrorLogInterval=10m` 后重新记录；阻塞：缺 clock 注入点。
+- #9 teardownMapping 平台分支：`ig2` 已验证，`ig1`/`ppp` 分支未测；阻塞：需可注入 client factory 或按 kind 的 fake UPnP service。
+
 结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Web 打包、Android 与发布链路仍待补缺失目录/工具后再验证。
