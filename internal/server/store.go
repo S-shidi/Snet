@@ -2624,9 +2624,13 @@ func latestNodeForDevice(nodes map[string]*protocol.Node, deviceID string) *prot
 func (s *Store) reviveNode(ns *networkState, host *protocol.Node, publicKey, deviceID string, now time.Time) (protocol.JoinResp, error) {
 	host.PublicKey = publicKey
 	host.LastSeen = now.Unix()
+	// A rejoining device must not inherit a stale broadcast-suppression TTL
+	// from its previous membership.
+	delete(ns.relayFlowBadUntil, host.ID)
 	for id, n := range ns.nodes {
 		if n.ID != host.ID && n.DeviceID == deviceID {
 			delete(ns.nodes, id)
+			delete(ns.relayFlowBadUntil, id)
 			if err := s.deleteNode(ns.n.ID, id); err != nil {
 				log.Printf("join: delete stale node %s/%s: %v", ns.n.ID, id, err)
 			}

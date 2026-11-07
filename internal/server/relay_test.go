@@ -1565,6 +1565,35 @@ func TestRelayRouteSuppressesBroadcastAfterHintDeletion(t *testing.T) {
 	}
 }
 
+// TestJoinReviveClearsRelayFlowBadUntil verifies that a rejoining device that
+// revives its existing node does not inherit a stale broadcast-suppression TTL.
+func TestJoinReviveClearsRelayFlowBadUntil(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	info, err := s.NetworkInfo(net3.aTok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.relayFlowBadUntil[net3.b.ID] = time.Now().Add(time.Minute)
+	s.mu.Unlock()
+
+	rj, err := s.Join(info.ID, info.PairingCode, testKey(955), "device-b-9501")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rj.NodeID != net3.b.ID {
+		t.Fatalf("Join revived node %s, want existing node %s", rj.NodeID, net3.b.ID)
+	}
+	s.mu.Lock()
+	_, hasTTL := ns.relayFlowBadUntil[net3.b.ID]
+	s.mu.Unlock()
+	if hasTTL {
+		t.Fatalf("relayFlowBadUntil[%s] still present after revive", net3.b.ID)
+	}
+}
+
 // TestRelayRouteNarrowsSharedFanoutAndCountsFallback verifies decision 1B+1C:
 // the shared-sender candidate loop only targets siblings sharing the sender's
 // host (never an unrelated E), while a recipient with no live flow still gets
