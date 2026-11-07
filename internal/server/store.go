@@ -1446,7 +1446,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 	// rest. A host no known peer advertises is not a shared egress (e.g. an
 	// ambiguous self-endpoint) and is dropped to avoid spraying the network.
 	log.Printf("relay node %d: sender=%s sendernorm=%q senderID=%q sharedSender=%v", port, sender, senderNorm, senderID, sharedSender)
-	deliver := func(senderPort int, sentTo map[string]bool) bool {
+	deliver := func(senderPort int, sentTo map[string]bool) (sent, attempted bool) {
 		// Destination: the recipient's inbound mapping on the sender's socket.
 		// The recipient opens it by keepaliving to relayHost:<sender's port>; it
 		// will appear as a flow on the sender's port whose host is the recipient.
@@ -1516,7 +1516,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 			// socket. Let the caller try another candidate sender socket or the
 			// shared broadcast fan-out.
 			if rf := ns.relayFlowByNode[recipientID]; rf == "" {
-				return false
+				return false, attempted
 			}
 		}
 		fls := s.relayFlowsByPort(senderPort)
@@ -1535,6 +1535,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 				continue
 			}
 			if recipientFlows[fl] {
+				attempted = true
 				ok := s.relaySendFrom(senderPort, fl, data)
 				log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
 				if ok {
@@ -1558,6 +1559,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 			}
 			nh := hostNorm(fh)
 			if recipientHosts[nh] {
+				attempted = true
 				ok := s.relaySendFrom(senderPort, fl, data)
 				log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
 				if ok {
@@ -1572,6 +1574,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 				continue
 			}
 			if recipientSharedHosts[nh] {
+				attempted = true
 				// Bootstrap fan-out under a shared egress: the recipient's own
 				// flow is among these hosts but not pinned yet; extra sibling
 				// copies are dropped by their own WG session.
@@ -1584,7 +1587,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 			}
 		}
 		if len(sentTo) > 0 {
-			return true
+			return true, attempted
 		}
 		// No matching inbound mapping on the sender socket yet: the recipient has
 		// not opened a flow toward the sender's per-node port. Its authoritative
@@ -1593,13 +1596,14 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 		// node), whose socket accepts from any server source port. Try it once
 		// from the sender's socket before falling back to broadcast fan-out.
 		if rf := ns.relayFlowByNode[recipientID]; rf != "" && rf != sender {
+			attempted = true
 			if s.relaySendFrom(senderPort, rf, data) {
 				log.Printf("relay node %d: UNICAST %s senderPort=%d -> flow %s (flow-fallback)", port, recipientID, senderPort, rf)
-				return true
+				return true, attempted
 			}
 			log.Printf("relay node %d: flow-fallback send to %s failed", port, rf)
 		}
-		return false
+		return false, attempted
 	}
 	if senderID == "" {
 		// A shared egress hides which peer owns the source mapping. Try every
@@ -1623,6 +1627,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 		}
 		sentTo := make(map[string]bool)
 		sent := false
+		attempted := false
 		for id := range candidates {
 			if id == recipientID {
 				continue
@@ -1631,11 +1636,22 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 			if sp == 0 || sp == port {
 				continue
 			}
-			if deliver(sp, sentTo) {
+			sentNow, attemptedNow := deliver(sp, sentTo)
+			if sentNow {
 				sent = true
+			}
+			if attemptedNow {
+				attempted = true
 			}
 		}
 		if !sent {
+			if attempted {
+				// Decision B: the recipient had candidate flows but every
+				// sibling send failed. Drop and count instead of broadcasting
+				// to unrelated endpoints.
+				s.relayFanoutFallbacks++
+				return false
+			}
 			s.relaySendFannedFrom(ns.relayPort, sender, data)
 		}
 		return true
@@ -1645,8 +1661,15 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 		s.relaySendFannedFrom(ns.relayPort, sender, data)
 		return true
 	}
-	if deliver(senderPort, make(map[string]bool)) {
+	sentNow, attemptedNow := deliver(senderPort, make(map[string]bool))
+	if sentNow {
 		return true
+	}
+	if attemptedNow {
+		// Decision B: candidate flows existed but all sends failed; drop and
+		// count instead of broadcasting.
+		s.relayFanoutFallbacks++
+		return false
 	}
 	s.relaySendFannedFrom(ns.relayPort, sender, data)
 	return true
