@@ -1048,6 +1048,123 @@ func TestRelayRouteFansOutFromEverySiblingNodePort(t *testing.T) {
 	}
 }
 
+// TestRelayRouteDropsFailedCandidateAndFallsBack verifies the host-level
+// failure path: an exclusive-host send that fails removes that host from
+// recipientHosts, so a later flow under the same host is not attempted. The
+// outer candidate loop still falls through to the other sibling. "Fallback"
+// here means the next sibling candidate, not broadcast fan-out: current code
+// marks sentTo before the send and therefore does not call the broadcast
+// fallback for a failed send.
+func TestRelayRouteDropsFailedCandidateAndFallsBack(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.ctrlHost[net3.b.ID] = "39.180.139.85"
+	ns.ctrlHost[net3.c.ID] = "39.180.139.85"
+	for _, id := range []string{net3.b.ID, net3.c.ID} {
+		ns.nodes[id].Endpoint = ""
+		ns.nodes[id].EndpointV6 = ""
+	}
+	s.mu.Unlock()
+
+	const (
+		bf  = "223.160.209.21:30001"
+		bf2 = "223.160.209.21:30002" // same host as bf; must be skipped after bf fails
+		cf  = "223.160.209.21:30003"
+	)
+	net3.flows[net3.bPort] = []string{bf, bf2}
+	net3.flows[net3.cPort] = []string{cf}
+
+	failed := map[string]bool{}
+	fanned := 0
+	s.SetRelaySendFanned(func(port int, except string, data []byte) int {
+		fanned++
+		return 0
+	})
+	s.SetRelaySend(func(port int, to string, data []byte) bool {
+		ok := !(port == net3.bPort && to == bf)
+		net3.rec.sends = append(net3.rec.sends, sendRec{port: port, to: to, data: string(data)})
+		failed[to] = !ok
+		return ok
+	})
+
+	payload := []byte("failed-candidate")
+	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload)
+
+	count := func(to string) int {
+		n := 0
+		for _, sr := range net3.rec.sends {
+			if sr.to == to {
+				n++
+			}
+		}
+		return n
+	}
+	if got := count(bf); got != 1 {
+		t.Fatalf("failed candidate %s attempted %d times, want 1; sends=%v", bf, got, net3.rec.sends)
+	}
+	if !failed[bf] {
+		t.Fatalf("candidate %s was not marked failed; sends=%v", bf, net3.rec.sends)
+	}
+	if got := count(bf2); got != 0 {
+		t.Fatalf("same-host candidate %s attempted %d times after %s failed, want 0; sends=%v", bf2, got, bf, net3.rec.sends)
+	}
+	if got := count(cf); got != 1 {
+		t.Fatalf("second sibling flow %s attempted %d times, want 1; sends=%v", cf, got, net3.rec.sends)
+	}
+	if failed[cf] {
+		t.Fatalf("second sibling flow %s unexpectedly failed; sends=%v", cf, net3.rec.sends)
+	}
+	if fanned != 0 {
+		t.Fatalf("broadcast fallback called %d times after a failed send, want 0 (current behaviour); sends=%v", fanned, net3.rec.sends)
+	}
+}
+
+// TestRelayRouteExactFlowFailureDoesNotDeleteCandidate fixes the current
+// behaviour: a failed exact-flow send marks sentTo but does not remove the
+// flow from relayFlowByNode or flowByNode. This is known behaviour; changing
+// it needs review.
+func TestRelayRouteExactFlowFailureDoesNotDeleteCandidate(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	const exact = "223.160.208.21:39802"
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.relayFlowByNode[net3.a.ID] = exact
+	if ns.flowByNode == nil {
+		ns.flowByNode = make(map[string]string)
+	}
+	ns.flowByNode[exact] = net3.a.ID
+	s.mu.Unlock()
+	net3.flows[net3.cPort] = []string{exact}
+
+	attempted := false
+	s.SetRelaySend(func(port int, to string, data []byte) bool {
+		net3.rec.sends = append(net3.rec.sends, sendRec{port: port, to: to, data: string(data)})
+		if to == exact {
+			attempted = true
+			return false
+		}
+		return true
+	})
+
+	payload := []byte("exact-flow-failure")
+	s.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", payload)
+
+	if !attempted {
+		t.Fatalf("exact flow %s was never attempted; sends=%v", exact, net3.rec.sends)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if got := ns.relayFlowByNode[net3.a.ID]; got != exact {
+		t.Fatalf("failed exact flow was removed from relayFlowByNode: got %q, want %q", got, exact)
+	}
+	if got := ns.flowByNode[exact]; got != net3.a.ID {
+		t.Fatalf("failed exact flow was removed from flowByNode: got %q, want %q", got, net3.a.ID)
+	}
+}
+
 // TestPruneStaleRelayFlowsClearsHint verifies that an idle NAT mapping is
 // removed from every relay index, including the authoritative per-node hint
 // peers use for direct punching.
