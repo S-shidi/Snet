@@ -1359,6 +1359,29 @@ func (s *Store) releaseNodePortLocked(ns *networkState, nodeID string) {
 	}
 }
 
+// clearNodeRelayIndexesLocked removes every relay/host attribution that points
+// at nodeID. Callers hold s.mu.
+func (s *Store) clearNodeRelayIndexesLocked(ns *networkState, nodeID string) {
+	if ns == nil || nodeID == "" {
+		return
+	}
+	delete(ns.relayFlowByNode, nodeID)
+	delete(ns.relayFlowBadUntil, nodeID)
+	delete(ns.ctrlHost, nodeID)
+	for flow, owner := range ns.flowByNode {
+		if owner == nodeID {
+			delete(ns.flowByNode, flow)
+		}
+	}
+	for host, ids := range ns.nodeByHost {
+		delete(ids, nodeID)
+		if len(ids) == 0 {
+			delete(ns.nodeByHost, host)
+			delete(ns.hostSeen, host)
+		}
+	}
+}
+
 // releaseNetworkPortsLocked releases a network's broadcast relay port and every
 // per-node unicast port bound to it, freeing their sockets and goroutine
 // resources. Callers must hold s.mu.
@@ -2962,6 +2985,7 @@ func (s *Store) RemoveNode(token string) error {
 	}
 	// Release the node's per-node unicast relay port before dropping the node.
 	s.releaseNodePortLocked(ns, te.NodeID)
+	s.clearNodeRelayIndexesLocked(ns, te.NodeID)
 	delete(ns.nodes, te.NodeID)
 	delete(s.byToken, hashToken(token))
 	if err := s.deleteNode(te.NetworkID, te.NodeID); err != nil {
@@ -3718,6 +3742,7 @@ func (s *Store) KickNode(token, nodeID string) error {
 	// Release the node's per-node unicast relay port before dropping the node,
 	// matching RemoveNode/AdminRemoveNode. releaseNodePortLocked is idempotent.
 	s.releaseNodePortLocked(ns, nodeID)
+	s.clearNodeRelayIndexesLocked(ns, nodeID)
 	delete(ns.nodes, nodeID)
 	for h, te := range s.byToken {
 		if te.NetworkID == ns.n.ID && te.NodeID == nodeID {
@@ -4384,6 +4409,7 @@ func (s *Store) AdminRemoveNode(nid, nodeID string) error {
 	}
 	// Release the node's per-node unicast relay port before dropping the node.
 	s.releaseNodePortLocked(ns, nodeID)
+	s.clearNodeRelayIndexesLocked(ns, nodeID)
 	delete(ns.nodes, nodeID)
 	for h, te := range s.byToken {
 		if te.NetworkID == nid && te.NodeID == nodeID {
