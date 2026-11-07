@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1225,6 +1227,65 @@ func TestRelayRouteExactFlowFailureDeletesHintAndReattributes(t *testing.T) {
 	}
 	if fanned != 1 {
 		t.Fatalf("broadcast fallback calls after second trigger = %d, want 1; sends=%v", fanned, net3.rec.sends)
+	}
+}
+
+// TestRelayRouteExactFlowFailureConcurrentSafe exercises the exact-flow hint
+// deletion from many goroutines. RelayRouteNodePort holds s.mu for the whole
+// call, so the delete and the OnRelayFlow/prune writers are serialized; run
+// with -race -count=100 to catch map races.
+func TestRelayRouteExactFlowFailureConcurrentSafe(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	const dead = "223.160.208.21:39802"
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.relayFlowByNode[net3.a.ID] = dead
+	if ns.flowByNode == nil {
+		ns.flowByNode = make(map[string]string)
+	}
+	ns.flowByNode[dead] = net3.a.ID
+	s.mu.Unlock()
+	net3.flows[net3.cPort] = []string{dead}
+
+	var attempts int64
+	var fanned int64
+	s.SetRelaySend(func(port int, to string, data []byte) bool {
+		if to == dead {
+			atomic.AddInt64(&attempts, 1)
+			return false
+		}
+		return true
+	})
+	s.SetRelaySendFanned(func(port int, except string, data []byte) int {
+		atomic.AddInt64(&fanned, 1)
+		return 0
+	})
+
+	const goroutines = 32
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			s.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", []byte("concurrent-dead-flow"))
+		}()
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt64(&attempts); got != 1 {
+		t.Fatalf("dead exact flow attempted %d times across concurrent calls, want 1", got)
+	}
+	if got := atomic.LoadInt64(&fanned); got == 0 {
+		t.Fatalf("expected broadcast fallback after the dead flow was dropped; fanned=%d", got)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := ns.relayFlowByNode[net3.a.ID]; ok {
+		t.Fatal("relayFlowByNode still present after concurrent failed exact-flow sends")
+	}
+	if _, ok := ns.flowByNode[dead]; ok {
+		t.Fatal("flowByNode still present after concurrent failed exact-flow sends")
 	}
 }
 
