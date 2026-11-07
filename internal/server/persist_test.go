@@ -268,3 +268,72 @@ func TestDeviceRecordPersistsAcrossRestart(t *testing.T) {
 		t.Fatal("device token invalid after restart")
 	}
 }
+
+func TestPersistPendingAndDeviceRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snet.db")
+	s, err := NewStoreAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := genOneCode(t, s)
+	devTok, err := s.BindDevice(code, "dev-row-1", testKey(1), "Row Device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateNetwork(testKey(2), "dev-owner", "office", "192.168.50.0/24", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := s.Join(created.NetworkID, created.PairingCode, testKey(3), "dev-joiner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.Status != "pending" || joined.PendingID == "" {
+		t.Fatalf("join = %+v, want pending", joined)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.View(func(tx *bbolt.Tx) error {
+		pb := tx.Bucket([]byte("pending"))
+		if pb == nil {
+			t.Fatal("pending bucket missing")
+		}
+		raw := pb.Get([]byte(joined.PendingID))
+		if raw == nil {
+			t.Fatal("pending row missing")
+		}
+		var p pendingNode
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Status != "pending" || p.NetworkID != created.NetworkID {
+			t.Fatalf("pending row = %+v", p)
+		}
+
+		dvb := tx.Bucket([]byte("devices"))
+		if dvb == nil {
+			t.Fatal("devices bucket missing")
+		}
+		draw := dvb.Get([]byte("dev-row-1"))
+		if draw == nil {
+			t.Fatal("device row missing")
+		}
+		var d deviceRecord
+		if err := json.Unmarshal(draw, &d); err != nil {
+			t.Fatal(err)
+		}
+		if d.DeviceToken != devTok || d.PublicKey != testKey(1) {
+			t.Fatalf("device row = %+v", d)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
