@@ -1,0 +1,21 @@
+[Unit]
+Description=Snet Relay v2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/snet/bin/relay -addr 0.0.0.0:8092 -metrics-addr 127.0.0.1:8094
+EnvironmentFile=/etc/snet-relay.env
+Restart=on-failure
+RestartSec=3
+DynamicUser=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

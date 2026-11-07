@@ -1,0 +1,5268 @@
+package server
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"go.etcd.io/bbolt"
+	"golang.org/x/crypto/bcrypt"
+	"snet/internal/protocol"
+	"snet/internal/relay"
+)
+
+var (
+	ErrNotFound        = errors.New("not found")
+	ErrCodeInvalid     = errors.New("invalid or expired pairing code")
+	ErrCodeLocked      = errors.New("pairing code temporarily locked")
+	ErrNetworkFull     = errors.New("network is full")
+	ErrUnauthorized    = errors.New("unauthorized")
+	ErrManagedNetwork  = errors.New("服务端管理的网络不可认领")
+	ErrRelayV2Disabled = errors.New("relay v2 is not configured")
+	// ErrAuthCodeInvalid is returned when a presented device authorization
+	// code does not match any generated code. Unlike pairing codes there is no
+	// retry lockout: codes carry ≈80 bits of entropy and the bind endpoint is
+	// per-IP rate limited.
+	ErrAuthCodeInvalid = errors.New("invalid device authorization code")
+	ErrAuthCodeFull    = errors.New("device authorization code reached max bindings")
+	ErrAuthCodeExpired = errors.New("授权码已过期，所有网络离线，请续期或更换授权码")
+	// ErrAdminExists is returned by BootstrapAdmin when an admin account has
+	// already been initialized.
+	ErrAdminExists = errors.New("管理员账号已初始化")
+	// ErrInternal is the client-facing stand-in for unexpected server errors;
+	// the real cause is logged server-side.
+	ErrInternal = errors.New("服务器内部错误，请稍后重试")
+	// ErrBadJSON replaces raw JSON decoder errors on 400 responses so parser
+	// internals never leak to clients.
+	ErrBadJSON = errors.New("请求格式错误")
+)
+
+const (
+	codeTTL         = 72 * time.Hour
+	codeMaxUse      = 5
+	codeUnlimited   = -1 // pairing.remaining sentinel for server-managed networks
+	maxFails        = 5
+	lockWindow      = 15 * time.Minute
+	lastSeenTTL     = 60 * time.Second // a node is "online" if seen within this window
+	lastSeenThrot   = 30 * time.Second // throttle lastSeen DB writes
+	lastActThrot    = 60 * time.Second // throttle network activity DB writes
+	netAliveTTL     = 90 * time.Second // a network is "online" if active within this window
+	hostStaleTTL    = 5 * time.Minute  // reverse-index host idle this long is pruned
+	idAlphabet      = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+	tokenBytes      = 32
+	networkIDLen    = 8
+	codeLen         = 12
+	authCodeIDLen   = 8
+	defaultSubnet   = "10.88.0.0/24"
+	maxSubnetPrefix = 24
+)
+
+var (
+	bktNetworks  = []byte("networks")
+	bktNodes     = []byte("nodes")
+	bktTokens    = []byte("tokens")
+	bktDevices   = []byte("devices")
+	bktPending   = []byte("pending")
+	bktAdmin     = []byte("admin")
+	bktAuthCodes = []byte("authcodes")
+	// bktRelayTopo persists the per-node relay topology (Phase 3 / multi
+	// relay instance): which per-node unicast relay port a node was assigned
+	// and which relay instance host serves it. Records survive a restart so
+	// the port a node keeps re-announcing (and that peers cache) does not
+	// drift, and so cross-instance routing knows the serving host.
+	bktRelayTopo = []byte("relaytopo")
+)
+
+// relayTopoRecord is the per-node relay topology persisted under
+// bktRelayTopo, keyed "netID/nodeID". Port is the per-node unicast relay
+// port; Host is the relay instance host serving it, empty meaning the
+// network's primary relay host.
+type relayTopoRecord struct {
+	Port int    `json:"port,omitempty"`
+	Host string `json:"host,omitempty"`
+}
+
+const pendingTTL = 24 * time.Hour
+
+type pairing struct {
+	codeHash    string
+	remaining   int
+	expiresAt   time.Time
+	failCount   int
+	lockedUntil time.Time
+}
+
+// pendingNode is a join request awaiting the owner's approval. Once approved
+// it carries the granted node/credentials so the waiting client can fetch
+// them; it is deleted only when the client consumes them or it expires.
+type pendingNode struct {
+	ID        string    `json:"id"`
+	PublicKey string    `json:"publicKey"`
+	DeviceID  string    `json:"deviceId,omitempty"`
+	NetworkID string    `json:"networkId"`
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	Status    string `json:"status,omitempty"` // pending | approved
+	NodeID    string `json:"nodeId,omitempty"`
+	IP        string `json:"ip,omitempty"`
+	Token     string `json:"token,omitempty"`
+	Subnet    string `json:"subnet,omitempty"`
+	RelayPort int    `json:"relayPort,omitempty"`
+}
+
+type networkState struct {
+	n              protocol.Network
+	seq            uint64 // creation sequence, monotonic per store
+	pairing        *pairing
+	nodes          map[string]*protocol.Node
+	pending        map[string]*pendingNode
+	ipam           int
+	lastSeenWrite  int64
+	lastActWrite   int64
+	lastActivityAt int64
+	relayPort      int
+	subnetBase     net.IP
+
+	// relaySeen is the live set of NAT mappings observed on this network's
+	// relay ports ("ip:port" -> last activity), fed by the relay's flow hook.
+	relaySeen map[string]time.Time
+	// ctrlHost records the last public IP each node used for control-plane
+	// (HTTPS) calls; used to attribute relay flows to nodes.
+	ctrlHost map[string]string
+	// nodeByHost is the reverse index: public host (control-plane or observed
+	// data-plane) -> node IDs that have been seen using it. Fed by the control-
+	// plane attribution in the HTTP handlers and by the relay flow hook,
+	// because a node's data-plane NAT IP can differ from its control-plane IP
+	// (e.g. an operator that allocates a different public address per session
+	// or interface). Used by the per-node router to resolve a sender whose
+	// data-plane host does not equal its control-plane host.
+	nodeByHost map[string]map[string]bool
+	// hostSeen tracks the last time each public host in nodeByHost was
+	// observed (control-plane or data-plane), so stale data-plane hosts —
+	// e.g. a CGNAT egress the operator stopped using or reused for another
+	// subscriber — can be pruned from the reverse index. Control-plane hosts
+	// are refreshed by the HTTP handlers on every HTTPS call; pruning only
+	// removes hosts idle past hostStaleTTL.
+	hostSeen map[string]time.Time
+	// relayFlowByNode is the most recent attributed relay flow per node,
+	// stored as the full "host:port" NAT mapping ("39.180.139.85:4302").
+	relayFlowByNode map[string]string
+	// flowByNode is the reverse index at full-address granularity: the exact
+	// "host:port" NAT mapping -> node ID. Unlike nodeByHost (host only), it
+	// distinguishes nodes that share a public IP behind a common egress (e.g.
+	// Mac 39.180.139.85:4302 vs NAS 39.180.139.85:1213), so sender attribution
+	// and shared-host recipient routing resolve deterministically.
+	flowByNode map[string]string
+	// flowWrite throttles OnRelayFlow per exact NAT mapping. A single
+	// network-wide gate starves every flow but one when several nodes share
+	// an egress or simply send within the same second, leaving
+	// relayFlowByNode pointing at a stale mapping. Keyed by "host:port" so
+	// each flow refreshes independently.
+	flowWrite map[string]time.Time
+	// nodePorts maps each node in this network to its per-node unicast relay
+	// port. The relay binds a separate UDP socket per node port and routes
+	// traffic unicast instead of broadcasting.
+	nodePorts map[string]int
+}
+
+type tokenEntry struct {
+	NetworkID string `json:"networkId"`
+	NodeID    string `json:"nodeId"`
+}
+
+type networkRecord struct {
+	ID               string    `json:"id"`
+	OwnerNodeID      string    `json:"ownerNodeId"`
+	CreatedAt        string    `json:"createdAt"`
+	CodeHash         string    `json:"codeHash"`
+	Remaining        int       `json:"remaining"`
+	ExpiresAt        time.Time `json:"expiresAt"`
+	FailCount        int       `json:"failCount"`
+	LockedUntil      time.Time `json:"lockedUntil"`
+	IPAM             int       `json:"ipam"`
+	RelayPort        int       `json:"relayPort"`
+	Name             string    `json:"name,omitempty"`
+	Subnet           string    `json:"subnet,omitempty"`
+	OwnerDeviceID    string    `json:"ownerDeviceId,omitempty"`
+	LastActivityAt   int64     `json:"lastActivityAt,omitempty"`
+	ApprovalRequired bool      `json:"approvalRequired,omitempty"`
+	Managed          bool      `json:"managed,omitempty"`
+	Description      string    `json:"description,omitempty"`
+	Tags             []string  `json:"tags,omitempty"`
+	Visibility       string    `json:"visibility,omitempty"`
+}
+
+// networkShareOpts carries the optional community-sharing metadata for a
+// network. description/visibility are pointers so "nil = leave unchanged"
+// works for updates; tags as a slice is interpreted the same way (nil keeps
+// existing, an empty slice clears). Passing it as a variadic keeps the common
+// signed params stable for existing callers.
+type networkShareOpts struct {
+	description *string
+	tags        []string
+	visibility  *string
+}
+
+type deviceRecord struct {
+	ID          string `json:"id"`
+	PublicKey   string `json:"publicKey"`
+	CreatedAt   string `json:"createdAt"`
+	LastSeen    int64  `json:"lastSeen,omitempty"`
+	Name        string `json:"name,omitempty"`
+	DeviceToken string `json:"deviceToken,omitempty"`
+}
+
+// authCodeBinding records one device bound to a shared authorization code.
+type authCodeBinding struct {
+	DeviceID  string    `json:"deviceId"`
+	PublicKey string    `json:"publicKey,omitempty"`
+	BoundAt   time.Time `json:"boundAt,omitempty"`
+}
+
+// authCodeRecord is a device authorization code. The database key is the
+// non-secret public ID (used for admin revocation); CodePlain holds the
+// plaintext so the admin console can always display it, and CodeHash is kept
+// for bind verification. A single code may bind up to MaxBindings devices;
+// MaxBindings is fixed at generation time. The legacy flat
+// DeviceID/PublicKey/BoundAt fields exist only to migrate records persisted
+// before multi-device codes were introduced.
+type authCodeRecord struct {
+	ID          string            `json:"id"`
+	CodePlain   string            `json:"codePlain,omitempty"`
+	CodeHash    string            `json:"codeHash"`
+	Hint        string            `json:"hint"`
+	CreatedAt   time.Time         `json:"createdAt"`
+	MaxBindings int               `json:"maxBindings,omitempty"`
+	Bindings    []authCodeBinding `json:"bindings,omitempty"`
+	ExpiresAt   *time.Time        `json:"expiresAt,omitempty"` // expiration time, nil means permanent
+
+	// Legacy single-binding fields, kept for migration only.
+	DeviceID  string    `json:"deviceId,omitempty"`
+	PublicKey string    `json:"publicKey,omitempty"`
+	BoundAt   time.Time `json:"boundAt,omitempty"`
+}
+
+type Store struct {
+	mu        sync.RWMutex // RWMutex: allows concurrent reads, exclusive writes
+	db        *bbolt.DB
+	networks  map[string]*networkState
+	byToken   map[string]tokenEntry // key = SHA-256 hex of the raw token
+	devices   map[string]*deviceRecord
+	authCodes map[string]*authCodeRecord // key = public auth-code ID
+	netSeq    uint64                     // monotonic creation counter for networks
+
+	// requireDeviceAuth gates CreateNetwork/Join/RegisterDevice: when on, only
+	// devices that successfully bound a generated authorization code may
+	// participate. The bind endpoint itself is always open.
+	requireDeviceAuth bool
+
+	// relayHost is the public relay endpoint advertised to peers; when empty,
+	// relay mode is disabled and peers keep their self-advertised endpoints.
+	relayHost  string
+	relayBase  int
+	relayCount int
+	// relayAlternates lists additional public relay hosts advertised to peers
+	// as candidate data planes (multi-relay selection). Each alternate is
+	// expected to serve the same network relay port as the primary; clients
+	// measure latency to every candidate and pick the fastest. Alternate
+	// deployments run their own relay instance; this process only advertises
+	// and never binds their sockets.
+	relayAlternates []string
+	// relayV2Endpoints lists standalone Relay v2 UDP endpoints advertised to
+	// new clients (e.g. relay.example.com:8092). The first entry is the
+	// primary; all instances must share SNET_RELAY_SECRET. relaySigner signs
+	// stateless HMAC tickets that the separate relay services verify.
+	relayV2Endpoints []string
+	relaySigner      *relay.TicketSigner
+	// relayEnsure lazily binds a single relay UDP port. Set via SetRelayEnsure;
+	// read under s.mu in ensureRelayPort.
+	relayEnsure func(port int) error
+	// nodeEnsure lazily binds a per-node unicast relay port (Phase 3). Set via
+	// SetNodeEnsure; read under s.mu in ensureNodePort.
+	nodeEnsure func(port int) error
+	// relayRelease releases a bound relay socket (broadcast or per-node).
+	// Set via SetRelayRelease; called under s.mu when a network or node is
+	// removed so ports and goroutines are never leaked.
+	relayRelease func(port int) error
+	// relayAllFlows returns every live flow seen on a relay port. Set via
+	// SetRelayAllFlows; used by unicast routing to match a recipient against
+	// all the hosts it has been seen using.
+	relayAllFlows func(port int) []string
+	// relaySend writes data from the socket bound to port. Set via
+	// SetRelaySend; used by unicast routing.
+	relaySend func(port int, to string, data []byte) bool
+	// relaySendFanned writes data from the socket bound to port to every live
+	// endpoint seen there, except one. Set via SetRelaySendFanned; used as
+	// the broadcast fallback when unicast routing has no flow yet.
+	relaySendFanned func(port int, except string, data []byte) int
+	// netByPort maps a bound relay UDP port back to the network it serves.
+	// Registered for both the network's broadcast port and any per-node
+	// unicast relay ports (Phase 3).
+	netByPort map[int]*networkState
+	// portToNode maps a per-node unicast relay port back to the node ID
+	// it serves. Used by the relay for unicast routing: when a frame arrives
+	// at a node port, the relay looks up the sender and recipient from this
+	// mapping.
+	portToNode map[int]string
+	// nodeRelayHost maps network ID -> node ID -> the relay instance host
+	// that serves that node's per-node unicast relay port. Empty host means
+	// the node is served by the network's primary relay host. Used to fill
+	// Node.RelayHostOverride for peers so cross-instance traffic reaches the
+	// right relay instance. Persisted under bktRelayTopo and restored on load.
+	nodeRelayHost map[string]map[string]string
+}
+
+// NewStore returns a purely in-memory store (no persistence). Used by tests
+// and by callers that do not want a database file.
+func NewStore() *Store {
+	s, _ := NewStoreAt("")
+	return s
+}
+
+// NewStoreAt opens (or creates) a bbolt database at path and loads all state.
+// An empty path keeps the store purely in-memory.
+func NewStoreAt(path string) (*Store, error) {
+	s := &Store{
+		networks:      make(map[string]*networkState),
+		byToken:       make(map[string]tokenEntry),
+		devices:       make(map[string]*deviceRecord),
+		authCodes:     make(map[string]*authCodeRecord),
+		netByPort:     make(map[int]*networkState),
+		portToNode:    make(map[int]string),
+		nodeRelayHost: make(map[string]map[string]string),
+	}
+	if path == "" {
+		return s, nil
+	}
+	db, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: 2 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	s.db = db
+	if err := s.load(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) Close() error {
+	if s.db != nil {
+		return s.db.Close()
+	}
+	return nil
+}
+
+func (s *Store) load() error {
+	var migrated []string
+	if err := s.db.View(func(tx *bbolt.Tx) error {
+		if nb := tx.Bucket(bktNetworks); nb != nil {
+			c := nb.Cursor()
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				var r networkRecord
+				if err := json.Unmarshal(v, &r); err != nil {
+					return err
+				}
+				subnet := r.Subnet
+				if subnet == "" {
+					subnet = defaultSubnet
+				}
+				base, err := subnetBase(subnet)
+				if err != nil {
+					return fmt.Errorf("network %s: bad subnet %q: %w", r.ID, subnet, err)
+				}
+				lastAct := r.LastActivityAt
+				if lastAct == 0 {
+					lastAct = time.Now().Unix()
+				}
+				s.netSeq++
+				ns := &networkState{
+					seq: s.netSeq,
+					n: protocol.Network{
+						ID:               r.ID,
+						OwnerNodeID:      r.OwnerNodeID,
+						CreatedAt:        r.CreatedAt,
+						PairingCode:      "",
+						Name:             r.Name,
+						Subnet:           subnet,
+						OwnerDeviceID:    r.OwnerDeviceID,
+						LastActivityAt:   lastAct,
+						ApprovalRequired: r.ApprovalRequired,
+						Managed:          r.Managed,
+						Description:      r.Description,
+						Tags:             r.Tags,
+						Visibility:       r.Visibility,
+					},
+					pairing: &pairing{
+						codeHash:    r.CodeHash,
+						remaining:   r.Remaining,
+						expiresAt:   r.ExpiresAt,
+						failCount:   r.FailCount,
+						lockedUntil: r.LockedUntil,
+					},
+					nodes:           make(map[string]*protocol.Node),
+					pending:         make(map[string]*pendingNode),
+					ipam:            r.IPAM,
+					relayPort:       r.RelayPort,
+					lastActivityAt:  lastAct,
+					subnetBase:      base,
+					relaySeen:       make(map[string]time.Time),
+					ctrlHost:        make(map[string]string),
+					hostSeen:        make(map[string]time.Time),
+					nodeByHost:      make(map[string]map[string]bool),
+					relayFlowByNode: make(map[string]string),
+					flowByNode:      make(map[string]string),
+					nodePorts:       make(map[string]int),
+				}
+				s.networks[r.ID] = ns
+			}
+		}
+		if ndb := tx.Bucket(bktNodes); ndb != nil {
+			c := ndb.Cursor()
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				var n protocol.Node
+				if err := json.Unmarshal(v, &n); err != nil {
+					return err
+				}
+				netID := string(k[:strings.IndexByte(string(k), '/')])
+				if ns := s.networks[netID]; ns != nil {
+					ns.nodes[n.ID] = &n
+				}
+			}
+		}
+		// Restore the persisted per-node relay topology (Phase 3): the relay
+		// port each node keeps announcing to peers survives a restart so
+		// cached peer endpoints stay valid, and the serving relay-instance
+		// host survives so cross-instance unicast routing keeps working.
+		if tb := tx.Bucket(bktRelayTopo); tb != nil {
+			c := tb.Cursor()
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				var rec relayTopoRecord
+				if err := json.Unmarshal(v, &rec); err != nil {
+					return err
+				}
+				key := string(k)
+				slash := strings.IndexByte(key, '/')
+				if slash < 0 {
+					continue
+				}
+				netID, nodeID := key[:slash], key[slash+1:]
+				ns := s.networks[netID]
+				if ns == nil {
+					continue
+				}
+				if rec.Port != 0 {
+					ns.nodePorts[nodeID] = rec.Port
+				}
+				// Honor a persisted serving-host only while it still belongs
+				// to the current instance set (relayHost + relayAlternates).
+				// A single-instance deployment (no alternates) always clears
+				// stale override hosts so nodes fall back to the primary
+				// relay; the port itself is kept so cached peer endpoints
+				// stay valid.
+				if rec.Host != "" && len(s.relayAlternates) > 0 {
+					if s.nodeRelayHost[netID] == nil {
+						s.nodeRelayHost[netID] = make(map[string]string)
+					}
+					s.nodeRelayHost[netID][nodeID] = rec.Host
+				}
+			}
+		}
+		if tkb := tx.Bucket(bktTokens); tkb != nil {
+			c := tkb.Cursor()
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				var te tokenEntry
+				if err := json.Unmarshal(v, &te); err != nil {
+					return err
+				}
+				s.byToken[string(k)] = te
+			}
+		}
+		if ddb := tx.Bucket(bktDevices); ddb != nil {
+			c := ddb.Cursor()
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				var d deviceRecord
+				if err := json.Unmarshal(v, &d); err != nil {
+					return err
+				}
+				s.devices[string(k)] = &d
+			}
+		}
+		if ab := tx.Bucket(bktAuthCodes); ab != nil {
+			c := ab.Cursor()
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				var ac authCodeRecord
+				if err := json.Unmarshal(v, &ac); err != nil {
+					return err
+				}
+				if ac.migrateLegacy() {
+					migrated = append(migrated, ac.ID)
+				}
+				s.authCodes[string(k)] = &ac
+			}
+		}
+		if pb := tx.Bucket(bktPending); pb != nil {
+			c := pb.Cursor()
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				var p pendingNode
+				if err := json.Unmarshal(v, &p); err != nil {
+					return err
+				}
+				if ns := s.networks[p.NetworkID]; ns != nil {
+					ns.pending[p.ID] = &p
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	// Persist any legacy auth-code records that were migrated in memory so the
+	// new multi-device format survives a restart. Errors here are non-fatal:
+	// the migrated in-memory copy is already correct.
+	for _, id := range migrated {
+		if ac := s.authCodes[id]; ac != nil {
+			_ = s.persistAuthCode(ac)
+		}
+	}
+	return nil
+}
+
+func randomString(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	out := make([]byte, n)
+	for i, v := range b {
+		out[i] = idAlphabet[int(v)%len(idAlphabet)]
+	}
+	return string(out), nil
+}
+
+func randomToken() (string, error) {
+	b := make([]byte, tokenBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func hashCode(code string) string {
+	h := sha256.Sum256([]byte(protocol.NormalizeCode(code)))
+	return hex.EncodeToString(h[:])
+}
+
+func hashToken(tok string) string {
+	h := sha256.Sum256([]byte(tok))
+	return hex.EncodeToString(h[:])
+}
+
+// ---- persistence helpers (no-op when db == nil) ----
+
+func (s *Store) ensureBuckets(tx *bbolt.Tx) error {
+	for _, b := range [][]byte{bktNetworks, bktNodes, bktTokens, bktDevices, bktPending, bktAdmin, bktAuthCodes, bktRelayTopo} {
+		if _, err := tx.CreateBucketIfNotExists(b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) persistNetwork(ns *networkState) error {
+	if s.db == nil {
+		return nil
+	}
+	r := networkRecord{
+		ID:               ns.n.ID,
+		OwnerNodeID:      ns.n.OwnerNodeID,
+		CreatedAt:        ns.n.CreatedAt,
+		CodeHash:         ns.pairing.codeHash,
+		Remaining:        ns.pairing.remaining,
+		ExpiresAt:        ns.pairing.expiresAt,
+		FailCount:        ns.pairing.failCount,
+		LockedUntil:      ns.pairing.lockedUntil,
+		IPAM:             ns.ipam,
+		RelayPort:        ns.relayPort,
+		Name:             ns.n.Name,
+		Subnet:           ns.n.Subnet,
+		OwnerDeviceID:    ns.n.OwnerDeviceID,
+		LastActivityAt:   ns.lastActivityAt,
+		ApprovalRequired: ns.n.ApprovalRequired,
+		Managed:          ns.n.Managed,
+		Description:      ns.n.Description,
+		Tags:             ns.n.Tags,
+		Visibility:       ns.n.Visibility,
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktNetworks).Put([]byte(ns.n.ID), b)
+	})
+}
+
+func (s *Store) persistNode(netID string, n *protocol.Node) error {
+	if s.db == nil {
+		return nil
+	}
+	b, err := json.Marshal(n)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktNodes).Put([]byte(netID+"/"+n.ID), b)
+	})
+}
+
+func (s *Store) deleteNode(netID, nodeID string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktNodes).Delete([]byte(netID + "/" + nodeID))
+	})
+}
+
+func (s *Store) persistToken(tok string, te tokenEntry) error {
+	if s.db == nil {
+		return nil
+	}
+	b, err := json.Marshal(te)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktTokens).Put([]byte(hashToken(tok)), b)
+	})
+}
+
+func (s *Store) persistTokenByHash(h string, te tokenEntry) error {
+	if s.db == nil {
+		return nil
+	}
+	b, err := json.Marshal(te)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktTokens).Put([]byte(h), b)
+	})
+}
+
+func (s *Store) persistDevice(d *deviceRecord) error {
+	if s.db == nil {
+		return nil
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktDevices).Put([]byte(d.ID), b)
+	})
+}
+
+func (s *Store) deleteTokenByHash(h string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktTokens).Delete([]byte(h))
+	})
+}
+
+func (s *Store) persistAuthCode(ac *authCodeRecord) error {
+	if s.db == nil {
+		return nil
+	}
+	b, err := json.Marshal(ac)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktAuthCodes).Put([]byte(ac.ID), b)
+	})
+}
+
+func (s *Store) deleteAuthCode(id string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktAuthCodes).Delete([]byte(id))
+	})
+}
+
+func (s *Store) persistPending(p *pendingNode) error {
+	if s.db == nil {
+		return nil
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktPending).Put([]byte(p.ID), b)
+	})
+}
+
+func (s *Store) deletePending(pendingID string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktPending).Delete([]byte(pendingID))
+	})
+}
+
+func (s *Store) deleteNetworkRows(netID string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		if err := tx.Bucket(bktNetworks).Delete([]byte(netID)); err != nil {
+			return err
+		}
+		ndb := tx.Bucket(bktNodes)
+		if ndb != nil {
+			prefix := []byte(netID + "/")
+			c := ndb.Cursor()
+			for k, _ := c.Seek(prefix); k != nil && bytesHasPrefix(k, prefix); k, _ = c.Next() {
+				if err := ndb.Delete(k); err != nil {
+					return err
+				}
+			}
+		}
+		rtb := tx.Bucket(bktRelayTopo)
+		if rtb != nil {
+			prefix := []byte(netID + "/")
+			c := rtb.Cursor()
+			for k, _ := c.Seek(prefix); k != nil && bytesHasPrefix(k, prefix); k, _ = c.Next() {
+				if err := rtb.Delete(k); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func bytesHasPrefix(b, prefix []byte) bool {
+	return len(b) >= len(prefix) && string(b[:len(prefix)]) == string(prefix)
+}
+
+// ---- subnet handling ----
+
+// subnetBase returns the network address of a CIDR subnet.
+func subnetBase(cidr string) (net.IP, error) {
+	ip, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, err
+	}
+	return ip.Mask(ipnet.Mask), nil
+}
+
+// validateSubnet checks that cidr is a private IPv4 network with a prefix of
+// /24 or larger and returns its normalized network address form.
+func validateSubnet(cidr string) (string, error) {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", err
+	}
+	if ipnet.IP.To4() == nil {
+		return "", errors.New("subnet must be IPv4")
+	}
+	ones, _ := ipnet.Mask.Size()
+	if ones > maxSubnetPrefix {
+		return "", fmt.Errorf("subnet prefix must be /%d or larger", maxSubnetPrefix)
+	}
+	if !ipnet.IP.IsPrivate() {
+		return "", errors.New("subnet must be a private range (10/8, 172.16/12, 192.168/16)")
+	}
+	// ParseCIDR zeroes host bits, so re-derive the host part to verify the
+	// caller supplied a proper network address (not e.g. 192.168.1.99/24).
+	if hostStr, _, ok := strings.Cut(cidr, "/"); ok {
+		if host := net.ParseIP(hostStr); host == nil || !host.Equal(host.Mask(ipnet.Mask)) {
+			return "", errors.New("subnet must be a network address")
+		}
+	}
+	return ipnet.String(), nil
+}
+
+// subnetsOverlap reports whether two CIDR subnets share any address.
+func subnetsOverlap(a, b string) bool {
+	_, an, err := net.ParseCIDR(a)
+	if err != nil {
+		return false
+	}
+	_, bn, err := net.ParseCIDR(b)
+	if err != nil {
+		return false
+	}
+	return an.Contains(bn.IP) || bn.Contains(an.IP)
+}
+
+// autoSubnetLocked picks a free 10.88.N.0/24 subnet not exactly used by any
+// existing network. Networks are independent on the server; overlap is only
+// checked at exact CIDR match to avoid giving the same subnet to two networks
+// automatically. Users may still explicitly choose overlapping subnets.
+func (s *Store) autoSubnetLocked() string {
+	for n := 0; n < 256; n++ {
+		cidr := fmt.Sprintf("10.88.%d.0/24", n)
+		taken := false
+		for _, other := range s.networks {
+			if other.n.Subnet == cidr {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			return cidr
+		}
+	}
+	return "10.89.0.0/24"
+}
+
+func addIPOffset(ip net.IP, n int) net.IP {
+	v := ip.To4()
+	x := binary.BigEndian.Uint32(v)
+	x += uint32(n)
+	out := make(net.IP, 4)
+	binary.BigEndian.PutUint32(out, x)
+	return out
+}
+
+// ---- node address allocation ----
+
+// allocIP assigns the next available address within the network's subnet.
+func (ns *networkState) allocIP() (string, error) {
+	if ns.ipam >= protocol.MaxNodes {
+		return "", ErrNetworkFull
+	}
+	ns.ipam++
+	return addIPOffset(ns.subnetBase, ns.ipam).String(), nil
+}
+
+// ---- relay mode ----
+
+// SetRelayV2 configures the session-oriented Relay v2 service advertised to
+// clients. The signer must use the same secret as the standalone relay. An
+// empty endpoint or nil signer disables Relay v2.
+func (s *Store) SetRelayV2(endpoint string, signer *relay.TicketSigner) {
+	s.SetRelayV2Endpoints([]string{endpoint}, signer)
+}
+
+// SetRelayV2Endpoints configures one or more Relay v2 instances. All
+// instances must share the same ticket secret. Duplicate and empty entries
+// are removed while preserving order; the first entry is the primary.
+func (s *Store) SetRelayV2Endpoints(endpoints []string, signer *relay.TicketSigner) {
+	clean := make([]string, 0, len(endpoints))
+	seen := make(map[string]struct{}, len(endpoints))
+	for _, ep := range endpoints {
+		ep = strings.TrimSpace(ep)
+		if ep == "" {
+			continue
+		}
+		if _, ok := seen[ep]; ok {
+			continue
+		}
+		seen[ep] = struct{}{}
+		clean = append(clean, ep)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayV2Endpoints = clean
+	s.relaySigner = signer
+}
+
+// IssueRelayTicket signs a short-lived ticket for the authenticated node.
+// Tickets are stateless: the relay verifies the HMAC and tracks the session
+// only in memory, never reading bbolt. Tickets are not endpoint-bound, so the
+// same ticket can be presented to any relay instance sharing the secret.
+func (s *Store) IssueRelayTicket(token, nid string) (protocol.RelayTicketResp, error) {
+	s.mu.RLock()
+	signer := s.relaySigner
+	endpoints := append([]string(nil), s.relayV2Endpoints...)
+	te, ok := s.byToken[hashToken(token)]
+	s.mu.RUnlock()
+	if !ok {
+		return protocol.RelayTicketResp{}, ErrUnauthorized
+	}
+	if nid != "" && te.NetworkID != nid {
+		return protocol.RelayTicketResp{}, ErrUnauthorized
+	}
+	if signer == nil || len(endpoints) == 0 {
+		return protocol.RelayTicketResp{}, ErrRelayV2Disabled
+	}
+	claims, err := relay.NewClaims(te.NetworkID, te.NodeID, relay.TicketTTL)
+	if err != nil {
+		return protocol.RelayTicketResp{}, err
+	}
+	ticket, err := signer.Sign(claims)
+	if err != nil {
+		return protocol.RelayTicketResp{}, err
+	}
+	return protocol.RelayTicketResp{
+		Endpoint:  endpoints[0],
+		Endpoints: endpoints,
+		Ticket:    ticket,
+		SessionID: claims.SessionID,
+		NodeID:    claims.NodeID,
+		NodeKey:   protocol.RelayNodeKeyHex(claims.NodeID),
+		ExpiresAt: claims.ExpiresAt,
+	}, nil
+}
+
+func (s *Store) relayV2InfoLocked() *protocol.RelayV2Info {
+	if s.relaySigner == nil || len(s.relayV2Endpoints) == 0 {
+		return nil
+	}
+	eps := append([]string(nil), s.relayV2Endpoints...)
+	return &protocol.RelayV2Info{Enabled: true, Endpoint: eps[0], Endpoints: eps}
+}
+
+// SetRelay configures relay mode: relayHost is the public relay address
+// advertised to peers and relayBase/relayCount define the assignable UDP port
+// range. Callers must hold no locks. The relay socket for a network's port is
+// bound lazily (via SetRelayEnsure) the first time the port is needed, so a
+// large relayCount costs nothing at startup.
+func (s *Store) SetRelay(relayHost string, relayBase, relayCount int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayHost = relayHost
+	s.relayBase = relayBase
+	s.relayCount = relayCount
+}
+
+// SetRelayAlternates registers additional relay hosts advertised to peers as
+// candidate data planes. Each is served by its own relay instance sharing the
+// same coordination; this store only advertises them (see listPeersFrom) and
+// never binds their sockets. Callers must hold no locks.
+func (s *Store) SetRelayAlternates(hosts []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayAlternates = append([]string(nil), hosts...)
+}
+
+// SetRelayEnsure registers the function that lazily binds a single relay UDP
+// port. It is called under s.mu from ensureRelayPort; it must not call back
+// into the store without an external goroutine.
+func (s *Store) SetRelayEnsure(fn func(port int) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayEnsure = fn
+}
+
+// SetNodeEnsure registers the function that lazily binds a per-node unicast
+// relay port (Phase 3). Called under s.mu from ensureNodePort.
+func (s *Store) SetNodeEnsure(fn func(port int) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodeEnsure = fn
+}
+
+// SetRelayRelease registers the function that releases a bound relay UDP port
+// (socket and send-loop goroutine). Called under s.mu whenever a network's
+// broadcast port or a node's per-node relay port is removed, so relay ports
+// and goroutines are reclaimed instead of leaked.
+func (s *Store) SetRelayRelease(fn func(port int) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayRelease = fn
+}
+
+// SetRelayAllFlows registers the function that returns every live flow seen
+// on a relay port. Used by unicast routing to match the recipient across all
+// the hosts it has been seen using.
+func (s *Store) SetRelayAllFlows(fn func(port int) []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayAllFlows = fn
+}
+
+// SetRelaySend registers the function that sends data from a specific relay
+// socket. Used by unicast routing to forward from the sender's port.
+func (s *Store) SetRelaySend(fn func(port int, to string, data []byte) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relaySend = fn
+}
+
+// SetRelaySendFanned registers the function that broadcasts data from a
+// specific relay socket to every live endpoint seen there (except one). Used
+// by unicast routing as the fallback when the recipient's flow has not been
+// established yet.
+func (s *Store) SetRelaySendFanned(fn func(port int, except string, data []byte) int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relaySendFanned = fn
+}
+
+// relaySendFannedFrom writes data from the socket bound to port to every
+// live endpoint seen there, skipping except. Requires the route callback's
+// lock discipline (callers hold s.mu; the relay collects its targets under
+// the pair mutex only).
+func (s *Store) relaySendFannedFrom(port int, except string, data []byte) int {
+	if s.relaySendFanned == nil {
+		return 0
+	}
+	return s.relaySendFanned(port, except, data)
+}
+
+// relayEnabled reports whether relay mode is on.
+func (s *Store) relayEnabled() bool {
+	return s.relayHost != "" && s.relayCount > 0
+}
+
+// ensureRelayPort assigns a free relay port to the network if it does not
+// already have one, physically binding it through s.relayEnsure. Callers must
+// hold s.mu.
+func (s *Store) ensureRelayPort(ns *networkState) error {
+	if ns.relayPort != 0 {
+		// Re-bind after a restart that left the network with a persisted port.
+		if s.relayEnsure != nil {
+			s.netByPort[ns.relayPort] = ns
+			return s.relayEnsure(ns.relayPort)
+		}
+		return nil
+	}
+	if s.relayCount <= 0 {
+		return errors.New("no relay ports configured")
+	}
+	// Try each port in the pool; skip ports already taken by another network
+	// or ports that fail to bind (in use by a foreign process). The pool is
+	// scanned a few times so a sparse but busy range still yields a free slot.
+	for i := 0; i < s.relayCount*8; i++ {
+		candidate := s.relayBase + (i % s.relayCount)
+		used := false
+		for _, other := range s.networks {
+			if other.relayPort == candidate {
+				used = true
+				break
+			}
+		}
+		if !used {
+			// Bind lazily; on failure (port taken by a foreign process) skip
+			// to the next candidate rather than failing the network.
+			if s.relayEnsure != nil {
+				if err := s.relayEnsure(candidate); err != nil {
+					continue
+				}
+			}
+			ns.relayPort = candidate
+			s.netByPort[candidate] = ns
+			return s.persistNetwork(ns)
+		}
+	}
+	return errors.New("no free relay ports")
+}
+
+// ensureNodePort assigns a per-node unicast relay port to the node if it does
+// not already have one (Phase 3). The port is drawn from the same pool as the
+// network broadcast ports but is tracked separately so it is never reused for
+// two nodes. Callers must hold s.mu.
+func (s *Store) ensureNodePort(ns *networkState, nodeID string) error {
+	if nodeID == "" {
+		return nil
+	}
+	if ns.nodePorts[nodeID] != 0 {
+		// Re-bind after a restart that left the node with a persisted port.
+		if s.nodeEnsure != nil {
+			if host := s.nodeRelayHostFor(ns.n.ID, nodeID); host == "" {
+				s.netByPort[ns.nodePorts[nodeID]] = ns
+				s.portToNode[ns.nodePorts[nodeID]] = nodeID
+				if err := s.nodeEnsure(ns.nodePorts[nodeID]); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if s.relayCount <= 0 {
+		return errors.New("no relay ports configured")
+	}
+	// A node served by an alternate relay instance gets a deterministic port
+	// (stable hash, linear scan for collisions) so the alternate instance —
+	// running the same pool/base — binds the same number, and its socket (not
+	// ours) serves the node. We only persist the topology here.
+	if host := s.instanceHostForNode(ns, nodeID); host != "" {
+		candidate, err := s.deterministicNodePort(ns, nodeID)
+		if err != nil {
+			return err
+		}
+		ns.nodePorts[nodeID] = candidate
+		if s.nodeRelayHost[ns.n.ID] == nil {
+			s.nodeRelayHost[ns.n.ID] = make(map[string]string)
+		}
+		s.nodeRelayHost[ns.n.ID][nodeID] = host
+		_ = s.persistRelayTopo(ns.n.ID, nodeID, candidate, host)
+		return nil
+	}
+	used := func(candidate int) bool {
+		if s.netByPort[candidate] != nil || s.portToNode[candidate] != "" {
+			return true
+		}
+		for _, other := range s.networks {
+			if other.relayPort == candidate {
+				return true
+			}
+			for _, p := range other.nodePorts {
+				if p == candidate {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for i := 0; i < s.relayCount*16; i++ {
+		candidate := s.relayBase + (i % s.relayCount)
+		if used(candidate) {
+			continue
+		}
+		// Bind lazily; on failure (port taken by a foreign process) skip to
+		// the next candidate rather than failing the node.
+		if s.nodeEnsure != nil {
+			if err := s.nodeEnsure(candidate); err != nil {
+				continue
+			}
+		}
+		ns.nodePorts[nodeID] = candidate
+		s.netByPort[candidate] = ns
+		s.portToNode[candidate] = nodeID
+		// Persist the node's relay topology (multi-instance): which instance
+		// host serves it and on which port, so a restart keeps the ports peers
+		// already cached and cross-instance routing knows the serving host.
+		host := s.instanceHostForNode(ns, nodeID)
+		if host != "" {
+			if s.nodeRelayHost[ns.n.ID] == nil {
+				s.nodeRelayHost[ns.n.ID] = make(map[string]string)
+			}
+			s.nodeRelayHost[ns.n.ID][nodeID] = host
+		}
+		_ = s.persistRelayTopo(ns.n.ID, nodeID, candidate, host)
+		return nil
+	}
+	return errors.New("no free relay node ports")
+}
+
+// releaseNodePortLocked releases the per-node unicast relay port bound to a
+// node, if any, returning it to the free pool. It removes the socket (stopping
+// its send-loop goroutine) and clears all port bookkeeping. Callers must hold
+// s.mu.
+// instanceHostForNode returns the relay instance host that serves the node's
+// per-node unicast relay port. With no alternates configured every node is
+// served by the network's primary relay host and this returns "", keeping the
+// single-instance topology byte-for-byte unchanged on the wire. With
+// alternates configured, nodes are spread across instances by a stable hash
+// of the node ID so a node's serving instance never changes as peers join or
+// leave. Callers must hold s.mu.
+func (s *Store) instanceHostForNode(ns *networkState, nodeID string) string {
+	if len(s.relayAlternates) == 0 {
+		return ""
+	}
+	hosts := make([]string, 0, 1+len(s.relayAlternates))
+	if s.relayHost != "" {
+		hosts = append(hosts, s.relayHost)
+	}
+	seen := map[string]bool{}
+	for _, alt := range s.relayAlternates {
+		if alt == "" {
+			continue
+		}
+		h := hostNorm(alt)
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		hosts = append(hosts, alt)
+	}
+	if len(hosts) <= 1 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(nodeID))
+	idx := binary.BigEndian.Uint32(sum[:4]) % uint32(len(hosts))
+	host := hosts[idx]
+	if hostNorm(host) == hostNorm(s.relayHost) {
+		return ""
+	}
+	return host
+}
+
+// nodeRelayHostFor returns the relay instance host serving the given node's
+// per-node unicast relay port, or "" when the node is served by the network's
+// primary relay host. Callers must hold s.mu.
+func (s *Store) nodeRelayHostFor(netID, nodeID string) string {
+	if m := s.nodeRelayHost[netID]; m != nil {
+		return m[nodeID]
+	}
+	return ""
+}
+
+// deterministicNodePort computes the per-node unicast relay port an alternate
+// relay instance binds for the node: a stable hash of the network+node ID
+// into the shared pool, walking forward on collision so every instance running
+// the same pool/base resolves the same number.
+func (s *Store) deterministicNodePort(ns *networkState, nodeID string) (int, error) {
+	if s.relayCount <= 0 {
+		return 0, errors.New("no relay ports configured")
+	}
+	seed := sha256.Sum256([]byte(ns.n.ID + "/" + nodeID))
+	start := int(binary.BigEndian.Uint32(seed[:4]) % uint32(s.relayCount))
+	taken := func(c int) bool {
+		for _, p := range ns.nodePorts {
+			if p == c {
+				return true
+			}
+		}
+		return s.netByPort[c] != nil || s.portToNode[c] != ""
+	}
+	for i := 0; i < s.relayCount; i++ {
+		c := s.relayBase + ((start + i) % s.relayCount)
+		if !taken(c) {
+			return c, nil
+		}
+	}
+	return 0, errors.New("no free relay node ports")
+}
+
+// persistRelayTopo writes one node's relay topology record under bktRelayTopo
+// (key "netID/nodeID"). A node served by the primary instance (host=="")
+// still persists its port so the port survives restarts; the host stays empty
+// so no cross-instance mapping is implied.
+func (s *Store) persistRelayTopo(netID, nodeID string, port int, host string) error {
+	if s.db == nil {
+		return nil
+	}
+	rec := relayTopoRecord{Port: port, Host: host}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktRelayTopo).Put([]byte(netID+"/"+nodeID), b)
+	})
+}
+
+// deleteRelayTopo removes one node's relay topology record. Safe on a missing
+// record.
+func (s *Store) deleteRelayTopo(netID, nodeID string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktRelayTopo).Delete([]byte(netID + "/" + nodeID))
+	})
+}
+
+func (s *Store) releaseNodePortLocked(ns *networkState, nodeID string) {
+	if ns == nil {
+		return
+	}
+	port := ns.nodePorts[nodeID]
+	if port == 0 {
+		return
+	}
+	delete(ns.nodePorts, nodeID)
+	delete(s.portToNode, port)
+	delete(s.netByPort, port)
+	if s.nodeRelayHost != nil && s.nodeRelayHost[ns.n.ID] != nil {
+		delete(s.nodeRelayHost[ns.n.ID], nodeID)
+	}
+	_ = s.deleteRelayTopo(ns.n.ID, nodeID)
+	if s.relayRelease != nil {
+		_ = s.relayRelease(port)
+	}
+}
+
+// releaseNetworkPortsLocked releases a network's broadcast relay port and every
+// per-node unicast port bound to it, freeing their sockets and goroutine
+// resources. Callers must hold s.mu.
+func (s *Store) releaseNetworkPortsLocked(ns *networkState) {
+	if ns == nil {
+		return
+	}
+	for id := range ns.nodePorts {
+		s.releaseNodePortLocked(ns, id)
+	}
+	if ns.relayPort != 0 {
+		delete(s.netByPort, ns.relayPort)
+		if s.relayRelease != nil {
+			_ = s.relayRelease(ns.relayPort)
+		}
+		ns.relayPort = 0
+	}
+}
+
+// RelayRouteNodePort routes a frame that arrived at a per-node unicast relay
+// port. port is the socket the frame arrived on — which identifies the
+// recipient (each node's WireGuard socket addresses only its peer's port) —
+// and sender is the observed source NAT mapping. The frame is forwarded from
+// the SENDER's socket to the recipient's mapping opened toward the sender's
+// port, so the recipient's NAT accepts it (see Relay docs). Returns true when
+// the frame was routed or deliberately dropped; false falls back to broadcast
+// fan-out (e.g. the port is not a node port).
+func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	recipientID := s.portToNode[port]
+	if recipientID == "" {
+		return false
+	}
+	ns := s.netByPort[port]
+	if ns == nil {
+		return true
+	}
+	senderHost, _, err := net.SplitHostPort(sender)
+	if err != nil {
+		return true
+	}
+	log.Printf("relay node %d: frame from %s for %s kind=%.1d len=%d", port, sender, recipientID, data[0], len(data))
+	// Identify the sender node. An exact NAT mapping ("host:port") can only
+	// be trusted when its host has one owner. Siblings behind one egress share
+	// the public IP, so a mapping pinned by the flow hook may belong to the
+	// wrong sibling; for a shared host, skip every host-based resolver and
+	// fan out from all sibling node ports below. For exclusive hosts, use the
+	// exact mapping first, then the control-plane host and reverse index (the
+	// sender's data-plane NAT IP can differ from its control-plane IP).
+	senderNorm := hostNorm(senderHost)
+	// A pinned "host:port" from the flow hook is only trustworthy when the
+	// host has one owner. Siblings behind one egress share the public IP, so a
+	// pinned flow can belong to the wrong sibling (the live NAS/phone bug:
+	// both flows on 39.180.206.133 were pinned to NAS, so phone frames were
+	// routed from NAS's node port and never reached sdserver). For a shared
+	// host, skip the exact mapping and fan out from every sibling's node port.
+	sharedSender := s.hostOwnedBySeveralLocked(ns, senderNorm)
+	var senderID string
+	if !sharedSender {
+		if owner := ns.flowByNode[sender]; owner != "" {
+			senderID = owner
+		}
+	}
+	if senderID == "" && !sharedSender {
+		// Only attribute by control-plane / reverse-index host when the host
+		// has exactly one owner. Siblings behind one egress share a public IP,
+		// so picking the first map entry sends the frame from the wrong node
+		// port; the recipient's NAT then has no mapping for that source port
+		// and drops it. Ambiguous hosts fall through to the self-endpoint and
+		// neighbor resolvers, which can exclude the recipient.
+		senderID = s.uniqueCtrlHostNodeLocked(ns, senderNorm)
+		if senderID == "" {
+			senderID = s.exclusiveHostOwnerLocked(ns, senderNorm)
+		}
+	}
+	// Last-resort attribution: the sender's data-plane host may still be
+	// unattributed (throttled flow hook hasn't fired, or the flow is brand
+	// new). The node's own advertised direct endpoint is the strongest clue —
+	// it matches when the control plane rides a proxy but the data plane
+	// exits the real public address. Then neighbor /23-/16 matching against
+	// the port owner's peers resolves it inline so the very first handshake
+	// frames are not dropped.
+	if senderID == "" && !sharedSender {
+		if id := s.attribSelfEndpointHostLocked(ns, senderHost); id != "" {
+			senderID = id
+			s.learnNodeHostLocked(ns, id, senderHost)
+			log.Printf("relay node %d: attributed sender host %s to node %s (self-advertised endpoint)", port, senderHost, id)
+		}
+	}
+	if senderID == "" && !sharedSender {
+		if id := s.attribNeighborHostLocked(ns, port, senderHost); id != "" {
+			senderID = id
+			log.Printf("relay node %d: attributed sender host %s to node %s (router neighbor fallback)", port, senderHost, id)
+		}
+	}
+	// Frames whose sender host is shared by several peers cannot be pinned to
+	// one node port. Fan out from every known sibling's node port below; the
+	// recipient's NAT accepts the copy matching its mapping and drops the
+	// rest. A host no known peer advertises is not a shared egress (e.g. an
+	// ambiguous self-endpoint) and is dropped to avoid spraying the network.
+	log.Printf("relay node %d: sender=%s sendernorm=%q senderID=%q sharedSender=%v", port, sender, senderNorm, senderID, sharedSender)
+	deliver := func(senderPort int) bool {
+		// Destination: the recipient's inbound mapping on the sender's socket.
+		// The recipient opens it by keepaliving to relayHost:<sender's port>; it
+		// will appear as a flow on the sender's port whose host is the recipient.
+		// A node can be reached through several public hosts (control-plane and
+		// data-plane IPs may differ), so collect every host the recipient has
+		// been seen using and match the sender port's live flows against each.
+		//
+		// Two kinds of target are valid, resolved by increasing specificity:
+		// 1) The recipient's exact NAT mappings ("host:port"), pinned by the
+		//    authoritative flow and the full-address reverse index. These
+		//    disambiguate siblings behind one egress (Mac 39.180.139.85:4302 vs
+		//    NAS 39.180.139.85:1213) even though they share public IP.
+		// 2) Hosts exclusively the recipient's — unowned (first claim) or owned
+		//    only by the recipient — used for CGNAT multi-egress fan-out.
+		// A host shared by several nodes is only reachable through the exact
+		// flows in (1); when the recipient has no pinned flow yet (bootstrap),
+		// fan out to every live flow under the shared host rather than dropping,
+		// because a wrong-sibling copy is dropped harmlessly by its WG session.
+		recipientFlows := map[string]bool{}
+		if rf := ns.relayFlowByNode[recipientID]; rf != "" {
+			recipientFlows[rf] = true
+		}
+		for fl, owner := range ns.flowByNode {
+			if owner == recipientID {
+				recipientFlows[fl] = true
+			}
+		}
+		recipientHosts := map[string]bool{}
+		recipientSharedHosts := map[string]bool{}
+		addRecipientHost := func(h string) {
+			if h == "" {
+				return
+			}
+			nh := hostNorm(h)
+			owners := ns.nodeByHost[nh]
+			switch {
+			case len(owners) == 0:
+				recipientHosts[nh] = true
+			case len(owners) == 1 && owners[recipientID]:
+				recipientHosts[nh] = true
+			case owners[recipientID]:
+				// Shared host (e.g. Mac and NAS behind one home egress): with no
+				// pinned exact flow, fan out under it.
+				recipientSharedHosts[nh] = true
+			}
+		}
+		addRecipientHost(ns.ctrlHost[recipientID])
+		for hosts, ids := range ns.nodeByHost {
+			if ids[recipientID] {
+				addRecipientHost(hosts)
+			}
+		}
+		// A pinned flow's host is always fan-out territory. The flow hook
+		// attributes a data-plane address to a node by matching its control-plane
+		// host, which is a coin-flip when two siblings share one egress IP (Mac
+		// and NAS both connect from 39.180.139.85) — so the "pinned" flow may
+		// actually be the sibling's socket. Spreading under that host guarantees
+		// the recipient's real mapping still receives a copy; the extra copy is
+		// dropped harmlessly by the sibling's WG session.
+		for fl := range recipientFlows {
+			if h, _, err := net.SplitHostPort(fl); err == nil {
+				recipientSharedHosts[hostNorm(h)] = true
+			}
+		}
+		if len(recipientFlows) == 0 && len(recipientHosts) == 0 && len(recipientSharedHosts) == 0 {
+			// No known host or flow for the recipient: cannot reach it on this
+			// socket. Let the caller try another candidate sender socket or the
+			// shared broadcast fan-out.
+			if rf := ns.relayFlowByNode[recipientID]; rf == "" {
+				return false
+			}
+		}
+		fls := s.relayFlowsByPort(senderPort)
+		log.Printf("relay node %d: senderPort=%d recipientFlows=%v recipientHosts=%v sharedHosts=%v portflows=%v relayFlowByNode[%q]=%q", port, senderPort, recipientFlows, recipientHosts, recipientSharedHosts, fls, recipientID, ns.relayFlowByNode[recipientID])
+		// Deliver to every live flow whose target is the recipient, one send per
+		// distinct flow. Multi-egress fan-out: a CGNAT subscriber can hold
+		// several live public mappings (the operator rotates egress per flow) and
+		// the recipient opens one inbound flow toward the sender's node port per
+		// egress it uses. Sending only the first matching flow means half the
+		// frames hit a mapping the peer no longer reads (~50% loss).
+		sentTo := make(map[string]bool, len(fls))
+		for _, fl := range fls {
+			if fl == sender {
+				continue
+			}
+			if sentTo[fl] {
+				continue
+			}
+			if recipientFlows[fl] {
+				ok := s.relaySendFrom(senderPort, fl, data)
+				log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
+				sentTo[fl] = true
+				continue
+			}
+			fh, _, err := net.SplitHostPort(fl)
+			if err != nil {
+				continue
+			}
+			nh := hostNorm(fh)
+			if recipientHosts[nh] {
+				ok := s.relaySendFrom(senderPort, fl, data)
+				log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
+				sentTo[fl] = true
+				if !ok {
+					// A failed send means the flow went stale between lookup and
+					// write; drop the host so a later host-level send is not
+					// skipped by the per-host dedup.
+					delete(recipientHosts, nh)
+				}
+				continue
+			}
+			if recipientSharedHosts[nh] {
+				// Bootstrap fan-out under a shared egress: the recipient's own
+				// flow is among these hosts but not pinned yet; extra sibling
+				// copies are dropped by their own WG session.
+				ok := s.relaySendFrom(senderPort, fl, data)
+				log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v (shared-host fan-out)", port, recipientID, senderPort, fl, ok)
+				sentTo[fl] = true
+				continue
+			}
+		}
+		if len(sentTo) > 0 {
+			return true
+		}
+		// No matching inbound mapping on the sender socket yet: the recipient has
+		// not opened a flow toward the sender's per-node port. Its authoritative
+		// flow (relayFlowByNode) still identifies a live mapping, and is fully
+		// reliable for a recipient hosted on the relay host itself (the docker
+		// node), whose socket accepts from any server source port. Try it once
+		// from the sender's socket before falling back to broadcast fan-out.
+		if rf := ns.relayFlowByNode[recipientID]; rf != "" && rf != sender {
+			if s.relaySendFrom(senderPort, rf, data) {
+				log.Printf("relay node %d: UNICAST %s senderPort=%d -> flow %s (flow-fallback)", port, recipientID, senderPort, rf)
+				return true
+			}
+			log.Printf("relay node %d: flow-fallback send to %s failed", port, rf)
+		}
+		return false
+	}
+	if senderID == "" {
+		// A shared egress hides which peer owns the source mapping. Try every
+		// peer known to use that host: the recipient accepts the copy whose
+		// source port matches one of its NAT mappings and drops the others.
+		// This keeps shared-host traffic flowing while the per-flow hook
+		// learns exact ownership. A host no known peer advertises is not a
+		// shared egress (e.g. an ambiguous self-endpoint), so drop it rather
+		// than letting it inject frames from every node port.
+		candidates := map[string]bool{}
+		for id := range ns.nodeByHost[senderNorm] {
+			candidates[id] = true
+		}
+		for id, h := range ns.ctrlHost {
+			if hostNorm(h) == senderNorm {
+				candidates[id] = true
+			}
+		}
+		if len(candidates) == 0 {
+			return true
+		}
+		sent := false
+		for id := range candidates {
+			if id == recipientID {
+				continue
+			}
+			sp := ns.nodePorts[id]
+			if sp == 0 || sp == port {
+				continue
+			}
+			if deliver(sp) {
+				sent = true
+			}
+		}
+		if !sent {
+			s.relaySendFannedFrom(ns.relayPort, sender, data)
+		}
+		return true
+	}
+	senderPort := ns.nodePorts[senderID]
+	if senderPort == 0 || senderPort == port {
+		s.relaySendFannedFrom(ns.relayPort, sender, data)
+		return true
+	}
+	if deliver(senderPort) {
+		return true
+	}
+	s.relaySendFannedFrom(ns.relayPort, sender, data)
+	return true
+}
+
+// relayFlowsByPort returns every live flow seen on a relay port. Requires the
+// route callback's lock discipline (callers hold s.mu; this acquires the pair
+// mutex only).
+func (s *Store) relayFlowsByPort(port int) []string {
+	if s.relayAllFlows == nil {
+		return nil
+	}
+	return s.relayAllFlows(port)
+}
+
+// relaySendFrom sends data from the socket bound to port. Requires the route
+// callback's lock discipline (callers hold s.mu; this acquires the relay mutex
+// only).
+func (s *Store) relaySendFrom(port int, to string, data []byte) bool {
+	if s.relaySend == nil {
+		return false
+	}
+	return s.relaySend(port, to, data)
+}
+
+// net16Of returns the /16 prefix of an IPv4 host, or "" when not applicable.
+func net16Of(host string) string {
+	ip := net.ParseIP(host)
+	if ip == nil || ip.To4() == nil {
+		return ""
+	}
+	v := ip.To4()
+	return fmt.Sprintf("%d.%d", v[0], v[1])
+}
+
+// net23Of returns the /23 prefix of an IPv4 host, or "" when not applicable.
+// Mobile carrier CGNAT pools are frequently allocated in /23 (or smaller)
+// blocks, so two hosts sharing a /23 are good evidence of the same subscriber.
+func net23Of(host string) string {
+	ip := net.ParseIP(host)
+	if ip == nil || ip.To4() == nil {
+		return ""
+	}
+	v := ip.To4()
+	return fmt.Sprintf("%d.%d.%d", v[0], v[1], v[2]&0xFE)
+}
+
+// attribNeighborHostLocked attributes an unclassified data-plane host to a
+// node by network proximity. A flow seen on node port P is from one of the
+// port owner's peers; when the host's control/database host shares a /23 (or
+// falls back to /16) pool with exactly one peer's known hosts, that peer owns
+// it. This resolves the mobile/CGNAT case where a node's data-plane NAT IP
+// differs from its control-plane IP at the same operator. Returns "" when no
+// unambiguous neighbour match exists. Callers hold s.mu.
+// attribSelfEndpointHostLocked attributes an unclassified data-plane host to
+// a node whose self-advertised control/direct endpoint exactly matches it.
+// The node PUTs its own endpoint on every update, so that address is
+// authoritative for its data plane even when its control-plane egress is
+// routed through a proxy (e.g. a NAS behind a v2ray tunnel on the relay
+// host): the data-plane host may differ from the HTTPS source IP, which the
+// ctrlHost and reverse-index matches both miss. A host matching several
+// nodes' endpoints is ambiguous and never attributed. Callers hold s.mu.
+func (s *Store) attribSelfEndpointHostLocked(ns *networkState, host string) string {
+	if host == "" {
+		return ""
+	}
+	normed := hostNorm(host)
+	match := ""
+	consider := func(nodeID, ep string) {
+		if ep == "" {
+			return
+		}
+		h, _, err := net.SplitHostPort(ep)
+		if err != nil {
+			return
+		}
+		if hostNorm(h) != normed {
+			return
+		}
+		if match != "" && match != nodeID {
+			match = "ambiguous"
+			return
+		}
+		match = nodeID
+	}
+	for id, n := range ns.nodes {
+		if n == nil {
+			continue
+		}
+		consider(id, n.Endpoint)
+		consider(id, n.EndpointV6)
+		consider(id, n.LocalEndpoint)
+	}
+	if match == "" || match == "ambiguous" {
+		return ""
+	}
+	return match
+}
+
+// selfAdvertisedHost returns the normalized host of a node's own advertised
+// data-plane endpoint (v4 preferred, then v6), or "" when unset. It is the
+// strongest identity signal: the node reports the address its WireGuard socket
+// actually egresses from. Callers hold s.mu.
+func (s *Store) selfAdvertisedHost(ns *networkState, nodeID string) string {
+	if ns == nil {
+		return ""
+	}
+	n := ns.nodes[nodeID]
+	if n == nil {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(n.Endpoint); err == nil && h != "" {
+		return hostNorm(h)
+	}
+	if h, _, err := net.SplitHostPort(n.EndpointV6); err == nil && h != "" {
+		return hostNorm(h)
+	}
+	return ""
+}
+
+func (s *Store) attribNeighborHostLocked(ns *networkState, port int, host string) string {
+	if ns == nil || ns.nodePorts == nil {
+		return ""
+	}
+	hostNormed := hostNorm(host)
+	if len(ns.ctrlHost) == 0 {
+		return ""
+	}
+	// Only node ports are attributed here: the broadcast port has no owner,
+	// so there is no recipient whose peers can disambiguate the sender.
+	owner := s.portToNode[port]
+	if owner == "" {
+		return ""
+	}
+	// Candidates are the port owner's peers that already have a node port.
+	peers := make([]string, 0, len(ns.nodePorts))
+	for id := range ns.nodePorts {
+		if id != owner {
+			peers = append(peers, id)
+		}
+	}
+	if len(peers) == 0 {
+		return ""
+	}
+	// Known hosts per peer: control-plane plus any already-learned data-plane.
+	known := func(id string) []string {
+		var out []string
+		if c := ns.ctrlHost[id]; c != "" {
+			out = append(out, c)
+		}
+		if f := ns.relayFlowByNode[id]; f != "" {
+			if h, _, err := net.SplitHostPort(f); err == nil {
+				out = append(out, h)
+			}
+		}
+		for k, ids := range ns.nodeByHost {
+			if ids[id] {
+				out = append(out, k)
+			}
+		}
+		return out
+	}
+	// A peer that exclusively claims this exact host wins immediately. If
+	// several peers claim it, the host is a shared egress and cannot identify
+	// one sibling; fall through to /23-/16 adjacency, which also refuses ties.
+	if ids := ns.nodeByHost[hostNormed]; len(ids) == 1 {
+		for p := range ids {
+			if p != owner {
+				return p
+			}
+		}
+	}
+	n23, n16 := net23Of(host), net16Of(host)
+	if n23 == "" || n16 == "" {
+		return ""
+	}
+	// Pass 1: require a /23 match.
+	strong := ""
+	for _, p := range peers {
+		for _, h := range known(p) {
+			if net23Of(h) == n23 {
+				if strong != "" && strong != p {
+					strong = "ambiguous"
+				} else {
+					strong = p
+				}
+				break
+			}
+		}
+	}
+	if strong != "" && strong != "ambiguous" {
+		s.learnNodeHostLocked(ns, strong, host)
+		return strong
+	}
+	// Pass 2: relax to /16.
+	weak := ""
+	for _, p := range peers {
+		for _, h := range known(p) {
+			if net16Of(h) == n16 {
+				if weak != "" && weak != p {
+					weak = "ambiguous"
+				} else {
+					weak = p
+				}
+				break
+			}
+		}
+	}
+	if weak != "" && weak != "ambiguous" {
+		s.learnNodeHostLocked(ns, weak, host)
+		return weak
+	}
+	return ""
+}
+
+// hostOwnedBySeveralLocked reports whether a public host is used by more
+// than one node, either via the reverse index or the control-plane egress.
+// Such a host is a shared egress and cannot identify one sibling. Callers
+// hold s.mu.
+func (s *Store) hostOwnedBySeveralLocked(ns *networkState, host string) bool {
+	if ns == nil || host == "" {
+		return false
+	}
+	owners := make(map[string]bool, 2)
+	for id := range ns.nodeByHost[host] {
+		owners[id] = true
+	}
+	for id, h := range ns.ctrlHost {
+		if hostNorm(h) == host {
+			owners[id] = true
+		}
+	}
+	return len(owners) > 1
+}
+
+// OnRelayFlow is invoked by the relay (from its port read loop) whenever a
+// real WireGuard packet is seen from a NAT mapping on one of this server's
+// relay ports. It records the live mapping and attributes it to the node whose
+// control-plane public IP matches the mapping's host, so the store can expose
+// each peer's exact current relay flow (the address to punch for a direct
+// connection) and later route unicast relay traffic to the right node.
+func (s *Store) OnRelayFlow(port int, addr string) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	// Throttle per exact NAT mapping: this runs per UDP packet, but one
+	// flow only needs refreshing about once a second. A network-wide gate
+	// lets the first flow in each second starve every other node sharing the
+	// egress, which is exactly how relayFlowByNode goes stale. Read under
+	// RLock so the hot path never takes the exclusive lock or scans ctrlHost.
+	needRefresh := true
+	s.mu.RLock()
+	ns := s.netByPort[port]
+	if ns != nil {
+		if t, ok := ns.flowWrite[addr]; ok && now.Sub(t) < time.Second {
+			needRefresh = false
+		}
+	}
+	s.mu.RUnlock()
+	if ns == nil {
+		return
+	}
+	if !needRefresh {
+		return
+	}
+	s.mu.Lock()
+	ns = s.netByPort[port]
+	if ns == nil {
+		s.mu.Unlock()
+		return
+	}
+	if ns.flowWrite == nil {
+		ns.flowWrite = make(map[string]time.Time)
+	}
+	if t, ok := ns.flowWrite[addr]; ok && now.Sub(t) < time.Second {
+		s.mu.Unlock()
+		return
+	}
+	ns.flowWrite[addr] = now
+	if len(ns.relaySeen) == 0 || now.Unix()%8 == 0 {
+		s.pruneStaleRelayFlowsLocked(ns, now)
+		// Prune stale reverse-index hosts on the same periodic sweep so a
+		// CGNAT egress the peer stopped using stops steering frames.
+		s.pruneStaleHostsLocked(ns, now)
+	}
+	ns.relaySeen[addr] = now
+	// Attribute the observed data-plane mapping to a node. Prefer the
+	// control-plane host; when it does not match — a node's data-plane NAT IP
+	// can differ from its control-plane IP, e.g. an operator that allocates a
+	// different public address per session — resolve via the reverse index
+	// that the control-plane attribution from the same node seeded.
+	matchNode := ""
+	hostNormed := hostNorm(host)
+	// A host shared by several peers cannot identify one node. Do not pin an
+	// exact flow under it: the flow hook cannot tell siblings apart, and a
+	// wrong pin poisons both relayFlowByNode and flowByNode (the live bug had
+	// phone and NAS flows both pinned to NAS). Clear any stale pin for this
+	// address and leave attribution to the shared-host fan-out.
+	if s.hostOwnedBySeveralLocked(ns, hostNormed) {
+		delete(ns.flowByNode, addr)
+		for id := range ns.nodeByHost[hostNormed] {
+			if ns.relayFlowByNode[id] == addr {
+				delete(ns.relayFlowByNode, id)
+			}
+		}
+		for id, h := range ns.ctrlHost {
+			if hostNorm(h) == hostNormed && ns.relayFlowByNode[id] == addr {
+				delete(ns.relayFlowByNode, id)
+			}
+		}
+		s.mu.Unlock()
+		return
+	}
+	// A flow first seen by one node keeps its ownership: the exact NAT
+	// mapping (host:port) is a distinct socket, so a shared public IP (home
+	// broadband egress, Mac 39.180.139.85:4302 vs NAS 39.180.139.85:1213)
+	// never flaps attribution between siblings on the host-only key.
+	if owner := ns.flowByNode[addr]; owner != "" {
+		matchNode = owner
+		ns.relayFlowByNode[owner] = addr
+	}
+	if matchNode == "" {
+		// Never guess between siblings that share a control-plane egress:
+		// the first map entry used to win, poisoning relayFlowByNode with a
+		// sibling's NAT mapping (the relay then sent that node's traffic to
+		// the wrong port). Ambiguous hosts defer to the self-endpoint and
+		// neighbor resolvers below.
+		if id := s.uniqueCtrlHostNodeLocked(ns, hostNormed); id != "" {
+			ns.relayFlowByNode[id] = addr
+			s.learnNodeHostLocked(ns, id, host)
+			matchNode = id
+		}
+	}
+	if matchNode == "" {
+		if id := s.exclusiveHostOwnerLocked(ns, hostNormed); id != "" {
+			ns.relayFlowByNode[id] = addr
+			matchNode = id
+		}
+	}
+	// A data-plane host that matches no known control/IP host may still be a
+	// peer of the node this port belongs to (its operator NAT pool masks the
+	// node behind a different public IP). Prefer the node's own advertised
+	// endpoint — the strongest identity signal, covering the proxied
+	// control-plane case — then resolve by /23-/16 adjacency to the peers'
+	// known hosts — catches the mobile/CGNAT case (phone data-plane
+	// 223.160.208.21 vs control-plane 223.160.209.21) that otherwise strands
+	// every phone<->Mac handshake on the unknown-sender drop path.
+	if matchNode == "" {
+		if id := s.attribSelfEndpointHostLocked(ns, host); id != "" {
+			ns.relayFlowByNode[id] = addr
+			s.learnNodeHostLocked(ns, id, host)
+			matchNode = id
+			log.Printf("relay flow: attributed %s to node %s (self-advertised endpoint, port %d)", host, id, port)
+		}
+	}
+	if matchNode == "" {
+		if id := s.attribNeighborHostLocked(ns, port, host); id != "" {
+			ns.relayFlowByNode[id] = addr
+			matchNode = id
+			log.Printf("relay flow: attributed %s to node %s (neighbor /23-/16, port %d)", host, id, port)
+		}
+	}
+	// Record the full "host:port" mapping -> node so the per-node router and
+	// future flow hook calls can resolve by exact address, disambiguating
+	// nodes that share a public IP behind one egress.
+	if matchNode != "" {
+		if ns.flowByNode == nil {
+			ns.flowByNode = make(map[string]string)
+		}
+		ns.flowByNode[addr] = matchNode
+	}
+	s.mu.Unlock()
+}
+
+// learnNodeHostLocked records that a node has been seen using a public host
+// (control-plane or data-plane), seeding the reverse index used by the
+// per-node router to resolve senders whose data-plane host differs from
+// their control-plane host. Callers hold s.mu.
+func (s *Store) learnNodeHostLocked(ns *networkState, nodeID, host string) {
+	if host == "" {
+		return
+	}
+	normed := hostNorm(host)
+	if ns.nodeByHost[normed] == nil {
+		ns.nodeByHost[normed] = make(map[string]bool)
+	}
+	ns.nodeByHost[normed][nodeID] = true
+	if ns.hostSeen == nil {
+		ns.hostSeen = make(map[string]time.Time)
+	}
+	ns.hostSeen[normed] = time.Now()
+}
+
+// unlearnNodeHostLocked removes a node from the reverse index for a host,
+// used when the node's control-plane egress changes and the old host must
+// not keep routing to it. Callers hold s.mu.
+func (s *Store) unlearnNodeHostLocked(ns *networkState, nodeID, host string) {
+	if host == "" {
+		return
+	}
+	normed := hostNorm(host)
+	if ids, ok := ns.nodeByHost[normed]; ok {
+		delete(ids, nodeID)
+		if len(ids) == 0 {
+			delete(ns.nodeByHost, normed)
+		}
+	}
+	if ns.hostSeen != nil {
+		if len(ns.nodeByHost[normed]) == 0 {
+			delete(ns.hostSeen, normed)
+		}
+	}
+	if f := ns.relayFlowByNode[nodeID]; f != "" {
+		if h, _, err := net.SplitHostPort(f); err == nil && hostNorm(h) == normed {
+			delete(ns.relayFlowByNode, nodeID)
+		}
+	}
+}
+
+// pruneStaleRelayFlowsLocked drops NAT mappings that have been idle past the
+// relay's own one-minute eviction window. It also clears the authoritative
+// relayFlowByNode entry when that node's most recent mapping disappeared, so a
+// peer that moved to a new egress stops advertising the dead mapping as its
+// direct-punch hint. Callers hold s.mu.
+func (s *Store) pruneStaleRelayFlowsLocked(ns *networkState, now time.Time) {
+	for ep, t := range ns.relaySeen {
+		if now.Sub(t) < time.Minute {
+			continue
+		}
+		delete(ns.relaySeen, ep)
+		delete(ns.flowByNode, ep)
+		delete(ns.flowWrite, ep)
+	}
+	for id, ep := range ns.relayFlowByNode {
+		if _, ok := ns.relaySeen[ep]; !ok {
+			delete(ns.relayFlowByNode, id)
+		}
+	}
+}
+
+// pruneStaleHostsLocked removes reverse-index hosts that have seen no
+// control-plane or data-plane traffic for hostStaleTTL. Without this, a
+// data-plane host learned from the relay flow hook lives in nodeByHost
+// forever: an operator that recycles a CGNAT pool can reassign that public
+// address to a different subscriber, and the stale mapping would keep
+// routing frames toward the old owner's flows. Control-plane hosts are
+// refreshed on every HTTPS call, so only genuinely idle hosts are pruned.
+// Callers hold s.mu.
+func (s *Store) pruneStaleHostsLocked(ns *networkState, now time.Time) {
+	if len(ns.hostSeen) == 0 {
+		return
+	}
+	// A host is live when it has a current relay flow (data-plane) or is a
+	// node's current ctrlHost (control-plane). hostSeen only records the
+	// last learn; live flows are tracked in relaySeen per NAT mapping, and
+	// relayFlowByNode holds each node's most recent attributed flow.
+	hostInFlows := func(host string, flows map[string]time.Time) bool {
+		for ep := range flows {
+			if h, _, err := net.SplitHostPort(ep); err == nil && hostNorm(h) == host {
+				return true
+			}
+		}
+		return false
+	}
+	isLive := func(host string) bool {
+		if host == "" {
+			return false
+		}
+		if hostInFlows(host, ns.relaySeen) {
+			return true
+		}
+		for id := range ns.nodes {
+			if c := ns.ctrlHost[id]; hostNorm(c) == host {
+				return true
+			}
+			if f := ns.relayFlowByNode[id]; f != "" {
+				if h, _, err := net.SplitHostPort(f); err == nil && hostNorm(h) == host {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for host, t := range ns.hostSeen {
+		if now.Sub(t) < hostStaleTTL {
+			continue
+		}
+		if isLive(host) {
+			continue
+		}
+		delete(ns.nodeByHost, host)
+		delete(ns.hostSeen, host)
+		log.Printf("relay: pruned stale host %s from reverse index (idle %v)", host, now.Sub(t))
+	}
+}
+
+// uniqueCtrlHostNodeLocked returns the node whose control-plane egress is the
+// given host, or "" when no node or more than one node uses it. Callers hold
+// s.mu.
+func (s *Store) uniqueCtrlHostNodeLocked(ns *networkState, host string) string {
+	if ns == nil || host == "" {
+		return ""
+	}
+	id := ""
+	for nodeID, c := range ns.ctrlHost {
+		if hostNorm(c) != host {
+			continue
+		}
+		if id != "" && id != nodeID {
+			return ""
+		}
+		id = nodeID
+	}
+	return id
+}
+
+// exclusiveHostOwnerLocked returns the nodeID that exclusively owns a host in
+// the reverse index, or "" when the host is unowned or shared by several
+// nodes. Callers hold s.mu.
+func (s *Store) exclusiveHostOwnerLocked(ns *networkState, host string) string {
+	if host == "" {
+		return ""
+	}
+	ids := ns.nodeByHost[hostNorm(host)]
+	if len(ids) != 1 {
+		return ""
+	}
+	for id := range ids {
+		return id
+	}
+	return ""
+}
+
+// ---- public API ----
+
+func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approvalRequired bool, shareOpts ...networkShareOpts) (protocol.CreateNetworkResp, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var so networkShareOpts
+	if len(shareOpts) > 0 {
+		so = shareOpts[0]
+	}
+	description, tags, visibility := "", so.tags, ""
+	if so.description != nil {
+		description = *so.description
+	}
+	if so.visibility != nil {
+		visibility = *so.visibility
+	}
+
+	if s.requireDeviceAuth {
+		if err := s.checkDeviceAuthLocked(deviceID); err != nil {
+			return protocol.CreateNetworkResp{}, err
+		}
+	}
+	if err := validateDeviceID(deviceID); err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	if err := validatePublicKey(publicKey); err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	// 校验分享元数据：visibility 只允许 "shareable" 或 ""，描述与标签需净化。
+	if visibility != "" && visibility != "shareable" && visibility != "private" {
+		return protocol.CreateNetworkResp{}, errors.New("invalid visibility")
+	}
+	if len(description) > 500 {
+		return protocol.CreateNetworkResp{}, errors.New("description too long")
+	}
+	if len(tags) > 8 {
+		return protocol.CreateNetworkResp{}, errors.New("too many tags")
+	}
+	for _, tg := range tags {
+		if len(tg) > 20 {
+			return protocol.CreateNetworkResp{}, errors.New("tag too long")
+		}
+	}
+	if deviceID != "" {
+		for _, other := range s.networks {
+			if other.n.OwnerDeviceID == deviceID {
+				return protocol.CreateNetworkResp{}, errors.New("该设备已创建网络（每设备仅能创建一个）")
+			}
+		}
+	}
+	if name != "" && (len(name) > 64 || strings.TrimSpace(name) == "") {
+		return protocol.CreateNetworkResp{}, errors.New("invalid network name")
+	}
+	sub := subnet
+	if sub == "" {
+		sub = s.autoSubnetLocked()
+	} else {
+		norm, err := validateSubnet(sub)
+		if err != nil {
+			return protocol.CreateNetworkResp{}, err
+		}
+		sub = norm
+	}
+	base, err := subnetBase(sub)
+	if err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+
+	nid, err := randomString(networkIDLen)
+	if err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	for s.networks[nid] != nil {
+		nid, _ = randomString(networkIDLen)
+	}
+	code, err := randomString(codeLen)
+	if err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	tok, err := randomToken()
+	if err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	nodeID, err := randomString(8)
+	if err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+
+	now := time.Now()
+	ns := &networkState{
+		n: protocol.Network{
+			ID:               nid,
+			PairingCode:      protocol.NormalizeCode(code),
+			OwnerNodeID:      nodeID,
+			CreatedAt:        now.UTC().Format(time.RFC3339),
+			Name:             name,
+			Subnet:           sub,
+			OwnerDeviceID:    deviceID,
+			LastActivityAt:   now.Unix(),
+			ApprovalRequired: approvalRequired,
+			Description:      description,
+			Tags:             tags,
+			Visibility:       visibility,
+		},
+		pairing: &pairing{
+			codeHash:  hashCode(code),
+			remaining: codeMaxUse,
+			expiresAt: now.Add(codeTTL),
+		},
+		nodes:           make(map[string]*protocol.Node),
+		pending:         make(map[string]*pendingNode),
+		lastActivityAt:  now.Unix(),
+		subnetBase:      base,
+		relaySeen:       make(map[string]time.Time),
+		ctrlHost:        make(map[string]string),
+		hostSeen:        make(map[string]time.Time),
+		nodeByHost:      make(map[string]map[string]bool),
+		relayFlowByNode: make(map[string]string),
+		flowByNode:      make(map[string]string),
+		nodePorts:       make(map[string]int),
+	}
+	s.netSeq++
+	ns.seq = s.netSeq
+	ip, err := ns.allocIP()
+	if err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	ns.nodes[nodeID] = &protocol.Node{
+		ID:        nodeID,
+		NetworkID: nid,
+		IP:        ip,
+		PublicKey: publicKey,
+		DeviceID:  deviceID,
+		LastSeen:  now.Unix(),
+		Role:      "owner",
+	}
+	s.networks[nid] = ns
+	s.byToken[hashToken(tok)] = tokenEntry{NetworkID: nid, NodeID: nodeID}
+	if err := s.upsertDeviceLocked(deviceID, publicKey, ""); err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+
+	if s.relayEnabled() {
+		if err := s.ensureRelayPort(ns); err != nil {
+			return protocol.CreateNetworkResp{}, err
+		}
+	}
+	if err := s.persistNetwork(ns); err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	if err := s.persistNode(nid, ns.nodes[nodeID]); err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	if err := s.persistToken(tok, tokenEntry{NetworkID: nid, NodeID: nodeID}); err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+
+	return protocol.CreateNetworkResp{
+		NetworkID:        nid,
+		PairingCode:      ns.n.PairingCode,
+		NodeID:           nodeID,
+		IP:               ip,
+		Token:            tok,
+		Subnet:           sub,
+		RelayPort:        ns.relayPort,
+		ApprovalRequired: ns.n.ApprovalRequired,
+	}, nil
+}
+
+// upsertDeviceLocked records or refreshes a device identity. Callers must
+// hold s.mu.  The name parameter seeds the display name on new devices; an
+// empty string leaves any existing name untouched.
+func (s *Store) upsertDeviceLocked(deviceID, publicKey, name string) error {
+	if deviceID == "" {
+		return nil
+	}
+	name = normalizeName(name)
+	now := time.Now().Unix()
+	d := s.devices[deviceID]
+	if d == nil {
+		d = &deviceRecord{
+			ID:        deviceID,
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			Name:      name,
+		}
+		s.devices[deviceID] = d
+	} else if name != "" && d.Name == "" {
+		d.Name = name
+	}
+	d.PublicKey = publicKey
+	d.LastSeen = now
+	return s.persistDevice(d)
+}
+
+// fillDeviceNameLocked applies a client-reported name without clobbering an
+// existing one; admin-set names always win. Callers hold s.mu.
+func (s *Store) fillDeviceNameLocked(d *deviceRecord, name string) {
+	if n := normalizeName(name); n != "" && d.Name == "" {
+		d.Name = n
+	}
+}
+
+// touchLocked refreshes the network activity timestamp and persists at most
+// every lastActThrot. Callers must hold s.mu.
+func (s *Store) touchLocked(ns *networkState, now time.Time) {
+	ts := now.Unix()
+	if ts <= ns.lastActivityAt {
+		return
+	}
+	ns.lastActivityAt = ts
+	ns.n.LastActivityAt = ts
+	if now.Unix()-ns.lastActWrite >= int64(lastActThrot/time.Second) {
+		ns.lastActWrite = now.Unix()
+		_ = s.persistNetwork(ns)
+	}
+}
+
+func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinResp, error) {
+	code := protocol.NormalizeCode(rawCode)
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.requireDeviceAuth {
+		if err := s.checkDeviceAuthLocked(deviceID); err != nil {
+			return protocol.JoinResp{}, err
+		}
+	}
+	if err := validatePublicKey(publicKey); err != nil {
+		return protocol.JoinResp{}, err
+	}
+
+	ns := s.networks[nid]
+	if ns == nil {
+		return protocol.JoinResp{}, ErrNotFound
+	}
+	p := ns.pairing
+	if now.Before(p.lockedUntil) {
+		return protocol.JoinResp{}, ErrCodeLocked
+	}
+	if p.codeHash != hashCode(code) {
+		p.failCount++
+		if p.failCount >= maxFails {
+			p.lockedUntil = now.Add(lockWindow)
+			p.failCount = 0
+		}
+		if err := s.persistNetwork(ns); err != nil {
+			log.Printf("persist brute-force lockout: %v", err)
+		}
+		return protocol.JoinResp{}, ErrCodeInvalid
+	}
+	if !p.expiresAt.IsZero() && now.After(p.expiresAt) {
+		return protocol.JoinResp{}, ErrCodeInvalid
+	}
+	if p.remaining == 0 {
+		return protocol.JoinResp{}, ErrCodeInvalid
+	}
+	if len(ns.nodes) >= protocol.MaxNodes {
+		return protocol.JoinResp{}, ErrNetworkFull
+	}
+	if p.remaining > 0 {
+		p.remaining--
+	}
+	p.failCount = 0
+
+	// A device may hold only ONE node per network. A reinstalled client whose
+	// bound-network sync missed its membership will re-join with the same
+	// deviceId; without this guard it would spawn a second node and confuse
+	// every peer. When the join code is already valid, revive the most recently
+	// seen membership under the device's current public key and drop any
+	// leftover duplicate nodes of the same device.
+	if deviceID != "" {
+		if host := latestNodeForDevice(ns.nodes, deviceID); host != nil {
+			return s.reviveNode(ns, host, publicKey, deviceID, now)
+		}
+	}
+
+	if ns.n.ApprovalRequired {
+		pendingID, err := randomString(12)
+		if err != nil {
+			return protocol.JoinResp{}, err
+		}
+		pnd := &pendingNode{
+			ID:        pendingID,
+			PublicKey: publicKey,
+			DeviceID:  deviceID,
+			NetworkID: nid,
+			CreatedAt: now,
+			ExpiresAt: now.Add(pendingTTL),
+			Status:    "pending",
+		}
+		ns.pending[pendingID] = pnd
+		if err := s.persistNetwork(ns); err != nil {
+			return protocol.JoinResp{}, err
+		}
+		if err := s.persistPending(pnd); err != nil {
+			return protocol.JoinResp{}, err
+		}
+		return protocol.JoinResp{
+			NetworkID: nid,
+			Name:      ns.n.Name,
+			Status:    "pending",
+			PendingID: pendingID,
+		}, nil
+	}
+
+	ip, err := ns.allocIP()
+	if err != nil {
+		return protocol.JoinResp{}, err
+	}
+	tok, err := randomToken()
+	if err != nil {
+		return protocol.JoinResp{}, err
+	}
+	nodeID, err := randomString(8)
+	if err != nil {
+		return protocol.JoinResp{}, err
+	}
+
+	node := &protocol.Node{
+		ID:        nodeID,
+		NetworkID: nid,
+		IP:        ip,
+		PublicKey: publicKey,
+		DeviceID:  deviceID,
+	}
+	ns.nodes[nodeID] = node
+	s.byToken[hashToken(tok)] = tokenEntry{NetworkID: nid, NodeID: nodeID}
+	if err := s.upsertDeviceLocked(deviceID, publicKey, ""); err != nil {
+		return protocol.JoinResp{}, err
+	}
+	s.touchLocked(ns, now)
+
+	if s.relayEnabled() {
+		if err := s.ensureRelayPort(ns); err != nil {
+			return protocol.JoinResp{}, err
+		}
+	}
+	if err := s.persistNetwork(ns); err != nil {
+		return protocol.JoinResp{}, err
+	}
+	if err := s.persistNode(nid, node); err != nil {
+		return protocol.JoinResp{}, err
+	}
+	if err := s.persistToken(tok, tokenEntry{NetworkID: nid, NodeID: nodeID}); err != nil {
+		return protocol.JoinResp{}, err
+	}
+
+	peers := make([]protocol.Node, 0, len(ns.nodes)-1)
+	for id, n := range ns.nodes {
+		if id != nodeID {
+			peers = append(peers, *n)
+		}
+	}
+
+	return protocol.JoinResp{
+		NetworkID: nid,
+		Name:      ns.n.Name,
+		NodeID:    nodeID,
+		IP:        ip,
+		Token:     tok,
+		Subnet:    ns.n.Subnet,
+		RelayPort: ns.relayPort,
+		Peers:     peers,
+	}, nil
+}
+
+// latestNodeForDevice returns the most recently seen node in nodes owned by
+// deviceID, or nil if the device has no membership there.
+func latestNodeForDevice(nodes map[string]*protocol.Node, deviceID string) *protocol.Node {
+	var best *protocol.Node
+	for _, n := range nodes {
+		if n.DeviceID != deviceID || n.ID == "" {
+			continue
+		}
+		if best == nil || n.LastSeen > best.LastSeen {
+			best = n
+		}
+	}
+	return best
+}
+
+// reviveNode re-binds a joining device to an existing membership instead of
+// creating a duplicate: the surviving node keeps its nodeID/IP, adopts the
+// device's current public key (a reinstall generates a fresh WG key), and
+// receives a fresh auth token. Any additional nodes the same device left
+// behind are removed so each device owns exactly one node.
+func (s *Store) reviveNode(ns *networkState, host *protocol.Node, publicKey, deviceID string, now time.Time) (protocol.JoinResp, error) {
+	host.PublicKey = publicKey
+	host.LastSeen = now.Unix()
+	for id, n := range ns.nodes {
+		if n.ID != host.ID && n.DeviceID == deviceID {
+			delete(ns.nodes, id)
+			if err := s.deleteNode(ns.n.ID, id); err != nil {
+				log.Printf("join: delete stale node %s/%s: %v", ns.n.ID, id, err)
+			}
+		}
+	}
+	tok, err := randomToken()
+	if err != nil {
+		return protocol.JoinResp{}, err
+	}
+	s.byToken[hashToken(tok)] = tokenEntry{NetworkID: ns.n.ID, NodeID: host.ID}
+	if err := s.persistToken(tok, tokenEntry{NetworkID: ns.n.ID, NodeID: host.ID}); err != nil {
+		return protocol.JoinResp{}, err
+	}
+	if err := s.upsertDeviceLocked(deviceID, publicKey, ""); err != nil {
+		return protocol.JoinResp{}, err
+	}
+	if err := s.persistNode(ns.n.ID, host); err != nil {
+		return protocol.JoinResp{}, err
+	}
+
+	peers := make([]protocol.Node, 0, len(ns.nodes)-1)
+	for id, n := range ns.nodes {
+		if id != host.ID {
+			peers = append(peers, *n)
+		}
+	}
+	return protocol.JoinResp{
+		NetworkID: ns.n.ID,
+		Name:      ns.n.Name,
+		NodeID:    host.ID,
+		IP:        host.IP,
+		Token:     tok,
+		Subnet:    ns.n.Subnet,
+		RelayPort: ns.relayPort,
+		Peers:     peers,
+		Status:    "rejoined",
+	}, nil
+}
+
+func (s *Store) SetEndpoint(token, endpoint, localEndpoint string, mapped bool) error {
+	if err := validateEndpoint(endpoint); err != nil {
+		return err
+	}
+	if err := validateEndpoint(localEndpoint); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	n := ns.nodes[te.NodeID]
+	if n == nil {
+		return ErrNotFound
+	}
+	n.Endpoint = endpoint
+	n.EndpointMapped = mapped
+	if endpoint != "" {
+		n.EndpointV6 = ""
+	}
+	n.LocalEndpoint = localEndpoint
+	n.LastSeen = time.Now().Unix()
+	s.touchLocked(ns, time.Now())
+	return s.persistNode(te.NetworkID, n)
+}
+
+// SetEndpointV6 updates only the node's global-IPv6 endpoint ([v6]:port),
+// keeping the v4/v6 advertisements independent: a device may roam between
+// v4-only and dual-stack networks without clobbering the other family.
+func (s *Store) SetEndpointV6(token, endpointV6 string) error {
+	if err := validateEndpoint(endpointV6); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	n := ns.nodes[te.NodeID]
+	if n == nil {
+		return ErrNotFound
+	}
+	n.EndpointV6 = endpointV6
+	n.LastSeen = time.Now().Unix()
+	s.touchLocked(ns, time.Now())
+	return s.persistNode(te.NetworkID, n)
+}
+
+// SetDirectEndpoints publishes the dedicated Relay v2 peer-to-peer socket
+// addresses and the node's advisory NAT classification. Empty values clear the
+// corresponding family, which is important when a device roams from a
+// dual-stack LAN to a v4-only network.
+func (s *Store) SetDirectEndpoints(token, endpoint, endpointV6, natType string) error {
+	if err := validateDirectEndpoint(endpoint); err != nil {
+		return err
+	}
+	if err := validateDirectEndpoint(endpointV6); err != nil {
+		return err
+	}
+	natType = strings.TrimSpace(natType)
+	switch natType {
+	case "open", "cone", "symmetric":
+	case "":
+		natType = "unknown"
+	default:
+		natType = "unknown"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	n := ns.nodes[te.NodeID]
+	if n == nil {
+		return ErrNotFound
+	}
+	n.DirectEndpoint = endpoint
+	n.DirectEndpointV6 = endpointV6
+	n.NATType = natType
+	n.LastSeen = time.Now().Unix()
+	s.touchLocked(ns, time.Now())
+	return s.persistNode(te.NetworkID, n)
+}
+
+// ListPeersFrom is ListPeers with the caller's public IP captured from the
+// control plane, which the relay-flow attribution uses to map observed NAT
+// mappings to nodes. relayPorts must be true when the caller's client
+// understands per-node unicast relay ports (Phase 3): only then is a node port
+// allocated for the caller and advertised to peers. Legacy clients pass false
+// and keep using the shared broadcast port, so mixed-version networks keep
+// interoperating through broadcast fan-out.
+func (s *Store) ListPeersFrom(token, remoteHost string, relayPorts bool) (protocol.PeersResp, error) {
+	return s.listPeersFrom(token, remoteHost, relayPorts)
+}
+
+func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protocol.PeersResp, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return protocol.PeersResp{}, ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return protocol.PeersResp{}, ErrNotFound
+	}
+	if me := ns.nodes[te.NodeID]; me != nil {
+		now := time.Now().Unix()
+		me.LastSeen = now
+		// Attribute control-plane calls to the caller's public IP for relay
+		// flow mapping. Loopback is always excluded (a local monitor is not
+		// the node's real egress). Calls arriving from the relay host's own
+		// public IP ARE attributed: a legitimate client hosted on the same
+		// machine (e.g. the web docker client) egresses through that address
+		// and must be routable. If a stray local process ever pollutes the
+		// attribution, unicast flow lookups simply miss and fall back to the
+		// broadcast fan-out below instead of dropping frames.
+		if remoteHost != "" && remoteHost != "127.0.0.1" && remoteHost != "::1" {
+			// Refuse to steal a host that another node already exclusively
+			// owns. A node's control-plane IP can legitimately change (roaming,
+			// home vs office egress), so this only rejects hosts already bound
+			// six ways: if the host is exclusively another node's, the remote
+			// side of this call is not the node's own egress but something that
+			// happens to share the address (e.g. the phone egressing through
+			// the Mac). One node owning the host for its control plane while
+			// this call arrives from the same IP would otherwise flip the
+			// attribution and poison the whole per-node routing.
+			existingOwner := s.exclusiveHostOwnerLocked(ns, remoteHost)
+			if existingOwner == "" || existingOwner == te.NodeID {
+				if old := ns.ctrlHost[te.NodeID]; old != "" && old != remoteHost {
+					s.unlearnNodeHostLocked(ns, te.NodeID, old)
+				}
+				ns.ctrlHost[te.NodeID] = remoteHost
+				s.learnNodeHostLocked(ns, te.NodeID, remoteHost)
+			} else if s.selfAdvertisedHost(ns, te.NodeID) == hostNorm(remoteHost) {
+				// A host already owned by another node can still be a genuine
+				// shared egress: two siblings behind one home broadband IP
+				// (Mac and NAS both egress from 39.180.139.102) make control
+				// calls from the same public address. The exclusive-owner guard
+				// above must not strand one sibling as unreachable. Co-learn
+				// it as a shared owner only when the node's own self-advertised
+				// data-plane endpoint host matches the call source — the
+				// strongest identity signal that this address really is the
+				// node's egress, not just somewhere it happens to call through
+				// (the phone-egresses-through-Mac case self-advertises a
+				// different host and stays refused). The existing owner is
+				// preserved so attribution never flips.
+				if old := ns.ctrlHost[te.NodeID]; old != "" && old != remoteHost {
+					s.unlearnNodeHostLocked(ns, te.NodeID, old)
+				}
+				ns.ctrlHost[te.NodeID] = remoteHost
+				s.learnNodeHostLocked(ns, te.NodeID, remoteHost)
+				log.Printf("relay: co-learned shared egress host %s for node %s (existing exclusive owner %s)", remoteHost, te.NodeID, existingOwner)
+			}
+		}
+		if now-ns.lastSeenWrite >= int64(lastSeenThrot/time.Second) {
+			// Snapshot the node while s.mu is held; the background
+			// goroutine may run after other writers mutate the live struct.
+			nodeCopy := *me
+			go func(networkID string, node *protocol.Node) {
+				_ = s.persistNode(networkID, node)
+			}(te.NetworkID, &nodeCopy)
+			ns.lastSeenWrite = now
+		}
+	}
+	// Network activity persistence (throttled to one DB write per lastActThrot):
+	// call synchronously since we already hold s.mu and the call is bounded.
+	s.touchLocked(ns, time.Now())
+	if s.relayEnabled() {
+		if err := s.ensureRelayPort(ns); err != nil {
+			return protocol.PeersResp{}, err
+		}
+		// Allocate a per-node unicast relay port for the caller (Phase 3)
+		// only when the client declares support for per-node relay ports.
+		// Legacy clients skip this and keep using the shared broadcast port,
+		// so mixed-version networks stay interoperable.
+		if relayPorts {
+			if err := s.ensureNodePort(ns, te.NodeID); err != nil {
+				return protocol.PeersResp{}, err
+			}
+		}
+	}
+	relayEP := ""
+	relayEPs := []string(nil)
+	if s.relayEnabled() {
+		relayEP = net.JoinHostPort(s.relayHost, fmt.Sprint(ns.relayPort))
+		// Multi-relay selection: when alternates are configured, advertise
+		// every candidate data plane on the same network relay port, primary
+		// first. Alternates are served by their own relay instance; peers
+		// probe RTT and pick the best. With no alternates the field stays
+		// unset so the wire format is unchanged for single-relay deployments.
+		if len(s.relayAlternates) > 0 {
+			relayEPs = []string{relayEP}
+			seen := map[string]bool{hostNorm(s.relayHost): true}
+			for _, alt := range s.relayAlternates {
+				if alt == "" || seen[hostNorm(alt)] {
+					continue
+				}
+				seen[hostNorm(alt)] = true
+				relayEPs = append(relayEPs, net.JoinHostPort(alt, fmt.Sprint(ns.relayPort)))
+			}
+		}
+	}
+	now := time.Now().Unix()
+	peers := make([]protocol.Node, 0, len(ns.nodes)-1)
+	me := ns.nodes[te.NodeID]
+	isOwnerAdmin := me != nil && (me.Role == "owner" || me.Role == "admin")
+	fillNodeView := func(n2 *protocol.Node) {
+		// Live online status: online within the same TTL the owner view uses.
+		n2.Online = now-n2.LastSeen < int64(lastSeenTTL/time.Second)
+		// The node record stores only the device id; attach the human-readable
+		// device name from the device registry when available.
+		if d := s.devices[n2.DeviceID]; d != nil {
+			n2.DeviceName = d.Name
+		}
+		// The node's most recent live relay NAT mapping, attributed by the
+		// relay flow hook; lets the caller punch at the exact address.
+		n2.RelayFlow = ns.relayFlowByNode[n2.ID]
+		// The node's per-node unicast relay port; peers use it to reach
+		// this node via relay without triggering broadcast fan-out.
+		n2.RelayPort = ns.nodePorts[n2.ID]
+		// In a multi-instance topology, tell peers which relay instance host
+		// serves this node's per-node port. Empty (collapsed onto the primary
+		// host) keeps the wire unchanged for single-instance deployments.
+		if m := s.nodeRelayHost[ns.n.ID]; m != nil {
+			n2.RelayHostOverride = m[n2.ID]
+		}
+	}
+	for id, n := range ns.nodes {
+		if id != te.NodeID {
+			n2 := *n
+			// 普通成员只看到对端设备名、IP、在线状态与设备 ID，不暴露角色。
+			// 注意：publicKey 必须保留——WireGuard 直连/中继都依赖对端公钥建立
+			// 隧道，隐藏它会让成员端无法配置任何 peer。AllowedSubnets 同样必须
+			// 保留：成员需要它来安装 WireGuard AllowedIPs 和系统路由，否则
+			// ownerless/managed 网络中的子网共享永远不可达。
+			if !isOwnerAdmin {
+				n2.Role = ""
+			}
+			fillNodeView(&n2)
+			// Keep the peer's self-advertised direct endpoint; the caller
+			// decides whether to use it or fall back to the relay endpoint.
+			peers = append(peers, n2)
+		}
+	}
+	var self *protocol.Node
+	if me != nil {
+		m2 := *me
+		fillNodeView(&m2)
+		self = &m2
+	}
+	return protocol.PeersResp{
+		Peers:            peers,
+		Name:             ns.n.Name,
+		Self:             self,
+		Subnet:           ns.n.Subnet,
+		ApprovalRequired: ns.n.ApprovalRequired,
+		RelayEndpoint:    relayEP,
+		RelayEndpoints:   relayEPs,
+		RelayV2:          s.relayV2InfoLocked(),
+	}, nil
+}
+
+func (s *Store) RemoveNode(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	// Release the node's per-node unicast relay port before dropping the node.
+	s.releaseNodePortLocked(ns, te.NodeID)
+	delete(ns.nodes, te.NodeID)
+	delete(s.byToken, hashToken(token))
+	if err := s.deleteNode(te.NetworkID, te.NodeID); err != nil {
+		return err
+	}
+	return s.deleteTokenByHash(hashToken(token))
+}
+
+// ---- device identity ----
+
+var deviceIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$`)
+
+// validateDeviceID checks the format of a client-supplied device identifier.
+func validateDeviceID(id string) error {
+	if id == "" {
+		return nil
+	}
+	if !deviceIDRe.MatchString(id) {
+		return errors.New("invalid deviceId (8-64 chars, alphanumeric, '-' or '_')")
+	}
+	return nil
+}
+
+// validatePublicKey checks that a client-supplied WireGuard public key is a
+// base64-encoded 32-byte key. An empty value is allowed (the field is
+// optional on some endpoints); anything non-empty must be well-formed so
+// junk cannot be persisted and fanned out to peers.
+func validatePublicKey(pk string) error {
+	if pk == "" {
+		return nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(pk)
+	if err != nil {
+		// Tolerate unpadded input; real keys are padded but be liberal.
+		raw, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(pk, "="))
+		if err != nil {
+			return errors.New("公钥格式无效（需 base64 编码的 WireGuard 公钥）")
+		}
+	}
+	if len(raw) != 32 {
+		return errors.New("公钥长度无效（需 32 字节 WireGuard 公钥）")
+	}
+	return nil
+}
+
+// maxNameLen caps client-supplied display names (network names are checked
+// separately with the same limit).
+const maxNameLen = 64
+
+// normalizeName trims and caps a display name.
+func normalizeName(name string) string {
+	name = strings.TrimSpace(name)
+	r := []rune(name)
+	if len(r) > maxNameLen {
+		return string(r[:maxNameLen])
+	}
+	return name
+}
+
+// validateDirectEndpoint accepts only literal IP:port values. Direct
+// candidates are dialled by every peer, so accepting hostnames here would let
+// a node turn the mesh into a DNS-resolution/reflection surface.
+func validateDirectEndpoint(ep string) error {
+	if ep == "" {
+		return nil
+	}
+	host, portStr, err := net.SplitHostPort(ep)
+	if err != nil || host == "" || portStr == "" {
+		return errors.New("endpoint 需为 host:port 形式")
+	}
+	if net.ParseIP(host) == nil {
+		return errors.New("direct endpoint 必须是 IP 地址")
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return errors.New("endpoint 端口无效")
+	}
+	return nil
+}
+
+// validateEndpoint checks the host:port shape of a peer-advertised endpoint.
+// An empty value is allowed (clears the endpoint).
+func validateEndpoint(ep string) error {
+	if ep == "" {
+		return nil
+	}
+	host, portStr, err := net.SplitHostPort(ep)
+	if err != nil || host == "" || portStr == "" {
+		return errors.New("endpoint 需为 host:port 形式")
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return errors.New("endpoint 端口无效")
+	}
+	return nil
+}
+
+// RegisterDevice records (or refreshes) a device identity and binds the
+// device's WireGuard public key to it.  The name parameter seeds the display
+// name on new devices; an empty string leaves any existing name untouched.
+func (s *Store) RegisterDevice(deviceID, publicKey, name string) error {
+	if err := validateDeviceID(deviceID); err != nil {
+		return err
+	}
+	if err := validatePublicKey(publicKey); err != nil {
+		return err
+	}
+	if deviceID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.requireDeviceAuth {
+		if err := s.checkDeviceAuthLocked(deviceID); err != nil {
+			return err
+		}
+	}
+	return s.upsertDeviceLocked(deviceID, publicKey, name)
+}
+
+// SetNodeDevice binds a device identity to one of the caller's own nodes.
+// Only the node's own token may change its binding.
+func (s *Store) SetNodeDevice(token, nodeID, deviceID string) error {
+	if err := validateDeviceID(deviceID); err != nil {
+		return err
+	}
+	if deviceID == "" {
+		return errors.New("missing deviceId")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if meID != nodeID {
+		return ErrUnauthorized
+	}
+	ns.nodes[nodeID].DeviceID = deviceID
+	if err := s.persistNode(ns.n.ID, ns.nodes[nodeID]); err != nil {
+		return err
+	}
+	return s.upsertDeviceLocked(deviceID, ns.nodes[nodeID].PublicKey, "")
+}
+
+// ClaimNetwork assigns ownership of a legacy (ownerless) network to the
+// device that already owns a node inside it.
+func (s *Store) ClaimNetwork(nid, token, deviceID string) error {
+	if err := validateDeviceID(deviceID); err != nil {
+		return err
+	}
+	if deviceID == "" {
+		return errors.New("missing deviceId")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if ns.n.ID != nid {
+		return ErrUnauthorized
+	}
+	if ns.n.OwnerDeviceID != "" {
+		return errors.New("network already has an owner")
+	}
+	if ns.n.Managed {
+		return ErrManagedNetwork
+	}
+	if ns.nodes[meID].DeviceID != deviceID {
+		return ErrUnauthorized
+	}
+	ns.n.OwnerDeviceID = deviceID
+	return s.persistNetwork(ns)
+}
+
+// ---- owner API ----
+
+// nodeFromTokenLocked resolves a coordination token to its network and node.
+// Callers must hold s.mu.
+func (s *Store) nodeFromTokenLocked(token string) (*networkState, string, error) {
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return nil, "", ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return nil, "", ErrNotFound
+	}
+	return ns, te.NodeID, nil
+}
+
+// requireOwnerLocked verifies the calling node belongs to the network's owner
+// device. Legacy unclaimed networks reject owner operations until claimed.
+// Callers must hold s.mu.
+func (s *Store) requireOwnerLocked(ns *networkState, nodeID string) error {
+	if ns.n.OwnerDeviceID == "" {
+		return ErrUnauthorized
+	}
+	me := ns.nodes[nodeID]
+	if me == nil {
+		return ErrNotFound
+	}
+	if me.DeviceID != ns.n.OwnerDeviceID {
+		return ErrUnauthorized
+	}
+	return nil
+}
+
+// UpdateNetworkSettings updates the network name, subnet and/or the
+// join-approval requirement. Only the owner device may change settings.
+// Changing the subnet re-allocates every node's IP on the new range and
+// resets the IPAM cursor; clients detect the change via the self IP in
+// ListPeers and reconfigure themselves.
+func (s *Store) UpdateNetworkSettings(token, name, subnet string, approvalRequired *bool, shareOpts ...networkShareOpts) error {
+	name = strings.TrimSpace(name)
+	if name != "" && len(name) > 64 {
+		return errors.New("invalid network name (max 64 chars)")
+	}
+	var so networkShareOpts
+	if len(shareOpts) > 0 {
+		so = shareOpts[0]
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	return s.updateNetworkLocked(ns, name, subnet, approvalRequired, so.description, so.tags, so.visibility)
+}
+
+// updateNetworkLocked applies name/subnet/approval/share changes without
+// owner checks. Callers must hold s.mu.
+func (s *Store) updateNetworkLocked(ns *networkState, name, subnet string, approvalRequired *bool,
+	description *string, tags []string, visibility *string) error {
+	changed := false
+	if name != "" && name != ns.n.Name {
+		ns.n.Name = name
+		changed = true
+	}
+	if subnet != "" && subnet != ns.n.Subnet {
+		if err := s.reassignIPsLocked(ns, subnet); err != nil {
+			return err
+		}
+		changed = true
+	}
+	if approvalRequired != nil && *approvalRequired != ns.n.ApprovalRequired {
+		ns.n.ApprovalRequired = *approvalRequired
+		changed = true
+	}
+	if description != nil && *description != ns.n.Description {
+		if len(*description) > 500 {
+			return errors.New("description too long")
+		}
+		ns.n.Description = *description
+		changed = true
+	}
+	if tags != nil {
+		if len(tags) > 8 {
+			return errors.New("too many tags")
+		}
+		for _, tg := range tags {
+			if len(tg) > 20 {
+				return errors.New("tag too long")
+			}
+		}
+		ns.n.Tags = tags
+		changed = true
+	}
+	if visibility != nil && *visibility != ns.n.Visibility {
+		if *visibility != "" && *visibility != "shareable" && *visibility != "private" {
+			return errors.New("invalid visibility")
+		}
+		ns.n.Visibility = *visibility
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return s.persistNetwork(ns)
+}
+
+// AdminUpdateNetwork updates any network's name/subnet/approval/share setting,
+// bypassing the owner requirement.
+func (s *Store) AdminUpdateNetwork(nid, name, subnet string, approvalRequired *bool, shareOpts ...networkShareOpts) error {
+	name = strings.TrimSpace(name)
+	if name != "" && len(name) > 64 {
+		return errors.New("invalid network name (max 64 chars)")
+	}
+	var so networkShareOpts
+	if len(shareOpts) > 0 {
+		so = shareOpts[0]
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return ErrNotFound
+	}
+	return s.updateNetworkLocked(ns, name, subnet, approvalRequired, so.description, so.tags, so.visibility)
+}
+
+// reassignIPsLocked validates a new subnet and re-allocates all node IPs.
+// Callers must hold s.mu. Node IDs, tokens and peer identity are preserved;
+// only IPs change, which the daemon picks up via its self IP.
+func (s *Store) reassignIPsLocked(ns *networkState, subnet string) error {
+	norm, err := validateSubnet(subnet)
+	if err != nil {
+		return err
+	}
+	base, err := subnetBase(norm)
+	if err != nil {
+		return err
+	}
+	ipam := 1
+	for _, n := range ns.nodes {
+		n.IP = addIPOffset(base, ipam).String()
+		ipam++
+		if err := s.persistNode(ns.n.ID, n); err != nil {
+			return err
+		}
+	}
+	ns.n.Subnet = norm
+	ns.subnetBase = base
+	// allocIP increments ns.ipam before use, so the cursor is the node count.
+	ns.ipam = len(ns.nodes)
+	return nil
+}
+
+// SetNodeRole sets a peer node's role within a network. Only the owner device
+// may change roles, and only between "admin" and "member" (the owner keeps
+// its own role; the target must never be the owner node).
+func (s *Store) SetNodeRole(token, targetNodeID, role string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	if role != "admin" && role != "member" {
+		return errors.New("invalid role (must be admin or member)")
+	}
+	if targetNodeID == "" || targetNodeID == ns.n.OwnerNodeID {
+		return errors.New("cannot change the owner's role")
+	}
+	target := ns.nodes[targetNodeID]
+	if target == nil {
+		return ErrNotFound
+	}
+	if target.DeviceID == ns.n.OwnerDeviceID {
+		return errors.New("cannot change the owner's role")
+	}
+	if target.Role == role {
+		return nil
+	}
+	target.Role = role
+	return s.persistNode(ns.n.ID, target)
+}
+
+// ---- pending joins ----
+
+// PendingClaim atomically reads an approved pending request and consumes it in
+// a single critical section, so one-shot credentials are handed out exactly
+// once even when multiple clients poll concurrently. It returns the same shape
+// as the pending status response, plus a claimed bool that is false for
+// pending/denied/gone statuses (which are not deleted).
+func (s *Store) PendingClaim(pendingID string) (protocol.PendingStatusResp, bool, error) {
+	if pendingID == "" {
+		return protocol.PendingStatusResp{}, false, ErrUnauthorized
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pruneExpiredPendingLocked(s, time.Now())
+	for _, ns := range s.networks {
+		p := ns.pending[pendingID]
+		if p == nil {
+			continue
+		}
+		switch p.Status {
+		case "approved":
+			peers := make([]protocol.Node, 0, len(ns.nodes)-1)
+			for id, n := range ns.nodes {
+				if id != p.NodeID {
+					peers = append(peers, *n)
+				}
+			}
+			resp := protocol.PendingStatusResp{
+				Status:    "approved",
+				NetworkID: ns.n.ID,
+				Name:      ns.n.Name,
+				NodeID:    p.NodeID,
+				IP:        p.IP,
+				Token:     p.Token,
+				Subnet:    p.Subnet,
+				RelayPort: p.RelayPort,
+				Peers:     peers,
+			}
+			delete(ns.pending, pendingID)
+			_ = s.deletePending(pendingID)
+			return resp, true, nil
+		case "denied":
+			return protocol.PendingStatusResp{Status: "denied", NetworkID: ns.n.ID, Name: ns.n.Name}, false, nil
+		default:
+			return protocol.PendingStatusResp{Status: "pending", NetworkID: ns.n.ID, Name: ns.n.Name}, false, nil
+		}
+	}
+	return protocol.PendingStatusResp{Status: "gone"}, false, nil
+}
+
+// OwnerApprove approves a pending join, allocating the node's address and
+// credentials. Only the owner device may approve. Returns the granted join
+// info so the owner can verify.
+func (s *Store) OwnerApprove(token, pendingID string) (protocol.PendingStatusResp, error) {
+	if pendingID == "" {
+		return protocol.PendingStatusResp{}, ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pruneExpiredPendingLocked(s, time.Now())
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return protocol.PendingStatusResp{}, err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return protocol.PendingStatusResp{}, err
+	}
+	p := ns.pending[pendingID]
+	if p == nil {
+		return protocol.PendingStatusResp{}, ErrNotFound
+	}
+	return s.approvePendingLocked(ns, p)
+}
+
+// AdminApprove approves a pending join on any network, bypassing the owner
+// requirement.
+func (s *Store) AdminApprove(nid, pendingID string) (protocol.PendingStatusResp, error) {
+	if pendingID == "" {
+		return protocol.PendingStatusResp{}, ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pruneExpiredPendingLocked(s, time.Now())
+	ns := s.networks[nid]
+	if ns == nil {
+		return protocol.PendingStatusResp{}, ErrNotFound
+	}
+	p := ns.pending[pendingID]
+	if p == nil {
+		return protocol.PendingStatusResp{}, ErrNotFound
+	}
+	return s.approvePendingLocked(ns, p)
+}
+
+// approvePendingLocked allocates node credentials for an approved join request
+// and marks it approved. Callers must hold s.mu.
+func (s *Store) approvePendingLocked(ns *networkState, p *pendingNode) (protocol.PendingStatusResp, error) {
+	if p.Status == "approved" {
+		return s.pendingStatusLocked(ns, p), nil
+	}
+	if len(ns.nodes) >= protocol.MaxNodes {
+		return protocol.PendingStatusResp{}, ErrNetworkFull
+	}
+	ip, err := ns.allocIP()
+	if err != nil {
+		return protocol.PendingStatusResp{}, err
+	}
+	tok, err := randomToken()
+	if err != nil {
+		return protocol.PendingStatusResp{}, err
+	}
+	nodeID, err := randomString(8)
+	if err != nil {
+		return protocol.PendingStatusResp{}, err
+	}
+	node := &protocol.Node{
+		ID:        nodeID,
+		NetworkID: ns.n.ID,
+		IP:        ip,
+		PublicKey: p.PublicKey,
+		DeviceID:  p.DeviceID,
+	}
+	ns.nodes[nodeID] = node
+	s.byToken[hashToken(tok)] = tokenEntry{NetworkID: ns.n.ID, NodeID: nodeID}
+	if err := s.upsertDeviceLocked(p.DeviceID, p.PublicKey, ""); err != nil {
+		return protocol.PendingStatusResp{}, err
+	}
+	if s.relayEnabled() {
+		if err := s.ensureRelayPort(ns); err != nil {
+			return protocol.PendingStatusResp{}, err
+		}
+	}
+	p.Status = "approved"
+	p.NodeID = nodeID
+	p.IP = ip
+	p.Token = tok
+	p.Subnet = ns.n.Subnet
+	p.RelayPort = ns.relayPort
+	s.touchLocked(ns, time.Now())
+	if err := s.persistNetwork(ns); err != nil {
+		return protocol.PendingStatusResp{}, err
+	}
+	if err := s.persistNode(ns.n.ID, node); err != nil {
+		return protocol.PendingStatusResp{}, err
+	}
+	if err := s.persistToken(tok, tokenEntry{NetworkID: ns.n.ID, NodeID: nodeID}); err != nil {
+		return protocol.PendingStatusResp{}, err
+	}
+	if err := s.persistPending(p); err != nil {
+		return protocol.PendingStatusResp{}, err
+	}
+	return s.pendingStatusLocked(ns, p), nil
+}
+
+// OwnerDeny rejects a pending join. Only the owner device may deny.
+func (s *Store) OwnerDeny(token, pendingID string) error {
+	if pendingID == "" {
+		return ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	p := ns.pending[pendingID]
+	if p == nil {
+		return ErrNotFound
+	}
+	return s.denyPendingLocked(ns, p)
+}
+
+// AdminDeny rejects a pending join on any network, bypassing the owner
+// requirement.
+func (s *Store) AdminDeny(nid, pendingID string) error {
+	if pendingID == "" {
+		return ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return ErrNotFound
+	}
+	p := ns.pending[pendingID]
+	if p == nil {
+		return ErrNotFound
+	}
+	return s.denyPendingLocked(ns, p)
+}
+
+// denyPendingLocked marks a pending request denied. Callers must hold s.mu.
+func (s *Store) denyPendingLocked(ns *networkState, p *pendingNode) error {
+	if p.Status == "approved" {
+		return errors.New("请求已批准，无法拒绝")
+	}
+	p.Status = "denied"
+	return s.persistPending(p)
+}
+
+// pendingStatusLocked builds the status response for an approved request.
+// Callers must hold s.mu.
+func (s *Store) pendingStatusLocked(ns *networkState, p *pendingNode) protocol.PendingStatusResp {
+	peers := make([]protocol.Node, 0, len(ns.nodes)-1)
+	for id, n := range ns.nodes {
+		if id != p.NodeID {
+			peers = append(peers, *n)
+		}
+	}
+	return protocol.PendingStatusResp{
+		Status:    "approved",
+		NetworkID: ns.n.ID,
+		Name:      ns.n.Name,
+		NodeID:    p.NodeID,
+		IP:        p.IP,
+		Token:     p.Token,
+		Subnet:    p.Subnet,
+		RelayPort: p.RelayPort,
+		Peers:     peers,
+	}
+}
+
+// pruneExpiredPendingLocked removes pending requests older than pendingTTL.
+// Callers must hold s.mu.
+func pruneExpiredPendingLocked(s *Store, now time.Time) {
+	for _, ns := range s.networks {
+		for id, p := range ns.pending {
+			if now.After(p.ExpiresAt) {
+				delete(ns.pending, id)
+				_ = s.deletePending(id)
+			}
+		}
+	}
+}
+
+// NetworkInfo returns full network details plus all member nodes for the
+// network owner.
+func (s *Store) NetworkInfo(token string) (protocol.NetworkInfoResp, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return protocol.NetworkInfoResp{}, err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return protocol.NetworkInfoResp{}, err
+	}
+	return s.networkInfoLocked(ns), nil
+}
+
+// networkInfoLocked builds the full network detail response. Callers must
+// hold s.mu.
+func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
+	now := time.Now().Unix()
+	n := ns.n
+	n.RelayPort = ns.relayPort
+	n.NodeCount = len(ns.nodes)
+	n.Online = now-ns.lastActivityAt < int64(netAliveTTL/time.Second)
+	n.LastActivityAt = ns.lastActivityAt
+	n.PendingCount = 0
+	for _, p := range ns.pending {
+		if p.Status == "pending" {
+			n.PendingCount++
+		}
+	}
+	nodes := make([]protocol.Node, 0, len(ns.nodes))
+	for _, nd := range ns.nodes {
+		c := *nd
+		c.Online = now-c.LastSeen < int64(lastSeenTTL/time.Second)
+		if d := s.devices[c.DeviceID]; d != nil {
+			c.DeviceName = d.Name
+		}
+		nodes = append(nodes, c)
+	}
+	pending := make([]protocol.PendingNode, 0, len(ns.pending))
+	for _, p := range ns.pending {
+		pending = append(pending, protocol.PendingNode{
+			ID:        p.ID,
+			PublicKey: p.PublicKey,
+			DeviceID:  p.DeviceID,
+			CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return protocol.NetworkInfoResp{Network: n, Nodes: nodes, Pending: pending}
+}
+
+// AdminNetworkInfo returns full network details for any network, bypassing
+// the owner requirement.
+func (s *Store) AdminNetworkInfo(nid string) (protocol.NetworkInfoResp, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pruneExpiredPendingLocked(s, time.Now())
+	ns := s.networks[nid]
+	if ns == nil {
+		return protocol.NetworkInfoResp{}, ErrNotFound
+	}
+	return s.networkInfoLocked(ns), nil
+}
+
+// AdminPending lists the pending join requests of any network.
+func (s *Store) AdminPending(nid string) ([]protocol.PendingNode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return nil, ErrNotFound
+	}
+	pruneExpiredPendingLocked(s, time.Now())
+	// Only surface requests still awaiting a decision: approved/denied records
+	// are kept for client polling (PendingStatus) but are noise for admins.
+	out := make([]protocol.PendingNode, 0, len(ns.pending))
+	for _, p := range ns.pending {
+		if p.Status != "pending" {
+			continue
+		}
+		pn := protocol.PendingNode{
+			ID:        p.ID,
+			PublicKey: p.PublicKey,
+			DeviceID:  p.DeviceID,
+			CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339),
+		}
+		if d := s.devices[p.DeviceID]; d != nil {
+			pn.DeviceName = d.Name
+		}
+		out = append(out, pn)
+	}
+	return out, nil
+}
+
+// newPairing builds a pairing entry for a fresh code. Managed (server-created)
+// networks get unlimited, non-expiring codes; client networks keep the
+// 72h / 5-use budget. Callers must hold s.mu.
+func newPairing(ns *networkState, code string) *pairing {
+	if ns.n.Managed {
+		return &pairing{codeHash: hashCode(code), remaining: codeUnlimited}
+	}
+	return &pairing{
+		codeHash:  hashCode(code),
+		remaining: codeMaxUse,
+		expiresAt: time.Now().Add(codeTTL),
+	}
+}
+
+// ResetCode generates a fresh pairing code, invalidating the previous one.
+func (s *Store) ResetCode(token string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return "", err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return "", err
+	}
+	code, err := randomString(codeLen)
+	if err != nil {
+		return "", err
+	}
+	ns.n.PairingCode = protocol.NormalizeCode(code)
+	ns.pairing = newPairing(ns, code)
+	if err := s.persistNetwork(ns); err != nil {
+		return "", err
+	}
+	return ns.n.PairingCode, nil
+}
+
+// KickNode removes a member node from the network. The owner node itself
+// cannot be kicked.
+func (s *Store) KickNode(token, nodeID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	if ns.nodes[nodeID] == nil {
+		return ErrNotFound
+	}
+	if nodeID == ns.n.OwnerNodeID {
+		return errors.New("cannot remove the owner node")
+	}
+	delete(ns.nodes, nodeID)
+	for h, te := range s.byToken {
+		if te.NetworkID == ns.n.ID && te.NodeID == nodeID {
+			delete(s.byToken, h)
+			if err := s.deleteTokenByHash(h); err != nil {
+				return err
+			}
+		}
+	}
+	return s.deleteNode(ns.n.ID, nodeID)
+}
+
+// DeleteNetwork removes the network and all its state.
+func (s *Store) DeleteNetwork(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	return s.deleteNetworkLocked(ns.n.ID)
+}
+
+// deleteNetworkLocked removes a network and all its rows. Callers must hold
+// s.mu.
+func (s *Store) deleteNetworkLocked(nid string) error {
+	ns := s.networks[nid]
+	if ns != nil {
+		// Return every bound relay socket (broadcast + per-node ports) to the
+		// free pool so ports and send-loop goroutines are not leaked.
+		s.releaseNetworkPortsLocked(ns)
+		for _, p := range ns.pending {
+			if err := s.deletePending(p.ID); err != nil {
+				return err
+			}
+		}
+	}
+	for h, te := range s.byToken {
+		if te.NetworkID == nid {
+			delete(s.byToken, h)
+			if err := s.deleteTokenByHash(h); err != nil {
+				return err
+			}
+		}
+	}
+	delete(s.networks, nid)
+	return s.deleteNetworkRows(nid)
+}
+
+// ---- relay activity ----
+
+// MarkRelayActivity refreshes the activity of the network whose relay port
+// received traffic. It is called from the relay hot path, so it only touches
+// memory; persistence is throttled.
+func (s *Store) MarkRelayActivity(port int) {
+	if port <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// O(1) lookup via the port -> network map instead of scanning every network.
+	ns := s.netByPort[port]
+	if ns != nil {
+		s.touchLocked(ns, time.Now())
+	}
+}
+
+// ---- zombie reaping ----
+
+// SweepZombies deletes networks whose last activity is older than ttl and
+// returns the removed network IDs. A ttl <= 0 disables reaping.
+func (s *Store) SweepZombies(ttl time.Duration) ([]string, error) {
+	if ttl <= 0 {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pruneExpiredPendingLocked(s, time.Now())
+	now := time.Now()
+	var victims []string
+	for nid, ns := range s.networks {
+		if ns.n.Managed {
+			continue // server-managed networks are never reaped
+		}
+		last := ns.lastActivityAt
+		if last == 0 {
+			if t, err := time.Parse(time.RFC3339, ns.n.CreatedAt); err == nil {
+				last = t.Unix()
+			}
+		}
+		if last > 0 && now.Sub(time.Unix(last, 0)) >= ttl {
+			victims = append(victims, nid)
+		}
+	}
+	for _, nid := range victims {
+		if err := s.deleteNetworkLocked(nid); err != nil {
+			return victims, err
+		}
+	}
+	return victims, nil
+}
+
+// ---- admin API (guarded by admin token in the handler layer) ----
+
+// AdminCreateNetwork creates a server-managed network with no owner node.
+// Managed networks get unlimited, non-expiring pairing codes and are exempt
+// from zombie reaping. Returns the network ID and code for distribution.
+func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, shareOpts ...networkShareOpts) (protocol.AdminCreateNetworkResp, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var so networkShareOpts
+	if len(shareOpts) > 0 {
+		so = shareOpts[0]
+	}
+	description, tags, visibility := "", so.tags, ""
+	if so.description != nil {
+		description = *so.description
+	}
+	if so.visibility != nil {
+		visibility = *so.visibility
+	}
+
+	name = strings.TrimSpace(name)
+	if name != "" && len(name) > 64 {
+		return protocol.AdminCreateNetworkResp{}, errors.New("invalid network name (max 64 chars)")
+	}
+	if visibility != "" && visibility != "shareable" && visibility != "private" {
+		return protocol.AdminCreateNetworkResp{}, errors.New("invalid visibility")
+	}
+	if len(description) > 500 {
+		return protocol.AdminCreateNetworkResp{}, errors.New("description too long")
+	}
+	if len(tags) > 8 {
+		return protocol.AdminCreateNetworkResp{}, errors.New("too many tags")
+	}
+	for _, tg := range tags {
+		if len(tg) > 20 {
+			return protocol.AdminCreateNetworkResp{}, errors.New("tag too long")
+		}
+	}
+	sub := subnet
+	if sub == "" {
+		sub = s.autoSubnetLocked()
+	} else {
+		norm, err := validateSubnet(sub)
+		if err != nil {
+			return protocol.AdminCreateNetworkResp{}, err
+		}
+		sub = norm
+	}
+	base, err := subnetBase(sub)
+	if err != nil {
+		return protocol.AdminCreateNetworkResp{}, err
+	}
+
+	nid, err := randomString(networkIDLen)
+	if err != nil {
+		return protocol.AdminCreateNetworkResp{}, err
+	}
+	for s.networks[nid] != nil {
+		nid, _ = randomString(networkIDLen)
+	}
+	code, err := randomString(codeLen)
+	if err != nil {
+		return protocol.AdminCreateNetworkResp{}, err
+	}
+
+	now := time.Now()
+	ns := &networkState{
+		n: protocol.Network{
+			ID:               nid,
+			PairingCode:      protocol.NormalizeCode(code),
+			CreatedAt:        now.UTC().Format(time.RFC3339),
+			Name:             name,
+			Subnet:           sub,
+			LastActivityAt:   now.Unix(),
+			ApprovalRequired: approvalRequired,
+			Managed:          true,
+			Description:      description,
+			Tags:             tags,
+			Visibility:       visibility,
+		},
+		pairing: &pairing{
+			codeHash:  hashCode(code),
+			remaining: codeUnlimited,
+		},
+		nodes:           make(map[string]*protocol.Node),
+		pending:         make(map[string]*pendingNode),
+		lastActivityAt:  now.Unix(),
+		subnetBase:      base,
+		relaySeen:       make(map[string]time.Time),
+		ctrlHost:        make(map[string]string),
+		hostSeen:        make(map[string]time.Time),
+		nodeByHost:      make(map[string]map[string]bool),
+		relayFlowByNode: make(map[string]string),
+		flowByNode:      make(map[string]string),
+		nodePorts:       make(map[string]int),
+	}
+	s.netSeq++
+	ns.seq = s.netSeq
+	s.networks[nid] = ns
+	if s.relayEnabled() {
+		if err := s.ensureRelayPort(ns); err != nil {
+			return protocol.AdminCreateNetworkResp{}, err
+		}
+	}
+	if err := s.persistNetwork(ns); err != nil {
+		return protocol.AdminCreateNetworkResp{}, err
+	}
+	return protocol.AdminCreateNetworkResp{
+		NetworkID:   nid,
+		PairingCode: ns.n.PairingCode,
+		Subnet:      sub,
+		RelayPort:   ns.relayPort,
+	}, nil
+}
+
+type networkSummary struct {
+	Network        protocol.Network `json:"network"`
+	Seq            uint64           `json:"-"`
+	NodeCount      int              `json:"nodeCount"`
+	RelayPort      int              `json:"relayPort"`
+	Online         bool             `json:"online"`
+	Zombie         bool             `json:"zombie"`
+	LastActivityAt int64            `json:"lastActivityAt"`
+	PendingCount   int              `json:"pendingCount"`
+}
+
+// ---- admin paged listings ----
+
+const (
+	defaultAdminPageSize = 20
+	maxAdminPageSize     = 100
+)
+
+// clampPage normalizes pagination params: page >= 1, 1 <= pageSize <= max.
+func clampPage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = defaultAdminPageSize
+	}
+	if pageSize > maxAdminPageSize {
+		pageSize = maxAdminPageSize
+	}
+	return page, pageSize
+}
+
+// adminTimeOf parses an RFC3339 timestamp, returning the zero time when
+// missing or malformed so such records sort last in descending order.
+func adminTimeOf(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// pageSlice windows a fully sorted slice. total is the pre-window length so
+// callers can report it even when the requested page is out of range.
+func pageSlice[T any](items []T, page, pageSize int) ([]T, int) {
+	total := len(items)
+	start := (page - 1) * pageSize
+	if start >= total || start < 0 {
+		return []T{}, total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return items[start:end], total
+}
+
+// clampToLastPage resolves an out-of-range request onto the last non-empty
+// page (a no-op while the collection is empty).
+func clampToLastPage(page, pageSize, total int) int {
+	if total > 0 {
+		if pages := (total + pageSize - 1) / pageSize; page > pages {
+			return pages
+		}
+	}
+	return page
+}
+
+func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, page, pageSize int) ([]networkSummary, int, int) {
+	// Phase 1: take a snapshot under lock (fast)
+	s.mu.Lock()
+	now := time.Now()
+	nowUnix := now.Unix()
+	aliveTTL := int64(netAliveTTL / time.Second)
+
+	type netData struct {
+		n            protocol.Network
+		seq          uint64
+		nodeCount    int
+		relayPort    int
+		lastActivity int64
+		pending      map[string]string // id -> status
+	}
+
+	data := make([]netData, 0, len(s.networks))
+	for _, ns := range s.networks {
+		pending := make(map[string]string, len(ns.pending))
+		for id, p := range ns.pending {
+			pending[id] = p.Status
+		}
+		data = append(data, netData{
+			n:            ns.n,
+			seq:          ns.seq,
+			nodeCount:    len(ns.nodes),
+			relayPort:    ns.relayPort,
+			lastActivity: ns.lastActivityAt,
+			pending:      pending,
+		})
+	}
+	s.mu.Unlock()
+
+	// Phase 2: process snapshot without lock
+	page, pageSize = clampPage(page, pageSize)
+	needle := strings.ToLower(strings.TrimSpace(q))
+	out := make([]networkSummary, 0, len(data))
+
+	for _, d := range data {
+		zombie := false
+		if zombieTTL > 0 && d.lastActivity > 0 && now.Sub(time.Unix(d.lastActivity, 0)) >= zombieTTL {
+			zombie = true
+		}
+		sum := networkSummary{
+			Network:        d.n,
+			Seq:            d.seq,
+			NodeCount:      d.nodeCount,
+			RelayPort:      d.relayPort,
+			Online:         nowUnix-d.lastActivity < aliveTTL,
+			Zombie:         zombie,
+			LastActivityAt: d.lastActivity,
+		}
+		for _, st := range d.pending {
+			if st == "pending" {
+				sum.PendingCount++
+			}
+		}
+		switch status {
+		case "", "all":
+		case "online":
+			if !sum.Online {
+				continue
+			}
+		case "offline":
+			if sum.Online {
+				continue
+			}
+		case "managed":
+			if !d.n.Managed {
+				continue
+			}
+		case "zombie":
+			if !zombie {
+				continue
+			}
+		case "pending":
+			if sum.PendingCount == 0 {
+				continue
+			}
+		default:
+			continue // unknown status matches nothing
+		}
+		if needle != "" {
+			hay := strings.ToLower(d.n.Name + " " + d.n.ID + " " + d.n.Subnet)
+			if !strings.Contains(hay, needle) {
+				continue
+			}
+		}
+		out = append(out, sum)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti, tj := adminTimeOf(out[i].Network.CreatedAt), adminTimeOf(out[j].Network.CreatedAt)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return out[i].Seq > out[j].Seq
+	})
+	total := len(out)
+	page = clampToLastPage(page, pageSize, total)
+	items, _ := pageSlice(out, page, pageSize)
+	return items, total, page
+}
+
+// NodeNetwork returns the network ID that a coordination token belongs to. Pure read operation.
+func (s *Store) NodeNetwork(token string) (string, error) {
+	s.mu.RLock() // Use RLock for read-only operations
+	defer s.mu.RUnlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return "", ErrUnauthorized
+	}
+	return te.NetworkID, nil
+}
+
+// AdminDevicesPage returns one page of registered devices sorted by creation
+// time (newest first), optionally filtered by q across id/name/public key.
+func (s *Store) AdminDevicesPage(q string, page, pageSize int) ([]protocol.Device, int, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	page, pageSize = clampPage(page, pageSize)
+	needle := strings.ToLower(strings.TrimSpace(q))
+	out := make([]protocol.Device, 0, len(s.devices))
+	for _, d := range s.devices {
+		// Get networks for this device
+		networks := s.deviceNetworksLocked(d.ID)
+
+		dev := protocol.Device{
+			ID:        d.ID,
+			PublicKey: d.PublicKey,
+			CreatedAt: d.CreatedAt,
+			LastSeen:  d.LastSeen,
+			Name:      d.Name,
+			Networks:  networks,
+		}
+		if needle != "" {
+			hay := strings.ToLower(dev.ID + " " + dev.Name + " " + dev.PublicKey)
+			if !strings.Contains(hay, needle) {
+				continue
+			}
+		}
+		out = append(out, dev)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti, tj := adminTimeOf(out[i].CreatedAt), adminTimeOf(out[j].CreatedAt)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return out[i].ID < out[j].ID
+	})
+	total := len(out)
+	page = clampToLastPage(page, pageSize, total)
+	items, _ := pageSlice(out, page, pageSize)
+	return items, total, page
+}
+
+// DeviceNetworks returns the networks a device holds a node in.
+func (s *Store) DeviceNetworks(deviceID string) []protocol.Network {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []protocol.Network
+	for _, ns := range s.networks {
+		for _, n := range ns.nodes {
+			if n.DeviceID == deviceID {
+				c := ns.n
+				c.RelayPort = ns.relayPort
+				c.NodeCount = len(ns.nodes)
+				c.Online = time.Now().Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second)
+				c.LastActivityAt = ns.lastActivityAt
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// deviceNetworksLocked returns the networks a device belongs to (caller must hold s.mu.RLock).
+func (s *Store) deviceNetworksLocked(deviceID string) []protocol.DeviceNetwork {
+	var out []protocol.DeviceNetwork
+	for _, ns := range s.networks {
+		for _, n := range ns.nodes {
+			if n.DeviceID == deviceID {
+				out = append(out, protocol.DeviceNetwork{
+					ID:   ns.n.ID,
+					Name: ns.n.Name,
+				})
+				break
+			}
+		}
+	}
+	return out
+}
+
+// DeviceNetworkDetails returns the networks a device holds a node in, including
+// per-node credentials (nodeID, IP, token, publicKey) needed to reconstruct
+// the client config after a reinstall. New tokens are generated for each node
+// because the original tokens are not recoverable from their SHA-256 hashes.
+func (s *Store) DeviceNetworkDetails(deviceID string) ([]protocol.DeviceNetworkDetail, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []protocol.DeviceNetworkDetail
+	for _, ns := range s.networks {
+		for _, n := range ns.nodes {
+			if n.DeviceID == deviceID {
+				// Generate a fresh token for this node. The old token is
+				// lost (client reinstall) and cannot be recovered from its
+				// hash, so we rotate it.
+				tok, err := randomToken()
+				if err != nil {
+					return nil, err
+				}
+				// Remove old token mapping and register the new one.
+				if err := s.rotateNodeTokenLocked(ns.n.ID, n.ID, tok); err != nil {
+					return nil, err
+				}
+				c := protocol.DeviceNetworkDetail{
+					Network:   ns.n,
+					NodeID:    n.ID,
+					IP:        n.IP,
+					Token:     tok,
+					Owner:     ns.n.OwnerDeviceID == deviceID,
+					PublicKey: n.PublicKey,
+				}
+				c.RelayPort = ns.relayPort
+				c.NodeCount = len(ns.nodes)
+				c.Online = time.Now().Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second)
+				c.LastActivityAt = ns.lastActivityAt
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// rotateNodeTokenLocked removes the old token mapping for a node and registers
+// a new one. Callers must hold s.mu. On persist failure the in-memory map is
+// rolled back so the cached state does not diverge from disk: a subsequent
+// restart would otherwise restore the old token mapping and lose the new one,
+// silently locking the client out.
+func (s *Store) rotateNodeTokenLocked(netID, nodeID, newToken string) error {
+	var oldHash string
+	var oldEntry tokenEntry
+	for h, te := range s.byToken {
+		if te.NetworkID == netID && te.NodeID == nodeID {
+			oldHash = h
+			oldEntry = te
+			delete(s.byToken, h)
+			if err := s.deleteTokenByHash(h); err != nil {
+				// Rollback: restore the old mapping so the in-memory state
+				// matches disk.
+				s.byToken[h] = oldEntry
+				return fmt.Errorf("delete old token: %w", err)
+			}
+			break
+		}
+	}
+	newHash := hashToken(newToken)
+	s.byToken[newHash] = tokenEntry{NetworkID: netID, NodeID: nodeID}
+	if err := s.persistToken(newToken, tokenEntry{NetworkID: netID, NodeID: nodeID}); err != nil {
+		// Rollback both the new mapping and the old deletion.
+		delete(s.byToken, newHash)
+		if oldHash != "" {
+			s.byToken[oldHash] = oldEntry
+			if rbErr := s.persistTokenByHash(oldHash, oldEntry); rbErr != nil {
+				log.Printf("rollback old token persist: %v", rbErr)
+			}
+		}
+		return fmt.Errorf("persist new token: %w", err)
+	}
+	return nil
+}
+
+// ValidateDeviceToken checks whether the presented token matches the stored
+// device token for deviceID. Comparison is constant-time.
+func (s *Store) ValidateDeviceToken(deviceID, token string) bool {
+	if deviceID == "" || token == "" {
+		return false
+	}
+	s.mu.RLock()
+	d := s.devices[deviceID]
+	if d == nil || d.DeviceToken == "" {
+		s.mu.RUnlock()
+		return false
+	}
+	stored := d.DeviceToken
+	s.mu.RUnlock()
+	return subtle.ConstantTimeCompare([]byte(stored), []byte(token)) == 1
+}
+
+// UpdateNodePublicKey updates the WireGuard public key of a node identified by
+// its device binding. This is used after a client reinstall when the device
+// generates a new keypair.
+func (s *Store) UpdateNodePublicKey(deviceID, networkID, nodeID, publicKey string) error {
+	if err := validatePublicKey(publicKey); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[networkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	n := ns.nodes[nodeID]
+	if n == nil {
+		return ErrNotFound
+	}
+	if n.DeviceID != deviceID {
+		return ErrUnauthorized
+	}
+	n.PublicKey = publicKey
+	return s.persistNode(networkID, n)
+}
+
+// UpdateNodePublicKeyByToken rotates a node's WireGuard public key under the
+// node's own bearer token. Unlike the device-token path (used for reinstall
+// recovery), this is what the daemon's periodic key rotation uses: it proves
+// possession of the node token and neither party needs to persist a device
+// token client-side.
+func (s *Store) UpdateNodePublicKeyByToken(token, networkID, nodeID, publicKey string) error {
+	if err := validatePublicKey(publicKey); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	if te.NetworkID != networkID || te.NodeID != nodeID {
+		return ErrUnauthorized
+	}
+	ns := s.networks[networkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	n := ns.nodes[nodeID]
+	if n == nil {
+		return ErrNotFound
+	}
+	n.PublicKey = publicKey
+	return s.persistNode(networkID, n)
+}
+
+func (s *Store) AdminNodes(nid string) ([]protocol.Node, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return nil, ErrNotFound
+	}
+	nodes := make([]protocol.Node, 0, len(ns.nodes))
+	for _, n := range ns.nodes {
+		node := *n
+		if d := s.devices[n.DeviceID]; d != nil {
+			node.DeviceName = d.Name
+		}
+		// Enrich node with IPv6 and public IP information
+		enrichNodeWithIPInfo(&node, ns.n.Subnet)
+		nodes = append(nodes, node)
+	}
+	return nodes, nil
+}
+
+func (s *Store) AdminRemoveNode(nid, nodeID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return ErrNotFound
+	}
+	if ns.nodes[nodeID] == nil {
+		return ErrNotFound
+	}
+	// Release the node's per-node unicast relay port before dropping the node.
+	s.releaseNodePortLocked(ns, nodeID)
+	delete(ns.nodes, nodeID)
+	for h, te := range s.byToken {
+		if te.NetworkID == nid && te.NodeID == nodeID {
+			delete(s.byToken, h)
+			if err := s.deleteTokenByHash(h); err != nil {
+				return err
+			}
+		}
+	}
+	return s.deleteNode(nid, nodeID)
+}
+
+// AdminAddExternalNode registers a WireGuard-only node (e.g. a phone using
+// the stock WireGuard app) on the given network. It has no coordination token
+// of its own beyond a placeholder: peers reach it once it initiates, so its
+// endpoint stays empty until the server observes it. Returns node ID and IP.
+func (s *Store) AdminAddExternalNode(nid, publicKey string) (string, string, error) {
+	if err := validatePublicKey(publicKey); err != nil {
+		return "", "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return "", "", ErrNotFound
+	}
+	if len(ns.nodes) >= protocol.MaxNodes {
+		return "", "", ErrNetworkFull
+	}
+	ip, err := ns.allocIP()
+	if err != nil {
+		return "", "", err
+	}
+	tok, err := randomToken()
+	if err != nil {
+		return "", "", err
+	}
+	nodeID, err := randomString(8)
+	if err != nil {
+		return "", "", err
+	}
+	node := &protocol.Node{
+		ID:        nodeID,
+		NetworkID: nid,
+		IP:        ip,
+		PublicKey: publicKey,
+	}
+	ns.nodes[nodeID] = node
+	s.byToken[hashToken(tok)] = tokenEntry{NetworkID: nid, NodeID: nodeID}
+
+	if s.relayEnabled() {
+		if err := s.ensureRelayPort(ns); err != nil {
+			return "", "", err
+		}
+	}
+	if err := s.persistNetwork(ns); err != nil {
+		return "", "", err
+	}
+	if err := s.persistNode(nid, node); err != nil {
+		return "", "", err
+	}
+	if err := s.persistToken(tok, tokenEntry{NetworkID: nid, NodeID: nodeID}); err != nil {
+		return "", "", err
+	}
+	return nodeID, ip, nil
+}
+
+// AdminResetCode generates a fresh pairing code, invalidating the previous one.
+func (s *Store) AdminResetCode(nid string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return "", ErrNotFound
+	}
+	code, err := randomString(codeLen)
+	if err != nil {
+		return "", err
+	}
+	ns.n.PairingCode = protocol.NormalizeCode(code)
+	ns.pairing = newPairing(ns, code)
+	if err := s.persistNetwork(ns); err != nil {
+		return "", err
+	}
+	return ns.n.PairingCode, nil
+}
+
+func (s *Store) AdminDeleteNetwork(nid string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.networks[nid] == nil {
+		return ErrNotFound
+	}
+	return s.deleteNetworkLocked(nid)
+}
+
+// ---- device authorization codes ----
+
+// SetRequireDeviceAuth toggles the enrollment gate. When on, CreateNetwork /
+// Join / RegisterDevice are denied for devices that have not bound a generated
+// authorization code. Callers hold no locks.
+func (s *Store) SetRequireDeviceAuth(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requireDeviceAuth = on
+}
+
+// DeviceBound reports whether deviceID has successfully bound an
+// authorization code.
+func (s *Store) DeviceBound(deviceID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deviceBoundLocked(deviceID)
+}
+
+// deviceBoundLocked reports whether deviceID holds a valid binding. Callers
+// must hold s.mu.
+func (s *Store) deviceBoundLocked(deviceID string) bool {
+	if deviceID == "" {
+		return false
+	}
+	for _, ac := range s.authCodes {
+		if ac.bindingIndex(deviceID) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// migrateLegacy upgrades a record written before multi-device codes existed:
+// the flat DeviceID/PublicKey/BoundAt fields become the first binding. It
+// returns true when the record was changed and should be re-persisted. It is
+// idempotent: a fresh multi-device record (empty legacy fields) is untouched.
+func (ac *authCodeRecord) migrateLegacy() bool {
+	if ac.DeviceID == "" || len(ac.Bindings) > 0 {
+		return false
+	}
+	ac.Bindings = []authCodeBinding{{
+		DeviceID:  ac.DeviceID,
+		PublicKey: ac.PublicKey,
+		BoundAt:   ac.BoundAt,
+	}}
+	if ac.MaxBindings < 1 {
+		ac.MaxBindings = 1
+	}
+	ac.DeviceID = ""
+	ac.PublicKey = ""
+	ac.BoundAt = time.Time{}
+	return true
+}
+
+// bindingIndex returns the index of deviceID in Bindings, or -1. Callers must
+// hold s.mu.
+func (ac *authCodeRecord) bindingIndex(deviceID string) int {
+	for i, b := range ac.Bindings {
+		if b.DeviceID == deviceID {
+			return i
+		}
+	}
+	return -1
+}
+
+// removeBinding deletes the binding for deviceID, if present. Callers must
+// hold s.mu.
+func (ac *authCodeRecord) removeBinding(deviceID string) {
+	if i := ac.bindingIndex(deviceID); i >= 0 {
+		ac.Bindings = append(ac.Bindings[:i], ac.Bindings[i+1:]...)
+	}
+}
+
+// maskCode renders a human-readable tail of a code for admin display. The
+// full plaintext is never revealed after generation.
+func maskCode(code string) string {
+	c := protocol.NormalizeCode(code)
+	if len(c) <= 4 {
+		return "****"
+	}
+	return "****" + c[len(c)-4:]
+}
+
+// AdminGenerateAuthCodes creates count fresh authorization codes, each able to
+// bind up to maxBindings devices, with optional expiration time. It returns
+// full AuthCodeInfo structs including status.
+func (s *Store) AdminGenerateAuthCodes(count, maxBindings int, expiresAt *time.Time) ([]protocol.AuthCodeInfo, error) {
+	if count < 1 {
+		count = 1
+	}
+	if count > 100 {
+		return nil, errors.New("count must be between 1 and 100")
+	}
+	if maxBindings < 1 {
+		maxBindings = 1
+	}
+	if maxBindings > 100 {
+		return nil, errors.New("maxBindings must be between 1 and 100")
+	}
+
+	// Validate expiration time
+	if expiresAt != nil && expiresAt.Before(time.Now()) {
+		return nil, errors.New("expiration time cannot be in the past")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := make([]protocol.AuthCodeInfo, 0, count)
+	for i := 0; i < count; i++ {
+		code, err := randomString(protocol.AuthCodeLen)
+		if err != nil {
+			return nil, err
+		}
+		id, err := randomString(authCodeIDLen)
+		if err != nil {
+			return nil, err
+		}
+		for s.authCodes[id] != nil {
+			id, _ = randomString(authCodeIDLen)
+		}
+
+		ac := &authCodeRecord{
+			ID:          id,
+			CodePlain:   protocol.NormalizeCode(code),
+			CodeHash:    hashCode(code),
+			Hint:        maskCode(code),
+			CreatedAt:   time.Now().UTC(),
+			MaxBindings: maxBindings,
+			ExpiresAt:   expiresAt,
+		}
+		s.authCodes[id] = ac
+		if err := s.persistAuthCode(ac); err != nil {
+			return nil, err
+		}
+
+		result = append(result, s.authCodeToInfoLocked(ac))
+	}
+	return result, nil
+}
+
+// AdminRenewAuthCode updates the expiration time of an authorization code.
+func (s *Store) AdminRenewAuthCode(codeID string, expiresAt *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ac := s.authCodes[codeID]
+	if ac == nil {
+		return ErrNotFound
+	}
+
+	// Validate expiration time
+	if expiresAt != nil && expiresAt.Before(time.Now()) {
+		return errors.New("expiration time cannot be in the past")
+	}
+
+	ac.ExpiresAt = expiresAt
+	return s.persistAuthCode(ac)
+}
+
+func (s *Store) checkDeviceAuthLocked(deviceID string) error {
+	bound := false
+	var expiresAt *time.Time
+
+	for _, ac := range s.authCodes {
+		if ac.bindingIndex(deviceID) >= 0 {
+			bound = true
+			expiresAt = ac.ExpiresAt
+			break
+		}
+	}
+
+	if !bound {
+		return ErrUnauthorized
+	}
+
+	// Check expiration
+	if expiresAt != nil && time.Now().After(*expiresAt) {
+		return ErrAuthCodeExpired
+	}
+
+	return nil
+}
+
+// GetDeviceAuthStatus returns the authentication status for a device.
+func (s *Store) GetDeviceAuthStatus(deviceID string) protocol.DeviceAuthStatusResp {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	resp := protocol.DeviceAuthStatusResp{Bound: false}
+
+	for _, ac := range s.authCodes {
+		if ac.bindingIndex(deviceID) >= 0 {
+			resp.Bound = true
+			resp.AuthCodeID = ac.ID
+			resp.ExpiresAt = ac.ExpiresAt
+
+			if ac.ExpiresAt != nil && time.Now().After(*ac.ExpiresAt) {
+				resp.Expired = true
+				resp.Message = "授权码已过期，所有网络离线，请续期或更换授权码"
+			}
+			break
+		}
+	}
+
+	return resp
+}
+
+// authCodeToInfoLocked converts an authCodeRecord to AuthCodeInfo. Caller holds s.mu.
+func (s *Store) authCodeToInfoLocked(ac *authCodeRecord) protocol.AuthCodeInfo {
+	code := ac.CodePlain
+	if code == "" {
+		code = ac.Hint // legacy record: plaintext was never stored
+	}
+
+	info := protocol.AuthCodeInfo{
+		ID:          ac.ID,
+		Code:        code,
+		CreatedAt:   ac.CreatedAt.UTC().Format(time.RFC3339),
+		MaxBindings: ac.MaxBindings,
+		BoundCount:  len(ac.Bindings),
+	}
+
+	// Set expiration info
+	if ac.ExpiresAt != nil {
+		info.ExpiresAt = ac.ExpiresAt.UTC().Format(time.RFC3339)
+		if time.Now().After(*ac.ExpiresAt) {
+			info.Status = "expired"
+		} else {
+			info.Status = "active"
+		}
+	} else {
+		info.Status = "permanent"
+	}
+
+	// Add binding info
+	for _, b := range ac.Bindings {
+		bi := protocol.AuthCodeBindingInfo{
+			DeviceID: b.DeviceID,
+			BoundAt:  b.BoundAt.UTC().Format(time.RFC3339),
+		}
+		if d := s.devices[b.DeviceID]; d != nil {
+			bi.DeviceName = d.Name
+		}
+		info.BoundDevices = append(info.BoundDevices, bi)
+	}
+
+	if len(ac.Bindings) > 0 {
+		info.BoundToDevice = ac.Bindings[0].DeviceID
+		info.BoundAt = ac.Bindings[0].BoundAt.UTC().Format(time.RFC3339)
+	}
+
+	return info
+}
+
+// AdminAuthCodes lists all authorization codes with their plaintext (masked
+// hint only for legacy records whose plaintext was never stored), binding
+// capacity and bound devices, newest first.
+func (s *Store) AdminAuthCodes() []protocol.AuthCodeInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]protocol.AuthCodeInfo, 0, len(s.authCodes))
+	for _, ac := range s.authCodes {
+		out = append(out, s.authCodeToInfoLocked(ac))
+	}
+	return out
+}
+
+// AdminAuthCodesPage returns one page of auth codes sorted by creation time
+// (newest first). Pure read operation (delegates to AdminAuthCodes which uses RLock).
+func (s *Store) AdminAuthCodesPage(page, pageSize int) ([]protocol.AuthCodeInfo, int, int) {
+	all := s.AdminAuthCodes() // Already uses RLock
+	sort.Slice(all, func(i, j int) bool {
+		ti, tj := adminTimeOf(all[i].CreatedAt), adminTimeOf(all[j].CreatedAt)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return all[i].ID < all[j].ID
+	})
+	page, pageSize = clampPage(page, pageSize)
+	total := len(all)
+	page = clampToLastPage(page, pageSize, total)
+	items, _ := pageSlice(all, page, pageSize)
+	return items, total, page
+}
+
+// AdminOverview carries the aggregate numbers shown on the admin overview
+// page plus the most recently active networks. It exists so the console can
+// render totals without pulling every paged list.
+type AdminOverview struct {
+	NetworksTotal  int              `json:"networksTotal"`
+	NetworksOnline int              `json:"networksOnline"`
+	NodesTotal     int              `json:"nodesTotal"`
+	PendingTotal   int              `json:"pendingTotal"`
+	DevicesTotal   int              `json:"devicesTotal"`
+	CodesTotal     int              `json:"codesTotal"`
+	CodesBound     int              `json:"codesBound"`
+	CodesFree      int              `json:"codesFree"`
+	CodesExpired   int              `json:"codesExpired"`
+	RecentNetworks []networkSummary `json:"recentNetworks"`
+}
+
+// AdminOverview computes the aggregate stats for the admin console.
+// It takes a snapshot under lock and processes outside the lock to minimize
+// contention with the relay hot path (OnRelayFlow, MarkRelayActivity).
+func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
+	// Phase 1: take a snapshot under lock (fast)
+	s.mu.Lock()
+	now := time.Now()
+	nowUnix := now.Unix()
+	aliveTTL := int64(netAliveTTL / time.Second)
+
+	type netSnap struct {
+		n            protocol.Network
+		nodeCount    int
+		relayPort    int
+		lastActivity int64
+		pendingCount int
+	}
+	type pendingSnap struct {
+		status string
+	}
+
+	netSnaps := make([]netSnap, 0, len(s.networks))
+	for _, ns := range s.networks {
+		ps := make([]pendingSnap, 0, len(ns.pending))
+		for _, p := range ns.pending {
+			ps = append(ps, pendingSnap{status: p.Status})
+		}
+		netSnaps = append(netSnaps, netSnap{
+			n:            ns.n,
+			nodeCount:    len(ns.nodes),
+			relayPort:    ns.relayPort,
+			lastActivity: ns.lastActivityAt,
+			pendingCount: len(ps), // approximation: count all pending
+		})
+	}
+	deviceCount := len(s.devices)
+
+	type codeSnap struct {
+		bindings int
+		expired  bool
+	}
+	codeSnaps := make([]codeSnap, 0, len(s.authCodes))
+	for _, ac := range s.authCodes {
+		codeSnaps = append(codeSnaps, codeSnap{bindings: len(ac.Bindings),
+			expired: ac.ExpiresAt != nil && now.After(*ac.ExpiresAt)})
+	}
+	s.mu.Unlock()
+
+	// Phase 2: process the snapshot without the lock
+	ov := AdminOverview{}
+	recent := make([]networkSummary, 0, len(netSnaps))
+
+	for _, snap := range netSnaps {
+		online := nowUnix-snap.lastActivity < aliveTTL
+		ov.NetworksTotal++
+		if online {
+			ov.NetworksOnline++
+		}
+		ov.NodesTotal += snap.nodeCount
+		ov.PendingTotal += snap.pendingCount
+		zombie := false
+		if zombieTTL > 0 && snap.lastActivity > 0 && now.Sub(time.Unix(snap.lastActivity, 0)) >= zombieTTL {
+			zombie = true
+		}
+		recent = append(recent, networkSummary{
+			Network:        snap.n,
+			NodeCount:      snap.nodeCount,
+			RelayPort:      snap.relayPort,
+			Online:         online,
+			Zombie:         zombie,
+			LastActivityAt: snap.lastActivity,
+		})
+	}
+
+	ov.DevicesTotal = deviceCount
+	for _, cs := range codeSnaps {
+		ov.CodesTotal++
+		if cs.expired {
+			ov.CodesExpired++
+		}
+		if cs.bindings > 0 {
+			ov.CodesBound++
+		} else {
+			ov.CodesFree++
+		}
+	}
+
+	sort.Slice(recent, func(i, j int) bool { return recent[i].LastActivityAt > recent[j].LastActivityAt })
+	if len(recent) > 6 {
+		recent = recent[:6]
+	}
+	ov.RecentNetworks = recent
+	return ov
+}
+
+// AdminRevokeAuthCode permanently deletes a code by its public ID. A bound
+// code is revoked too; the device keeps access to networks it already joined
+// until its nodes are removed.
+func (s *Store) AdminRevokeAuthCode(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.authCodes[id] == nil {
+		return ErrNotFound
+	}
+	delete(s.authCodes, id)
+	return s.deleteAuthCode(id)
+}
+
+// AdminUnbindDevice releases deviceID from every authorization code, freeing
+// its binding slot for reuse. The device can no longer create/join networks
+// while the gate is on; existing memberships remain until the admin removes
+// its nodes.
+func (s *Store) AdminUnbindDevice(deviceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	found := false
+	for _, ac := range s.authCodes {
+		if ac.bindingIndex(deviceID) >= 0 {
+			ac.removeBinding(deviceID)
+			if err := s.persistAuthCode(ac); err != nil {
+				return err
+			}
+			found = true
+		}
+	}
+	if !found {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// AdminDeleteDevice removes a device from the store after unbinding it from
+// all authorization codes and removing its nodes from every network.
+func (s *Store) AdminDeleteDevice(deviceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.devices[deviceID] == nil {
+		return ErrNotFound
+	}
+	// 1. Unbind from all authorization codes.
+	for _, ac := range s.authCodes {
+		if ac.bindingIndex(deviceID) >= 0 {
+			ac.removeBinding(deviceID)
+			if err := s.persistAuthCode(ac); err != nil {
+				return err
+			}
+		}
+	}
+	// 2. Remove from all networks.
+	for nid, ns := range s.networks {
+		for nodeID, n := range ns.nodes {
+			if n.DeviceID == deviceID {
+				delete(ns.nodes, nodeID)
+				for h, te := range s.byToken {
+					if te.NetworkID == nid && te.NodeID == nodeID {
+						delete(s.byToken, h)
+						if err := s.deleteTokenByHash(h); err != nil {
+							return err
+						}
+					}
+				}
+				if err := s.deleteNode(nid, nodeID); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	// 3. Delete the device record.
+	delete(s.devices, deviceID)
+	return s.deleteDevice(deviceID)
+}
+
+// AdminRenameDevice sets a device's display name.
+func (s *Store) AdminRenameDevice(deviceID, name string) error {
+	name = normalizeName(name)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := s.devices[deviceID]
+	if d == nil {
+		return ErrNotFound
+	}
+	d.Name = name
+	return s.persistDevice(d)
+}
+
+func (s *Store) deleteDevice(deviceID string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktDevices).Delete([]byte(deviceID))
+	})
+}
+
+// BindDevice consumes a generated authorization code for deviceID. Binding is
+// idempotent for the same device and same code; a code already at its
+// MaxBindings rejects further devices with ErrAuthCodeFull; binding a new code
+// automatically releases the device's previous code so an operator can rotate
+// codes by handing out fresh ones. A device is bound to at most one code.
+// Returns the device token for device-scoped API calls (e.g. network sync
+// after reinstall).
+func (s *Store) BindDevice(code, deviceID, publicKey, name string) (string, error) {
+	if err := validateDeviceID(deviceID); err != nil {
+		return "", err
+	}
+	if err := validatePublicKey(publicKey); err != nil {
+		return "", err
+	}
+	if deviceID == "" {
+		return "", errors.New("missing deviceId")
+	}
+	h := hashCode(code)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var found *authCodeRecord
+	for _, ac := range s.authCodes {
+		if ac.CodeHash == h {
+			found = ac
+			break
+		}
+	}
+	if found == nil {
+		return "", ErrAuthCodeInvalid
+	}
+	// An expired code rejects both new bindings and idempotent re-binds; the
+	// admin must renew it (or the device must present a fresh code) first.
+	if found.ExpiresAt != nil && time.Now().After(*found.ExpiresAt) {
+		return "", ErrAuthCodeExpired
+	}
+	if found.bindingIndex(deviceID) >= 0 {
+		// Idempotent: same device, same code. Still return the device token.
+		d := s.devices[deviceID]
+		if d != nil && d.DeviceToken != "" {
+			s.fillDeviceNameLocked(d, name)
+			return d.DeviceToken, nil
+		}
+		// First time binding with this device: generate a token.
+		tok, err := randomToken()
+		if err != nil {
+			return "", err
+		}
+		if d == nil {
+			d = &deviceRecord{
+				ID:        deviceID,
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			}
+			s.devices[deviceID] = d
+		}
+		d.DeviceToken = tok
+		d.PublicKey = publicKey
+		s.fillDeviceNameLocked(d, name)
+		d.LastSeen = time.Now().Unix()
+		if err := s.persistDevice(d); err != nil {
+			return "", err
+		}
+		return tok, nil
+	}
+	if len(found.Bindings) >= found.MaxBindings {
+		return "", ErrAuthCodeFull
+	}
+	// Rotation: release the device from any other code first so it holds
+	// exactly one binding.
+	for _, ac := range s.authCodes {
+		if ac.bindingIndex(deviceID) >= 0 {
+			ac.removeBinding(deviceID)
+			if err := s.persistAuthCode(ac); err != nil {
+				return "", err
+			}
+		}
+	}
+	found.Bindings = append(found.Bindings, authCodeBinding{
+		DeviceID:  deviceID,
+		PublicKey: publicKey,
+		BoundAt:   time.Now().UTC(),
+	})
+	if err := s.persistAuthCode(found); err != nil {
+		return "", err
+	}
+	// Registering the device here keeps the device list consistent even when
+	// the client never calls /api/v1/devices.
+	if err := s.upsertDeviceLocked(deviceID, publicKey, name); err != nil {
+		return "", err
+	}
+	// Generate a device token for device-scoped API calls.
+	tok, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	d := s.devices[deviceID]
+	if d != nil {
+		d.DeviceToken = tok
+		if err := s.persistDevice(d); err != nil {
+			return "", err
+		}
+	}
+	return tok, nil
+}
+
+// ---- admin credentials ----
+
+// EnsureAdminPassword seeds the bcrypt hash of pass for user if none is
+// recorded yet and returns the active hash. A persisted hash always wins, so
+// the flag/env password only acts as the initial bootstrap password. Callers
+// hold no locks.
+func (s *Store) EnsureAdminPassword(user, pass string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.adminPasswordHashLocked(user); h != "" {
+		return h, nil
+	}
+	if pass == "" {
+		return "", nil
+	}
+	h, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	if err := s.putAdminPasswordLocked(user, string(h)); err != nil {
+		return "", err
+	}
+	return string(h), nil
+}
+
+// SetAdminPassword replaces the stored bcrypt hash for user and returns the
+// new hash so callers can keep an in-memory copy. Callers hold no locks.
+func (s *Store) SetAdminPassword(user, newPassword string) (string, error) {
+	h, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return string(h), s.putAdminPasswordLocked(user, string(h))
+}
+
+// adminPasswordHashLocked reads the stored bcrypt hash for user, if any.
+// Callers must hold s.mu.
+func (s *Store) adminPasswordHashLocked(user string) string {
+	if s.db == nil {
+		return ""
+	}
+	var out string
+	_ = s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bktAdmin)
+		if b == nil {
+			return nil
+		}
+		out = string(b.Get([]byte(user)))
+		return nil
+	})
+	return out
+}
+
+// adminPasswordHash reads the stored bcrypt hash for user, if any.
+func (s *Store) adminPasswordHash(user string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.adminPasswordHashLocked(user)
+}
+
+// putAdminPasswordLocked writes the bcrypt hash for user. Callers must hold
+// s.mu.
+func (s *Store) putAdminPasswordLocked(user, hash string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktAdmin).Put([]byte(user), []byte(hash))
+	})
+}
+
+// AdminUsernames lists the admin usernames recorded in the store, sorted.
+func (s *Store) AdminUsernames() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.db == nil {
+		return nil
+	}
+	var out []string
+	_ = s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bktAdmin)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, _ []byte) error {
+			if len(k) > 0 {
+				out = append(out, string(k))
+			}
+			return nil
+		})
+	})
+	sort.Strings(out)
+	return out
+}
+
+// BootstrapAdmin creates the very first admin account and returns its bcrypt
+// hash. It refuses when any admin account already exists so the web setup
+// wizard cannot be replayed after initialization.
+func (s *Store) BootstrapAdmin(user, pass string) (string, error) {
+	h, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		exists := false
+		_ = s.db.View(func(tx *bbolt.Tx) error {
+			if b := tx.Bucket(bktAdmin); b != nil {
+				k, _ := b.Cursor().First()
+				exists = k != nil
+			}
+			return nil
+		})
+		if exists {
+			return "", ErrAdminExists
+		}
+	}
+	return string(h), s.putAdminPasswordLocked(user, string(h))
+}
+
+// UpdateAllowedSubnets replaces the CIDR subnets a node advertises for
+// routing. Each subnet is validated, must not overlap with the network's own
+// subnet, and must not conflict with another node's advertised subnets.
+func (s *Store) UpdateAllowedSubnets(token string, subnets []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	me := ns.nodes[te.NodeID]
+	if me == nil {
+		return ErrNotFound
+	}
+	// Validate each subnet.
+	seen := map[string]struct{}{}
+	for _, raw := range subnets {
+		cidr, err := validateSubnet(raw)
+		if err != nil {
+			return fmt.Errorf("子网 %q 无效: %w", raw, err)
+		}
+		if _, dup := seen[cidr]; dup {
+			return fmt.Errorf("重复子网 %s", cidr)
+		}
+		seen[cidr] = struct{}{}
+		// Must not overlap with the network's own VPN subnet.
+		if ns.n.Subnet != "" && subnetsOverlap(cidr, ns.n.Subnet) {
+			return fmt.Errorf("子网 %s 与网络 VPN 网段 %s 重叠", cidr, ns.n.Subnet)
+		}
+	}
+	// Must not conflict with other nodes' advertised subnets.
+	for id, n := range ns.nodes {
+		if id == te.NodeID {
+			continue
+		}
+		for _, other := range n.AllowedSubnets {
+			_, oc, _ := net.ParseCIDR(other)
+			if oc == nil {
+				continue
+			}
+			for _, raw := range subnets {
+				cidr, _ := validateSubnet(raw)
+				_, ac, _ := net.ParseCIDR(cidr)
+				if ac == nil {
+					continue
+				}
+				if oc.Contains(ac.IP) || ac.Contains(oc.IP) {
+					return fmt.Errorf("子网 %s 与节点 %s 宣告的 %s 冲突", cidr, n.ID, other)
+				}
+			}
+		}
+	}
+	me.AllowedSubnets = subnets
+	return s.persistNode(te.NetworkID, me)
+}
+
+// deriveIPv6FromV4 generates a virtual IPv6 address from an IPv4 address and subnet.
+// For example, 10.88.1.5 in subnet 10.88.1.0/24 becomes fd00:a:58:1::5.
+// The algorithm extracts the network part (first 3 octets) and converts to hex,
+// then appends the host part (last octet).
+func deriveIPv6FromV4(ipv4 string, subnet string) string {
+	// Parse IPv4 address
+	ip := net.ParseIP(ipv4)
+	if ip == nil {
+		return ""
+	}
+	ip = ip.To4()
+	if ip == nil {
+		return ""
+	}
+
+	// Extract network part (first 3 octets)
+	// Example: 10.88.1 -> fd00:a:58:1
+	octets := make([]string, 3)
+	for i := 0; i < 3; i++ {
+		octets[i] = fmt.Sprintf("%x", ip[i])
+	}
+
+	// Construct IPv6 prefix: fd00:<octet0>:<octet1>:<octet2>::
+	// Example: fd00:a:58:1::
+	prefix := fmt.Sprintf("fd00:%s:%s:%s::", octets[0], octets[1], octets[2])
+
+	// Append host part (last octet)
+	// Example: ::5
+	host := fmt.Sprintf("%d", ip[3])
+
+	return prefix + host
+}
+
+// extractIPFromEndpoint extracts the IP address (without port) from an endpoint string.
+// Handles both IPv4 ("1.2.3.4:51820") and IPv6 ("[fd00::1]:51820") formats.
+func extractIPFromEndpoint(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		// If SplitHostPort fails, the endpoint might already be just an IP
+		if ip := net.ParseIP(endpoint); ip != nil {
+			return ip.String()
+		}
+		return ""
+	}
+
+	// Remove IPv6 brackets
+	return strings.Trim(host, "[]")
+}
+
+// enrichNodeWithIPInfo fills in the IPv6, PublicIPv4, and PublicIPv6 fields
+// for a node based on its existing IP, subnet, and endpoint information.
+func enrichNodeWithIPInfo(node *protocol.Node, subnet string) {
+	// Derive virtual IPv6 from IPv4
+	if node.IP != "" && subnet != "" {
+		node.IPv6 = deriveIPv6FromV4(node.IP, subnet)
+	}
+
+	// Extract public IPv4 from RelayFlow or Endpoint
+	if node.RelayFlow != "" {
+		node.PublicIPv4 = extractIPFromEndpoint(node.RelayFlow)
+	} else if node.Endpoint != "" {
+		ep := extractIPFromEndpoint(node.Endpoint)
+		// Only set as public if it's not a private/LAN address
+		if ip := net.ParseIP(ep); ip != nil && !ip.IsPrivate() {
+			node.PublicIPv4 = ep
+		}
+	}
+
+	// Extract public IPv6 from EndpointV6
+	if node.EndpointV6 != "" {
+		ep := extractIPFromEndpoint(node.EndpointV6)
+		// IPv6 addresses in EndpointV6 are already global (no NAT)
+		node.PublicIPv6 = ep
+	}
+}

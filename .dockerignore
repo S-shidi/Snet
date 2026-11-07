@@ -1,0 +1,12 @@
+.git
+desktop/src-tauri
+desktop/node_modules
+android
+*.apk
+*.aab
+*.dmg
+*.app
+dist
+build
+.archify
+opencode.jsonc
