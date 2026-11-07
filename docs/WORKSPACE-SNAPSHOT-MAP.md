@@ -440,3 +440,13 @@ PathManager 覆盖收口（2026-11-07）：
   - 吞吐：`iperf3 -c <peer> -t 30`
   - 跨 relay：配置两个 `SNET_RELAY_V2_ENDPOINTS`，检查 `curl -s http://127.0.0.1:19432/ctl/status | jq '.relayPath.peerDirect, .relayPath.relayIndex'`
   - NAT rebinding / IPv6 防火墙 / Docker 临时端口：改变映射后确认 `peerDirect.addr` 更新或回退 relay；不得把本轮单元测试当作真机已验证。
+
+Server 鉴权覆盖（2026-11-07）：
+
+- token 隔离负向：`TestDeviceTokenNotAcceptedAsNodeBearer` 设备 token 放 `Authorization` 请求 `/peers` → 401；`TestNodeTokenNotAcceptedAsDeviceToken` node token 放 `X-Device-Token` 请求设备网络列表和 bound `auth-status` → 401；`TestDeviceTokenNotAcceptedForOwnerRoute` 设备 token 请求 owner `PATCH /api/v1/networks/{nid}` → 404（`ownerNID` 有意隐藏网络存在性，非 401/403，但仍拒绝）。未发现互相冒充被接受。
+- sanitizeLog 当前行为：只把控制字符转义为 `\xNN`，**不 redact** token/privateKey/pairing code；仅访问日志的 path/client IP 调用它，其他 `log.Printf` 不经过它。逐条扫描 `internal/server/*.go` 的日志调用未发现当前直接记录 token/privateKey/pairing code/Authorization/X-Device-Token/密码/auth code；`internal error: %v` 的 err 来自固定 sentinel、校验错误或 bbolt 错误，未发现携带请求体/secret。结论：当前未发现泄漏，但不是 redaction 保证。
+- 日志测试：`TestSanitizeLogEscapesControlChars` 锁定 `\n`/`\x7f`/`\x00` → `\xNN`；`TestServerLogsDoNotContainSecrets` 捕获访问日志 + 无效 subnet 触发的 internal error，断言不含 token、`privateKey`、`pairingCode` 标记。
+- 公开 enrollment 限流/门禁：`TestAnonymousEnrollmentRateLimited` 选 `/devices/bind`（最小 20/min/IP）作代表，20 次未限流、第 21 次 429；`TestRequireDeviceAuthBlocksAnonymousCreateJoinRegister` 在 `RequireDeviceAuth=true` 时无绑定 deviceId 的 create/join/register 均 403，绑定 device 的 create/join/register 分别 201/200/200。注意门禁校验的是 DeviceID 的授权码绑定，不是 `X-Device-Token` 头。
+- `admin.html` 公开是设计：`TestAdminWebRoot` 验证无凭据 `/admin` 仍 200（首次 bootstrap/login UI），不列为缺口；管理 API 仍由 `requireAdmin` 保护。
+- 仍待补（低优先）：#8 admin session 过期、#9 pending poll 限流/一次性消费、#10 逐路由 401/403/404 矩阵、#11 static-token logout no-op。
+- 测试命令：token 隔离 `-race -count=20` 全绿；enrollment `-race -count=10` 全绿；sanitize/log 全绿。commits `a35eee4`、`4b9dbed`、`37f5480`。
