@@ -412,21 +412,29 @@ func (n *natManager) status() map[string]any {
 // gateway's UPnP-IGD service (whose discovery also reveals the gateway host
 // for NAT-PMP/PCP), then falls back to NAT-PMP and PCP towards the gateway.
 func mapNATPort(ctx context.Context, port int, lanIP string) (natResult, error) {
-	gw, res, err := upnpMap(ctx, port, lanIP)
+	return mapNATPortWith(ctx, port, lanIP, defaultGatewayIP, upnpMap, natpmpMap, pcpMap)
+}
+
+func mapNATPortWith(ctx context.Context, port int, lanIP string, defaultGW func() string,
+	upnp func(context.Context, int, string) (string, natResult, error),
+	natpmp func(context.Context, int, string, string) (natResult, error),
+	pcp func(context.Context, int, string, string) (natResult, error),
+) (natResult, error) {
+	gw, res, err := upnp(ctx, port, lanIP)
 	if err == nil {
 		return res, nil
 	}
 	upnpMsg := fmt.Sprintf("upnp: %v", err)
-	if gw == "" {
-		gw = defaultGatewayIP()
+	if gw == "" && defaultGW != nil {
+		gw = defaultGW()
 	}
 	if gw == "" {
 		return natResult{}, fmt.Errorf("%s; no gateway discoverable for nat-pmp/pcp", upnpMsg)
 	}
-	if res, err := natpmpMap(ctx, port, lanIP, gw); err == nil {
+	if res, err := natpmp(ctx, port, lanIP, gw); err == nil {
 		return res, nil
 	}
-	if res, err := pcpMap(ctx, port, lanIP, gw); err == nil {
+	if res, err := pcp(ctx, port, lanIP, gw); err == nil {
 		return res, nil
 	}
 	return natResult{}, fmt.Errorf("%s; gateway %s gives no nat-pmp/pcp mapping", upnpMsg, gw)
