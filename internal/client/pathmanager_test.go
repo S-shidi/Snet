@@ -557,3 +557,193 @@ func TestPathManagerLowPriorityAckDoesNotOverrideHighPriority(t *testing.T) {
 		t.Fatalf("low-priority ACK displaced LAN path: %+v", dp)
 	}
 }
+
+// TestPathManagerAcceptsDataFromLowerPrioritySourceWhenHigherReady documents
+// the current DATA behavior: a frame from a lower-priority candidate is still
+// injected while a higher-priority path is ready, and it does not displace the
+// ready path. 设计意图：不因路径抖动丢包；若评审要求严格单向，需改为 drop 并报告。
+func TestPathManagerAcceptsDataFromLowerPrioritySourceWhenHigherReady(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	key := protocol.RelayNodeKey("node-b")
+	lan := mustPathAddr(t, "192.168.1.10:51820")
+	public := mustPathAddr(t, "203.0.113.5:40000")
+	dp := &directPeer{
+		lanAddr:   lan,
+		relayAddr: mustPathAddr(t, "203.0.113.5:51820"),
+		addr:      lan,
+		kind:      "lan",
+		ready:     true,
+	}
+	shimConn := mustUDPListener(t)
+	defer shimConn.Close()
+	wg := mustUDPListener(t)
+	defer wg.Close()
+	pm.mu.Lock()
+	pm.directPeers[key] = dp
+	pm.peerKeys[key] = "node-b"
+	pm.shims["node-b"] = &peerShim{nodeID: "node-b", conn: shimConn, pm: pm}
+	pm.wgAddr = wg.LocalAddr().(*net.UDPAddr)
+	pm.mu.Unlock()
+
+	payload := []byte("data-from-lower-priority-public")
+	pm.handleDirectFrame(nil, protocol.RelayFrame{
+		Type:        protocol.RelayTypeData,
+		SenderID:    key,
+		RecipientID: pm.ownKey,
+		Payload:     payload,
+	}, public)
+
+	_ = wg.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 2048)
+	n, _, err := wg.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("lower-priority DATA was not injected: %v", err)
+	}
+	if string(buf[:n]) != string(payload) {
+		t.Fatalf("injected payload = %q, want %q", buf[:n], payload)
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if dp.kind != "lan" || dp.addr == nil || !sameUDPAddr(dp.addr, lan) || !dp.ready {
+		t.Fatalf("lower-priority DATA displaced ready LAN path: %+v", dp)
+	}
+}
+
+func TestPathManagerSymmetricNATStaysRelay(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	key := protocol.RelayNodeKey("node-b")
+	directConn := mustUDPListener(t)
+	defer directConn.Close()
+	candidate := mustUDPListener(t)
+	defer candidate.Close()
+	relay := mustUDPListener(t)
+	defer relay.Close()
+	relayConn := mustDialUDP(t, relay.LocalAddr().(*net.UDPAddr))
+	defer relayConn.Close()
+
+	pm.mu.Lock()
+	pm.directConn = directConn
+	pm.directPeers[key] = &directPeer{relayAddr: candidate.LocalAddr().(*net.UDPAddr)}
+	pm.peerKeys[key] = "node-b"
+	pm.mu.Unlock()
+
+	base := time.Now()
+	for i := 0; i < 6; i++ {
+		pm.maintainDirect(base.Add(time.Duration(i) * 4 * time.Second))
+	}
+	pm.mu.RLock()
+	dp := pm.directPeers[key]
+	ready := dp.ready
+	addr := dp.addr
+	pm.mu.RUnlock()
+	if ready || addr != nil {
+		t.Fatalf("direct became ready without ACK: ready=%v addr=%v", ready, addr)
+	}
+	if pm.directSendFrames.Load() == 0 {
+		t.Fatal("maintainDirect sent no direct probes")
+	}
+	status := pm.Status()
+	peerDirect := status["peerDirect"].(map[string]any)
+	entry := peerDirect["node-b"].(map[string]any)
+	if path, _ := entry["path"].(string); path != "probing" && path != "discovering" {
+		t.Fatalf("peerDirect path = %q, want probing/discovering", path)
+	}
+
+	pm.mu.Lock()
+	pm.relayLinks = []*relayLink{{endpoint: "relay", conn: relayConn, ready: true}}
+	pm.relayLinks[0].lastRecv.Store(time.Now().Unix())
+	pm.sessionID = [16]byte{3}
+	pm.mu.Unlock()
+	beforeDirect := pm.directSendFrames.Load()
+	payload := []byte("must-use-relay")
+	pm.sendToPeer("node-b", payload)
+
+	_ = relay.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 2048)
+	n, err := relay.Read(buf)
+	if err != nil {
+		t.Fatalf("relay received nothing: %v", err)
+	}
+	f, err := protocol.ParseRelayFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.RelayTypeData || string(f.Payload) != string(payload) {
+		t.Fatalf("relay frame = %+v, want DATA payload", f)
+	}
+	if got := pm.directSendFrames.Load(); got != beforeDirect {
+		t.Fatalf("sendToPeer wrote to direct socket: before=%d after=%d", beforeDirect, got)
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if dp.ready || dp.addr != nil {
+		t.Fatalf("direct state changed after relay send: ready=%v addr=%v", dp.ready, dp.addr)
+	}
+}
+
+func TestPathManagerDirectSendFailureFallsBack(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	defer pm.Close()
+	key := protocol.RelayNodeKey("node-b")
+	lan := mustPathAddr(t, "192.168.1.10:51820")
+	closedDirect := mustUDPListener(t)
+	if err := closedDirect.Close(); err != nil {
+		t.Fatal(err)
+	}
+	relay := mustUDPListener(t)
+	defer relay.Close()
+	relayConn := mustDialUDP(t, relay.LocalAddr().(*net.UDPAddr))
+	defer relayConn.Close()
+
+	dp := &directPeer{
+		addr:     lan,
+		lanAddr:  lan,
+		kind:     "lan",
+		ready:    true,
+		lastRecv: time.Now(),
+	}
+	pm.mu.Lock()
+	pm.directConn = closedDirect
+	pm.directPeers[key] = dp
+	pm.peerKeys[key] = "node-b"
+	pm.relayLinks = []*relayLink{{endpoint: "relay", conn: relayConn, ready: true}}
+	pm.relayLinks[0].lastRecv.Store(time.Now().Unix())
+	pm.sessionID = [16]byte{4}
+	pm.mu.Unlock()
+
+	payload := []byte("direct-write-fails")
+	pm.sendToPeer("node-b", payload)
+
+	_ = relay.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 2048)
+	n, err := relay.Read(buf)
+	if err != nil {
+		t.Fatalf("relay received nothing after direct failure: %v", err)
+	}
+	f, err := protocol.ParseRelayFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.RelayTypeData || string(f.Payload) != string(payload) {
+		t.Fatalf("relay frame = %+v, want DATA payload", f)
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if dp.ready {
+		t.Fatal("markDirectFailed did not clear dp.ready")
+	}
+	if !dp.lastProbe.IsZero() {
+		t.Fatalf("markDirectFailed did not reset lastProbe: %v", dp.lastProbe)
+	}
+	if pm.sendDrops.Load() == 0 {
+		t.Fatal("direct write failure did not increment sendDrops")
+	}
+}
