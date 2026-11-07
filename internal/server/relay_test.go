@@ -95,9 +95,11 @@ func TestRelayFanout(t *testing.T) {
 	}
 	defer r.Close()
 
-	a := dialUDP(t, port)
-	b := dialUDP(t, port)
-	c := dialUDP(t, port)
+	// b must be on a different host from a/c so per-host broadcast dedup
+	// (decision 3C) still delivers to both b and c.
+	a := dialUDPFrom(t, "127.0.0.1")
+	b := dialUDPFrom(t, lanIPv4(t))
+	c := dialUDPFrom(t, "127.0.0.1")
 	defer a.Close()
 	defer b.Close()
 	defer c.Close()
@@ -148,6 +150,84 @@ func TestRelayFanout(t *testing.T) {
 	}
 	if gotC != "fanout-abc" {
 		t.Fatalf("c got %q, want fanout-abc", gotC)
+	}
+}
+
+// TestRelayPairLegacyBroadcastDeduplicatesByHost verifies the legacy
+// relayPair.handle fan-out (relay.go:350-367) also dedups by host. This path
+// is still reachable for the network's shared broadcast port: RelayRouteNodePort
+// returns false there (portToNode has no entry), so handle falls back to the
+// legacy fan-out.
+func TestRelayPairLegacyBroadcastDeduplicatesByHost(t *testing.T) {
+	port := freePort(t)
+	r := NewRelay(port, 1)
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	dial := func() *net.UDPConn {
+		t.Helper()
+		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	a, b, c, sender := dial(), dial(), dial(), dial()
+	defer a.Close()
+	defer b.Close()
+	defer c.Close()
+	defer sender.Close()
+
+	relayAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
+	for _, conn := range []*net.UDPConn{a, b, c, sender} {
+		if _, err := conn.WriteToUDP([]byte("reg"), relayAddr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(r.Flows(port)) != 4 {
+		if time.Now().After(deadline) {
+			t.Fatalf("registered flows = %v, want 4", r.Flows(port))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Let registration fan-out settle, then drain it.
+	time.Sleep(100 * time.Millisecond)
+	buf := make([]byte, 64)
+	drain := func(conn *net.UDPConn) {
+		for {
+			_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			if _, _, err := conn.ReadFromUDP(buf); err != nil {
+				return
+			}
+		}
+	}
+	for _, conn := range []*net.UDPConn{a, b, c, sender} {
+		drain(conn)
+	}
+
+	payload := []byte("legacy-fanout")
+	if _, err := sender.WriteToUDP(payload, relayAddr); err != nil {
+		t.Fatal(err)
+	}
+	received := 0
+	for _, conn := range []*net.UDPConn{a, b, c} {
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		for {
+			n, _, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				break
+			}
+			if string(buf[:n]) == string(payload) {
+				received++
+				break
+			}
+		}
+	}
+	if received != 1 {
+		t.Fatalf("legacy broadcast delivered %d copies to same-host endpoints, want 1; flows=%v", received, r.Flows(port))
 	}
 }
 
@@ -289,6 +369,15 @@ func assertPortFree(t *testing.T, port int) error {
 func dialUDP(t *testing.T, relayPort int) *net.UDPConn {
 	t.Helper()
 	c, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func dialUDPFrom(t *testing.T, ip string) *net.UDPConn {
+	t.Helper()
+	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(ip)})
 	if err != nil {
 		t.Fatal(err)
 	}

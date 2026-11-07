@@ -349,17 +349,32 @@ func (p *relayPair) handle(addr string, data []byte) {
 
 	// Fan out to every other live endpoint asynchronously.
 	p.mu.Lock()
-	var jobs []sendJob
+	// Decision 3C follow-up: the legacy handle fan-out is also per-host, not
+	// per-flow. This path is still reachable for the network's shared
+	// broadcast port (RelayRouteNodePort returns false there), so dedup it
+	// the same way as Relay.SendFanned. Pick the most recently seen mapping
+	// per host.
+	byHost := make(map[string]string)
 	for ep := range p.seen {
 		if ep == addr || p.ctrlOnly[ep] {
 			continue
 		}
+		host, _, err := net.SplitHostPort(ep)
+		if err != nil {
+			continue
+		}
+		prev, ok := byHost[host]
+		if !ok || p.seen[ep].After(p.seen[prev]) {
+			byHost[host] = ep
+		}
+	}
+	var jobs []sendJob
+	for _, ep := range byHost {
 		dst, err := net.ResolveUDPAddr("udp", ep)
 		if err != nil {
 			delete(p.seen, ep)
 			continue
 		}
-		// Get buffer from pool and copy data
 		bufPtr := p.sendBuf.Get().(*[]byte)
 		copied := copy(*bufPtr, data)
 		jobs = append(jobs, sendJob{data: (*bufPtr)[:copied], dst: dst})
