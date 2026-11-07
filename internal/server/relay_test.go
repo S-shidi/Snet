@@ -1165,6 +1165,71 @@ func TestRelayRouteExactFlowFailureDoesNotDeleteCandidate(t *testing.T) {
 	}
 }
 
+// TestRelayRouteExactFlowFailureDeletesHintAndReattributes verifies decision A:
+// a failed exact-flow send removes relayFlowByNode (and the recipient-owned
+// flowByNode entry) so the next packet does not retry the dead mapping and can
+// fall back to broadcast/shared-host routing.
+func TestRelayRouteExactFlowFailureDeletesHintAndReattributes(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	const dead = "223.160.208.21:39802"
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.relayFlowByNode[net3.a.ID] = dead
+	if ns.flowByNode == nil {
+		ns.flowByNode = make(map[string]string)
+	}
+	ns.flowByNode[dead] = net3.a.ID
+	s.mu.Unlock()
+	net3.flows[net3.cPort] = []string{dead}
+
+	attempts := 0
+	fanned := 0
+	s.SetRelaySend(func(port int, to string, data []byte) bool {
+		net3.rec.sends = append(net3.rec.sends, sendRec{port: port, to: to, data: string(data)})
+		if to == dead {
+			attempts++
+			return false
+		}
+		return true
+	})
+	s.SetRelaySendFanned(func(port int, except string, data []byte) int {
+		fanned++
+		return 0
+	})
+
+	payload := []byte("dead-exact-flow")
+	s.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", payload)
+
+	s.mu.Lock()
+	if _, ok := ns.relayFlowByNode[net3.a.ID]; ok {
+		s.mu.Unlock()
+		t.Fatalf("relayFlowByNode[%s] still present after failed exact-flow send", net3.a.ID)
+	}
+	if _, ok := ns.flowByNode[dead]; ok {
+		s.mu.Unlock()
+		t.Fatalf("flowByNode[%s] still present after failed exact-flow send", dead)
+	}
+	s.mu.Unlock()
+
+	if attempts != 1 {
+		t.Fatalf("dead exact flow attempted %d times on first trigger, want 1; sends=%v", attempts, net3.rec.sends)
+	}
+	if fanned != 0 {
+		t.Fatalf("broadcast fallback called %d times on first trigger, want 0; sends=%v", fanned, net3.rec.sends)
+	}
+
+	// Second trigger: the dead flow must not be retried; with no remaining
+	// exact flow/host match, the router falls back to broadcast.
+	s.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", payload)
+	if attempts != 1 {
+		t.Fatalf("dead exact flow attempted again on second trigger: attempts=%d; sends=%v", attempts, net3.rec.sends)
+	}
+	if fanned != 1 {
+		t.Fatalf("broadcast fallback calls after second trigger = %d, want 1; sends=%v", fanned, net3.rec.sends)
+	}
+}
+
 // TestPruneStaleRelayFlowsClearsHint verifies that an idle NAT mapping is
 // removed from every relay index, including the authoritative per-node hint
 // peers use for direct punching.
