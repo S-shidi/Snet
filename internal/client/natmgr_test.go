@@ -429,3 +429,34 @@ func TestDaemonSetNATMappingPersists(t *testing.T) {
 		t.Fatalf("persisted NATMapping = %v, want true", cfg.NATMapping)
 	}
 }
+
+func TestMappedEndpointFor(t *testing.T) {
+	const port = 51820
+	d, _ := newTestDaemon(t)
+	d.nat.setPort(port, natResult{
+		externalIP:   "203.0.113.10",
+		externalPort: 51820,
+		via:          "upnp",
+	}, true)
+
+	t.Run("matching WAN", func(t *testing.T) {
+		if got := d.mappedEndpointFor(port, "203.0.113.10"); got != "203.0.113.10:51820" {
+			t.Fatalf("mappedEndpointFor = %q, want %q", got, "203.0.113.10:51820")
+		}
+	})
+	t.Run("mismatched WAN", func(t *testing.T) {
+		if got := d.mappedEndpointFor(port, "198.51.100.7"); got != "" {
+			t.Fatalf("mappedEndpointFor = %q, want empty", got)
+		}
+	})
+	t.Run("no mapping", func(t *testing.T) {
+		if got := d.mappedEndpointFor(51821, "203.0.113.10"); got != "" {
+			t.Fatalf("mappedEndpointFor = %q, want empty", got)
+		}
+	})
+	t.Run("empty observed IP", func(t *testing.T) {
+		if got := d.mappedEndpointFor(port, ""); got != "" {
+			t.Fatalf("mappedEndpointFor = %q, want empty", got)
+		}
+	})
+}
