@@ -403,3 +403,12 @@ PathManager 升级探测与 Status 语义（2026-11-07）：
 - 10s 升级探测：`maintainDirect` 在 `dp.ready && dp.addr != nil` 时，用共享的 `dp.lastProbe` 判定，`lastProbe.IsZero()` 或距上次 >= `directUpgradeInterval`（10s）才向第一个 `pathRank` 更高的候选发 `DIRECT_PROBE`，并更新 `dp.lastProbe`；没有独立 `lastUpgrade` 字段。
 - 验证：`TestPathManagerUpgradesToHigherPriorityCandidate` 在 public ready、`lastProbe=now-11s` 时收到 LAN `DIRECT_PROBE`，模拟 LAN ACK 后 `dp.kind=lan`、`dp.addr` 切到 LAN；`TestPathManagerDoesNotUpgradeBeforeInterval` 在 `lastProbe=now-5s` 时 `directSendFrames` 不增长且 LAN 无帧。两条测试 `-race -count=20` 全绿；`go test ./internal/client` 全绿。commit `8124e15`。
 - 未发现 10s 升级探测缺口。
+
+PathManager relay 重连边界（2026-11-07）：
+
+- 10s HELLO_ACK 超时：用 `relayLink.attempt` 判定；条件为 `!ready && !attempt.IsZero() && now.Sub(attempt) > 10s`。触发后关闭旧 conn、`conn=nil`、`ready=false`、`nextDial=now+5s`，本次不立即重拨；下一次 `maintainRelays` 到达 `nextDial` 后才调用 `dialRelayLink`。
+- 30s 静默：用 `relayLink.lastRecv`（atomic，秒）判定；条件为 `lastRecv > 0 && now.Unix()-lastRecv > 30`。触发后同样关旧 conn、`conn=nil`、`ready=false`、`nextDial=now+5s`。
+- 5s 重拨配合：`conn == nil` 时，仅当 `nextDial.IsZero() || now >= nextDial` 才把 `nextDial` 推到 `now+5s` 并加入 dial 队列；`dialRelayLink` 设置新 conn、`attempt=time.Now()`、`lastRecv=0` 并立即发 HELLO。
+- 多 link：`maintainRelays` 逐 link 独立处理；超时/静默只清该 link 的 conn/ready/nextDial，healthy link 的 conn/ready/attempt/lastRecv 不变。`pickRelayLocked` 仍返回第一个 ready 且 `lastRecv` 在 30s 内的 link；`sendToPeer` 继续走该 link。
+- 验证：`TestPathManagerHelloTimeoutReconnects`、`TestPathManagerDoesNotReconnectBeforeHelloTimeout`、`TestPathManagerSilentLinkReconnectAfter30s`、`TestPathManagerKeepsLinkBefore30sSilence`、`TestPathManagerReconnectsOnlySilentRelayLink` 全绿；`-race -count=20` 全绿；`go test ./internal/client` 全绿。commit `ed9c0c7`。
+- 未发现 relay 重连边界缺口。
