@@ -1158,6 +1158,56 @@ func TestRelayRouteSharedHostDoesNotFanOutToUnrelatedSibling(t *testing.T) {
 	t.Logf("scenario 2: broadcast fallback sent %d copies to unrelated sibling %v (one per live flow; known amplification, pending decision)", eCopies, eFlows)
 }
 
+// TestRelayRouteDeduplicatesSameRecipientFlowAcrossSiblings checks T12's
+// "at most one valid copy" across sibling node ports. sentTo is created
+// inside each deliver(sp) call (store.go:1519), so it dedups duplicates within
+// one port's flow list but not the same flow observed on two sibling ports.
+func TestRelayRouteDeduplicatesSameRecipientFlowAcrossSiblings(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.ctrlHost[net3.b.ID] = "39.180.139.85"
+	ns.ctrlHost[net3.c.ID] = "39.180.139.85"
+	for _, id := range []string{net3.b.ID, net3.c.ID} {
+		ns.nodes[id].Endpoint = ""
+		ns.nodes[id].EndpointV6 = ""
+	}
+	s.mu.Unlock()
+
+	const rf = "223.160.209.21:32001"
+	countRF := func() int {
+		n := 0
+		for _, sr := range net3.rec.sends {
+			if sr.to == rf {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Same recipient flow observed on both sibling ports: no cross-deliver
+	// dedup, so two copies are expected under the current implementation.
+	net3.flows[net3.bPort] = []string{rf}
+	net3.flows[net3.cPort] = []string{rf}
+	payload := []byte("cross-sibling-duplicate")
+	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload)
+	if got := countRF(); got != 2 {
+		t.Fatalf("same recipient flow across sibling ports sent %d times, want 2 (current behaviour; T12 narrowing pending); sends=%v", got, net3.rec.sends)
+	}
+	t.Logf("same recipient flow %s appeared on both sibling ports and was sent 2 times (cross-sibling duplicate, T12 narrowing pending)", rf)
+
+	// Within one deliver(sp), duplicate entries in the same port's flow list
+	// are deduped by sentTo.
+	net3.rec.sends = nil
+	net3.flows[net3.bPort] = []string{rf, rf}
+	net3.flows[net3.cPort] = nil
+	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload)
+	if got := countRF(); got != 1 {
+		t.Fatalf("duplicate entries in one sibling port's flow list sent %d times, want 1; sends=%v", got, net3.rec.sends)
+	}
+}
+
 // TestRelayRouteDropsFailedHostCandidateContinuesToNextSibling verifies the host-level
 // failure path: an exclusive-host send that fails removes that host from
 // recipientHosts, so a later flow under the same host is not attempted. The
