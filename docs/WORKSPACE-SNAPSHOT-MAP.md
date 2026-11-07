@@ -369,4 +369,11 @@ Device 跨重启持久化（2026-11-07）：
 
 - `TestDeviceRecordPersistsAcrossRestart`：`NewStoreAt` + `BindDevice` + `CreateNetwork` → `Close` → 重开；`AdminDevices` 保留 ID/name/publicKey，`DeviceNetworks` 保留网络，`ValidateDeviceToken` 原 device token 仍有效。commit `04f675d`。
 
+删除路径覆盖收口（2026-11-07）：
+
+- `TestOwnerDeleteNetworkCleansUp`、`TestAdminDeleteNetworkCleansUp`：整网删除释放 per-node/broadcast 端口、清 `portToNode`/`netByPort`，并删除 bbolt `networks`/`nodes`/`tokens`/`pending` 行。
+- `TestAdminRemoveNodeCleansUp`：admin 移除节点执行 release + clear，token/node/relaytopo 行删除。
+- `TestSweepZombiesReleasesNetworkPorts`：僵尸网络收割释放端口、清 port maps、`s.networks` 移除。
+- 已知少量内存残留：`s.nodeRelayHost[netID]` 空 map 在网络删除后保留，不影响功能。
+
 结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Web 打包、Android 与发布链路仍待补缺失目录/工具后再验证。
