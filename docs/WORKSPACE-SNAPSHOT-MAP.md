@@ -224,11 +224,12 @@ VERSION
 snetbind/
 .github/
 dist/
-Go 工具链（go）
 gcc
 Android SDK/NDK（ANDROID_HOME 为空）
 java / javac（JAVA_HOME 为空）
 ```
+
+Go 工具链已装：`go1.26.4`（`/usr/local/go`，`/usr/local/bin/go`）。
 
 相关缺失（收缩时移出）：
 
@@ -281,11 +282,11 @@ AGENTS.md
 | `docs/PROJECT-ATLAS.md` | 存在 | 存在 |
 | `PROJECT-STRUCTURE.md` / `AGENTS.md` | 不存在 | 缺失 |
 | `dist/` | 不存在 | 缺失 |
-| `go test ./...` | 无 `go` | 无法验证 |
-| `go vet ./...` | 无 `go` | 无法验证 |
-| `go build ./...` | 无 `go` | 无法验证 |
-| `go test -race ./...` | 无 `go`、无 `gcc` | 无法验证 |
-| `GOOS=darwin/linux GOARCH=arm64 go build ./...` | 无 `go` | 无法验证 |
+| `go test ./...` | 10 包：5 包有测试全通过，0 失败，0 跳过，5 包无测试文件 | 通过 |
+| `go vet ./...` | exit 0，无输出 | 通过 |
+| `go build ./...` | exit 0，无输出 | 通过 |
+| `go test -race ./...` | 无 `gcc` | 无法验证 |
+| `GOOS=darwin/linux GOARCH=arm64 go build ./...` | Go 已装但未跑 | 待验证 |
 | `cd shared/web && npm i -D typescript && npx tsc --noEmit` | 项目内无 TypeScript；外部 tsc 5.9.3 通过 | 项目内无法验证 / 外部已验证 |
 | Android 交叉编译 | 无 `snetbind/`、无 SDK/NDK/JDK | 无法验证 |
 | 版本一致性校验 | 无 `VERSION`、无校验脚本 | 无法验证 |
@@ -296,7 +297,7 @@ AGENTS.md
 | 能力 | 当前状态 |
 |---|---|
 | 阅读/编辑 Go 源码（server/relay/snetd） | 可做（纯文本） |
-| 编译/测试/静态检查 Go | **不可做**：缺 Go 工具链；`-race` 还缺 gcc |
+| 编译/测试/静态检查 Go | 可做：`go build ./...`、`go vet ./...`、`go test ./...` 均通过；`-race` 待 gcc |
 | 阅读/编辑 `shared/web` TypeScript | 可做 |
 | Web 类型检查 | 可借用外部 tsc v5.9.3；项目内 TypeScript 缺失 |
 | Web 资产构建（`build-web.sh`） | **不可做**：缺 `deploy/docker/web/` 输出目录与 `esbuild` |
@@ -304,4 +305,6 @@ AGENTS.md
 | 发布/版本校验/产物 | **不可做**：缺 `VERSION`、发布脚本、CI、`dist/` |
 | Git 操作 | 可做（本地仓库，无 remote） |
 
-结论：当前可研发范围是 **Go 源码阅读/编辑 + `shared/web` 编辑与外部 tsc 类型检查**；服务端/relay/snetd 的编译测试、Web 打包、Android 与发布链路均需补齐工具链或缺失目录后再验证。
+Go 测试基线（2026-11-07）：`go vet ./...` exit 0；`go test ./...` 共 10 个包，5 个有测试的包全部通过，0 失败，0 跳过，5 个包无测试文件；`go test -race ./...` 待 gcc。
+
+结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试 + `shared/web` 编辑与外部 tsc 类型检查**；`-race`、Web 打包、Android 与发布链路仍待补 gcc 或缺失目录后再验证。
