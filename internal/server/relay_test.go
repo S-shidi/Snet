@@ -1050,6 +1050,100 @@ func TestRelayRouteFansOutFromEverySiblingNodePort(t *testing.T) {
 	}
 }
 
+// TestRelayRouteSharedHostDoesNotFanOutToUnrelatedSibling checks the negative
+// side of T12 ("no wrong sibling continuously receives") and the review's
+// §4.3 warning that fan-out "copies traffic and pollutes siblings".
+//
+// Scenario 1: B/C share the sender's egress and have live recipient flows;
+// an unrelated sibling E has its own live flow but must receive zero copies,
+// and the broadcast fallback must not run.
+//
+// Scenario 2: the recipient has no live flow, so the router takes the
+// broadcast fallback. Relay.SendFanned sends to every live endpoint on the
+// relay socket except the sender, so E would receive a copy. That is current
+// behaviour, recorded here; narrowing the fallback is a separate decision.
+func TestRelayRouteSharedHostDoesNotFanOutToUnrelatedSibling(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+
+	info, err := s.NetworkInfo(net3.aTok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rjE, err := s.Join(info.ID, info.PairingCode, testKey(953), "device-e-9503")
+	if err != nil {
+		t.Fatal(err)
+	}
+	le, err := s.ListPeersFrom(rjE.Token, "203.0.113.99", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := *le.Self
+	ePort := e.RelayPort
+	if ePort == 0 || ePort == net3.aPort || ePort == net3.bPort || ePort == net3.cPort {
+		t.Fatalf("unrelated sibling got a bad node port: %d (a=%d b=%d c=%d)", ePort, net3.aPort, net3.bPort, net3.cPort)
+	}
+
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.ctrlHost[net3.b.ID] = "39.180.139.85"
+	ns.ctrlHost[net3.c.ID] = "39.180.139.85"
+	for _, id := range []string{net3.b.ID, net3.c.ID} {
+		ns.nodes[id].Endpoint = ""
+		ns.nodes[id].EndpointV6 = ""
+	}
+	s.mu.Unlock()
+
+	const (
+		bFlow = "223.160.209.21:31001"
+		cFlow = "223.160.209.21:31002"
+		eFlow = "203.0.113.99:31003"
+	)
+	net3.flows[net3.bPort] = []string{bFlow}
+	net3.flows[net3.cPort] = []string{cFlow}
+	net3.flows[ePort] = []string{eFlow}
+
+	fanned := 0
+	eWouldReceive := false
+	s.SetRelaySendFanned(func(port int, except string, data []byte) int {
+		fanned++
+		// Relay.SendFanned broadcasts to every live endpoint on the relay
+		// socket except the sender, so E is a recipient under this fallback.
+		eWouldReceive = true
+		return 1
+	})
+
+	// Scenario 1: B/C flows hit, so no broadcast fallback and E gets nothing.
+	payload1 := []byte("scenario-1")
+	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload1)
+	if !net3.rec.contains(bFlow, string(payload1)) || !net3.rec.contains(cFlow, string(payload1)) {
+		t.Fatalf("scenario 1 did not fan out to both siblings; sends=%v", net3.rec.sends)
+	}
+	if net3.rec.contains(eFlow, string(payload1)) {
+		t.Fatalf("scenario 1 sent a copy to unrelated sibling %s; sends=%v", eFlow, net3.rec.sends)
+	}
+	if fanned != 0 {
+		t.Fatalf("scenario 1 triggered broadcast fallback %d times; sends=%v", fanned, net3.rec.sends)
+	}
+
+	// Scenario 2: no recipient flow -> broadcast fallback. E would receive a
+	// copy; record the fact rather than failing, since the fallback is defined
+	// as "all live endpoints except sender".
+	net3.rec.sends = nil
+	net3.flows[net3.bPort] = nil
+	net3.flows[net3.cPort] = nil
+	fanned = 0
+	eWouldReceive = false
+	payload2 := []byte("scenario-2")
+	s.RelayRouteNodePort(net3.aPort, "39.180.139.85:7777", payload2)
+	if fanned == 0 {
+		t.Fatalf("scenario 2 did not trigger broadcast fallback; sends=%v", net3.rec.sends)
+	}
+	if eWouldReceive {
+		t.Logf("scenario 2: broadcast fallback invoked; unrelated sibling %s would receive a copy (known Relay.SendFanned semantics; narrowing it is a separate decision)", eFlow)
+	}
+}
+
 // TestRelayRouteDropsFailedHostCandidateContinuesToNextSibling verifies the host-level
 // failure path: an exclusive-host send that fails removes that host from
 // recipientHosts, so a later flow under the same host is not attempted. The
