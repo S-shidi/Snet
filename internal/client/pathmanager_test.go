@@ -417,3 +417,143 @@ func TestPathManagerReconnectsSilentRelayLink(t *testing.T) {
 		t.Fatalf("nextDial = %v, want reconnect within 6s", nextDial)
 	}
 }
+
+func mustPathAddr(t *testing.T, raw string) *net.UDPAddr {
+	t.Helper()
+	addr, err := net.ResolveUDPAddr("udp", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+func TestPathManagerRejectsWrongLANPort(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	key := protocol.RelayNodeKey("node-b")
+	dp := &directPeer{lanAddr: mustPathAddr(t, "192.168.1.10:51820")}
+	pm.mu.Lock()
+	pm.directPeers[key] = dp
+	pm.mu.Unlock()
+
+	if pm.noteDirectPeer(key, mustPathAddr(t, "192.168.1.10:51821"), time.Now(), true) {
+		t.Fatal("wrong LAN port should be rejected")
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if dp.ready || dp.addr != nil {
+		t.Fatalf("rejected LAN frame changed peer state: %+v", dp)
+	}
+}
+
+func TestPathManagerRejectsUnknownPublicSource(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	key := protocol.RelayNodeKey("node-b")
+	dp := &directPeer{relayAddr: mustPathAddr(t, "203.0.113.5:51820")}
+	pm.mu.Lock()
+	pm.directPeers[key] = dp
+	pm.mu.Unlock()
+
+	if pm.noteDirectPeer(key, mustPathAddr(t, "198.51.100.7:51820"), time.Now(), true) {
+		t.Fatal("unknown public source should be rejected")
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if dp.ready || dp.addr != nil {
+		t.Fatalf("rejected public frame changed peer state: %+v", dp)
+	}
+}
+
+func TestPathManagerAllowsPublicPortRebinding(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	key := protocol.RelayNodeKey("node-b")
+	dp := &directPeer{relayAddr: mustPathAddr(t, "203.0.113.5:51820")}
+	pm.mu.Lock()
+	pm.directPeers[key] = dp
+	pm.mu.Unlock()
+
+	rebound := mustPathAddr(t, "203.0.113.5:40000")
+	if !pm.noteDirectPeer(key, rebound, time.Now(), true) {
+		t.Fatal("public NAT rebinding should be accepted")
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if !dp.ready || dp.kind != "public" || dp.addr == nil || dp.addr.Port != 40000 {
+		t.Fatalf("rebound public mapping not accepted: %+v", dp)
+	}
+}
+
+func TestPathManagerRejectsDirectFrameWhenNoCandidate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	key := protocol.RelayNodeKey("node-b")
+	dp := &directPeer{}
+	pm.mu.Lock()
+	pm.directPeers[key] = dp
+	pm.mu.Unlock()
+
+	if pm.noteDirectPeer(key, mustPathAddr(t, "203.0.113.5:51820"), time.Now(), true) {
+		t.Fatal("direct frame without candidates should be rejected")
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if dp.ready || dp.addr != nil {
+		t.Fatalf("rejected direct frame changed peer state: %+v", dp)
+	}
+}
+
+func TestPathManagerCandidatePriority(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	dp := &directPeer{
+		lanAddr:   mustPathAddr(t, "192.168.1.10:51820"),
+		v6Addr:    mustPathAddr(t, "[2001:db8::1]:51820"),
+		relayAddr: mustPathAddr(t, "203.0.113.5:51820"),
+	}
+	pm.mu.RLock()
+	cands := pm.candidatesLocked(dp)
+	pm.mu.RUnlock()
+	if len(cands) != 3 {
+		t.Fatalf("candidates = %+v, want 3", cands)
+	}
+	want := []string{"lan", "ipv6", "public"}
+	for i, w := range want {
+		if cands[i].kind != w {
+			t.Fatalf("candidate[%d] kind = %q, want %q (all=%+v)", i, cands[i].kind, w, cands)
+		}
+	}
+}
+
+func TestPathManagerLowPriorityAckDoesNotOverrideHighPriority(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	key := protocol.RelayNodeKey("node-b")
+	lan := mustPathAddr(t, "192.168.1.10:51820")
+	dp := &directPeer{
+		lanAddr:   lan,
+		relayAddr: mustPathAddr(t, "203.0.113.5:51820"),
+		addr:      lan,
+		kind:      "lan",
+		ready:     true,
+	}
+	pm.mu.Lock()
+	pm.directPeers[key] = dp
+	pm.mu.Unlock()
+
+	if !pm.noteDirectPeer(key, mustPathAddr(t, "203.0.113.5:40000"), time.Now(), true) {
+		t.Fatal("valid public ACK should be accepted (but not applied)")
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if dp.kind != "lan" || dp.addr == nil || !sameUDPAddr(dp.addr, lan) {
+		t.Fatalf("low-priority ACK displaced LAN path: %+v", dp)
+	}
+}
