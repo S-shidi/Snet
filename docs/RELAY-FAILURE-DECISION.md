@@ -190,3 +190,10 @@ decision B 把“有候选 flow 但全部失败”也按 §9 的“丢弃并计�
 - 广播判定：`!attempted` 且 TTL 未过期 → `relayFanoutFallbacks++`，不广播，返回 false；TTL 过期后恢复 bootstrap 广播。
 - `pruneStaleRelayFlowsLocked` 顺带清理过期 `relayFlowBadUntil`，避免泄漏。
 - 评审依据：§9“无精确 flow 时明确丢弃并计数”；TTL 避免删 hint 后立刻退化为广播。
+
+**生命周期与调用方核验**：
+
+- TTL map 随 `networkState` 生命周期释放；`DeleteNetwork`/`SweepZombies` 会删除 `s.networks[nid]`，map 随之回收。
+- `Join` 复用 `networkState`；`reviveNode` 现在清除该节点的 `relayFlowBadUntil`（commit `991a6a0`），避免旧 TTL 误抑制重新加入节点的广播。
+- 节点移除路径可能把该节点 ID 的 TTL 条目保留到下一次 prune；节点 ID 随机且重新加入会创建新 ID，因此不会误抑制，网络删除时随 `networkState` 释放。
+- `deliver` 二元返回所有调用点语义已核：`store.go:1658` 与 `store.go:1684` 都显式拆分 `sent`/`attempted`，没有把 `attempted` 误当 `sent`。
