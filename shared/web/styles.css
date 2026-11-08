@@ -208,8 +208,6 @@ header {
   flex: 0 0 6px; flex-shrink: 0;
 }
 .kv .pill { width: fit-content; flex-shrink: 0; }
-#tunnel-detail .kv > .pill { width: fit-content; flex-shrink: 0; }
-#tunnel-detail .kv > code, #tunnel-detail .kv > span:not(.pill) { min-width: 0; }
 .pill.ok   { background: var(--ok-soft); color: var(--ok); }
 .pill.err  { background: var(--err-soft); color: var(--err); }
 .pill.warn { background: var(--warn-soft); color: var(--warn); }
@@ -228,8 +226,9 @@ header {
 .net-list { display: grid; gap: 10px; }
 .net {
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--card);
-  padding: 14px 16px; transition: border-color .15s;
+  padding: 14px 16px; transition: border-color .15s; cursor: pointer;
 }
+.net.pending { cursor: default; }
 .net:hover { border-color: var(--border2); }
 .net.busy { opacity: .6; pointer-events: none; }
 .net.pending { border-style: dashed; border-color: rgba(217,161,58,.4); }
@@ -282,6 +281,30 @@ header {
 .net-menu button.danger:hover { background: var(--err-soft); color: var(--err); }
 .net-menu button svg { width: 15px; height: 15px; flex: none; }
 .net-menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 6px; }
+
+/* ── network detail view ─────────────────── */
+#net-toolbar[hidden], #net-list[hidden], #net-detail[hidden] { display: none; }
+.net-detail { display: block; }
+.net-detail-head {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.detail-heading { min-width: 0; flex: 1; }
+.detail-title { font-size: 17px; font-weight: 700; word-break: break-all; }
+.detail-sub { margin-top: 2px; color: var(--dim); font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.detail-section { margin-bottom: 14px; }
+.detail-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.detail-section-head h3 { margin: 0; font-size: 13px; color: var(--dim); font-weight: 600; }
+.detail-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+.detail-kv {
+  display: flex; flex-direction: column; gap: 5px; min-width: 0;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-s);
+  background: var(--bg2);
+}
+.detail-kv > span:first-child { color: var(--dim); font-size: 11px; }
+.detail-kv code, .detail-kv b { font-size: 13px; font-weight: 600; word-break: break-all; }
+.detail-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.detail-danger { border-color: rgba(224,82,82,.28); }
+.detail-danger .detail-actions { margin-top: 0; }
 .meta-link { background: none; border: none; color: var(--dim); font: inherit; cursor: pointer; text-decoration: none; padding: 0; transition: color .12s; }
 .meta-link:hover { color: var(--accent2); text-decoration: underline; }
 
@@ -317,7 +340,6 @@ header {
 .stat .value.accent { color: var(--accent2); }
 .stat::after { content: ""; position: absolute; right: -18px; top: -18px; width: 70px; height: 70px; border-radius: 50%; background: rgba(79,140,255,.08); }
 
-#tunnel-detail .kv span { width: auto; min-width: 60px; flex-shrink: 1; }
 #status-json {
   margin-top: 8px; background: var(--bg); border: 1px solid var(--border);
   border-radius: var(--radius-s); padding: 10px; font-size: 11px; color: var(--dim);
@@ -775,6 +797,10 @@ pre.code { user-select: all; }
   .path-peer { flex-direction: column; }
   .path-peer-side { align-items: flex-start; max-width: none; }
   .path-peer-addr { text-align: left; }
+
+  /* ── network detail: compact overview ─── */
+  .detail-overview { grid-template-columns: 1fr; }
+  .detail-actions .btn { flex: 1 1 auto; }
 }
 @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
