@@ -718,6 +718,30 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
+	mux.HandleFunc("PATCH /admin/networks/{nid}/nodes/{nodeID}/role", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.SetNodeRoleReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.AdminSetNodeRole(r.PathValue("nid"), r.PathValue("nodeID"), req.Role); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.HandleFunc("PATCH /admin/networks/{nid}/nodes/{nodeID}/subnets", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.UpdateSubnetsReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.AdminSetNodeAllowedSubnets(r.PathValue("nid"), r.PathValue("nodeID"), req.Subnets); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	mux.HandleFunc("POST /admin/networks/{nid}/code", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		code, err := s.AdminResetCode(r.PathValue("nid"))
 		if err != nil {

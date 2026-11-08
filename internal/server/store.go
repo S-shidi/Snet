@@ -5276,7 +5276,16 @@ func (s *Store) UpdateAllowedSubnets(token string, subnets []string) error {
 	if me == nil {
 		return ErrNotFound
 	}
-	// Validate each subnet.
+	if err := validateNodeAllowedSubnets(ns, te.NodeID, subnets); err != nil {
+		return err
+	}
+	me.AllowedSubnets = subnets
+	return s.persistNode(te.NetworkID, me)
+}
+
+// validateNodeAllowedSubnets validates a node's advertised CIDRs against the
+// network subnet and every other node's advertisements. Callers must hold s.mu.
+func validateNodeAllowedSubnets(ns *networkState, nodeID string, subnets []string) error {
 	seen := map[string]struct{}{}
 	for _, raw := range subnets {
 		cidr, err := validateSubnet(raw)
@@ -5287,14 +5296,12 @@ func (s *Store) UpdateAllowedSubnets(token string, subnets []string) error {
 			return fmt.Errorf("重复子网 %s", cidr)
 		}
 		seen[cidr] = struct{}{}
-		// Must not overlap with the network's own VPN subnet.
 		if ns.n.Subnet != "" && subnetsOverlap(cidr, ns.n.Subnet) {
 			return fmt.Errorf("子网 %s 与网络 VPN 网段 %s 重叠", cidr, ns.n.Subnet)
 		}
 	}
-	// Must not conflict with other nodes' advertised subnets.
 	for id, n := range ns.nodes {
-		if id == te.NodeID {
+		if id == nodeID {
 			continue
 		}
 		for _, other := range n.AllowedSubnets {
@@ -5314,8 +5321,78 @@ func (s *Store) UpdateAllowedSubnets(token string, subnets []string) error {
 			}
 		}
 	}
-	me.AllowedSubnets = subnets
-	return s.persistNode(te.NetworkID, me)
+	return nil
+}
+
+// AdminSetNodeAllowedSubnets updates any node's advertised subnets, bypassing
+// the owner-token requirement used by the client control API.
+func (s *Store) AdminSetNodeAllowedSubnets(nid, nodeID string, subnets []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return ErrNotFound
+	}
+	n := ns.nodes[nodeID]
+	if n == nil {
+		return ErrNotFound
+	}
+	if err := validateNodeAllowedSubnets(ns, nodeID, subnets); err != nil {
+		return err
+	}
+	n.AllowedSubnets = subnets
+	return s.persistNode(nid, n)
+}
+
+// AdminSetNodeRole changes a node's role from the admin console. Setting a
+// node to owner transfers network ownership to that node's device; the old
+// owner is retained as an admin.
+func (s *Store) AdminSetNodeRole(nid, nodeID, role string) error {
+	role = strings.ToLower(strings.TrimSpace(role))
+	switch role {
+	case "owner", "admin", "member":
+	default:
+		return errors.New("invalid role (must be owner, admin or member)")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return ErrNotFound
+	}
+	target := ns.nodes[nodeID]
+	if target == nil {
+		return ErrNotFound
+	}
+	if role == "owner" {
+		if target.ID == ns.n.OwnerNodeID {
+			return nil
+		}
+		if target.DeviceID == "" {
+			return errors.New("external node cannot own a network")
+		}
+		if old := ns.nodes[ns.n.OwnerNodeID]; old != nil && old.ID != target.ID {
+			old.Role = "admin"
+			if err := s.persistNode(nid, old); err != nil {
+				return err
+			}
+		}
+		target.Role = "owner"
+		ns.n.OwnerNodeID = target.ID
+		ns.n.OwnerDeviceID = target.DeviceID
+		if err := s.persistNode(nid, target); err != nil {
+			return err
+		}
+		return s.persistNetwork(ns)
+	}
+	if target.ID == ns.n.OwnerNodeID {
+		return errors.New("cannot demote the owner; transfer ownership first")
+	}
+	if target.Role == role {
+		return nil
+	}
+	target.Role = role
+	return s.persistNode(nid, target)
 }
 
 // deriveIPv6FromV4 generates a virtual IPv6 address from an IPv4 address and subnet.
