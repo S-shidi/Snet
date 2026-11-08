@@ -6,7 +6,7 @@
 ## 1. 前置
 
 - Docker Engine + Docker Compose v2
-- 可写目录：`deploy-prod/docker/`
+- 可写目录：`deploy-prod/docker-server/`
 - TLS 证书：默认挂载 `/etc/letsencrypt` 到容器只读
   - 默认路径：`/etc/letsencrypt/live/snet.uizhi.eu.org/fullchain.pem` 和 `privkey.pem`
   - 路径不同则在 `.env` 设置 `TLS_CERT_PATH` / `TLS_KEY_PATH`
@@ -17,7 +17,7 @@
 
 ## 2. 生成 secret 与 .env
 
-在 VPS 的 `deploy-prod/docker/`：
+在 VPS 的 `deploy-prod/docker-server/`：
 
 ```bash
 cp .env.example .env
@@ -42,7 +42,7 @@ relay 和 server 必须使用**同一个** `SNET_RELAY_SECRET`。
 Dockerfile 使用 **COPY 预编译二进制**（`dist-deploy/linux-${BIN_ARCH}/{server,relay}`），不在 VPS 上运行 Go 构建。默认 `BIN_ARCH=amd64`；`uname -m` 为 `aarch64` 时在 `.env` 设置 `BIN_ARCH=arm64`。
 
 ```bash
-cd deploy-prod/docker
+cd deploy-prod/docker-server
 docker compose --env-file .env up -d --build
 ```
 
@@ -93,7 +93,7 @@ docker compose exec relay wget -qO- http://127.0.0.1:8094/healthz
 
 ## 7. 注意
 
-- 不要在 `.env` 中提交真实 secret；`.gitignore` 已忽略 `deploy-prod/docker/.env`。
+- 不要在 `.env` 中提交真实 secret；`.gitignore` 已忽略 `deploy-prod/docker-server/.env`。
 - relay 必须先起，secret 必须一致；否则 server 签发的 ticket 无法被 relay 验证。
 - Relay v2 使用 MTU 1320（`protocol.DefaultMTU`）；链路需允许 1320 内 UDP。
 - 如果 8092/udp 被云防火墙拦截，客户端会退化为 relay 不可用；先验证公网 UDP 可达。
@@ -102,4 +102,4 @@ docker compose exec relay wget -qO- http://127.0.0.1:8094/healthz
 
 - `docker-mcp-server` 的 `ssh://` 方式已停用；opencode 配置中的 `docker` MCP 保留但 `enabled=false`。
 - VPS 远程操作改走 Hostodo MCP，已配置并完成 `tools/list`；实际能力/部署边界见 `docs/VPS-DEPLOY-VIA-HOSTODO.md`。
-- 客户端 A/B 均为手动部署，见 `deploy-prod/manual-client/README.md`。
+- 客户端 A/B 均为手动部署，见 `deploy-prod/README-client.md`。

@@ -201,7 +201,7 @@ dpanel
 1. `hostodo_list_vms` / `get_vm` 确认目标 `ins::y5a3ro01rd`，`mcp_exec_enabled=true`。
 2. `hostodo_exec_vm_command` 备份旧部署（tar `/usr/local/snet`、`/etc/snet` 到 `/root/snet-backup-*`）。
 3. `hostodo_exec_vm_command` 检查 Docker；未装则按 OS 执行安装命令。
-4. 本机打包 `deploy-prod/docker/` + `dist-deploy/linux-<arch>/`，`hostodo_create_artifact_upload` 上传，`hostodo_install_artifact` 落到 VPS。
+4. 本机打包 `deploy-prod/docker-server/` + `dist-deploy/linux-<arch>/`，`hostodo_create_artifact_upload` 上传，`hostodo_install_artifact` 落到 VPS。
 5. `hostodo_exec_vm_command` 生成 secret 到 `/etc/snet/relay.secret`（不打印），写 `.env`（secret 从文件引用）。
 6. `hostodo_start_vm_command` 执行 `docker compose up -d --build`（薄镜像只 COPY 预编译二进制），用 `get_vm_command_output` 轮询。
 7. `hostodo_get_service_logs` / `exec_vm_command` 验证 `docker compose ps`、`curl /healthz`、8092/udp 监听。
@@ -243,7 +243,7 @@ dpanel
 2. 停旧 snet-server.service（用户批准后）；如保留 snet-runtime-http，先确认其用途
 3. 上传：
    - dist-deploy/linux-<arch>/{server,relay}
-   - deploy-prod/docker/（Dockerfile/compose/.env.example）
+   - deploy-prod/docker-server/（Dockerfile/compose/.env.example）
 4. 生成 secret：umask 077; openssl rand -hex 32 > /etc/snet/relay.secret（不打印）
 5. 写 .env：SNET_RELAY_SECRET 从文件引用；SNET_RELAY_V2_ENDPOINTS=snet.uizhi.eu.org:8092；
    BIN_ARCH=amd64（uname -m 已确认 x86_64）

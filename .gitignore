@@ -62,5 +62,5 @@ skills-lock.json
 /server_linux
 
 # Production deployment secrets/artifacts (never commit)
-deploy-prod/docker/.env
+deploy-prod/docker-server/.env
 dist-deploy/

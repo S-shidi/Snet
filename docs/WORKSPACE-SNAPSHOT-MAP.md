@@ -550,3 +550,32 @@ Server 鉴权剩余项与 probe.go 盘点（2026-11-07）：
 1. 先补齐 Docker Web 本地构建与部署文件，起本地 server + 2 个 snetd 做双节点互通。
 2. 按 `docs/NETWORK-VALIDATION-PLAN.md` 跑 T1/T2/T6/T7/T10/T12/T13/T14 的单机可验证子集。
 3. 再做四节点 Relay v2 真机矩阵（NAT rebinding/IPv6/Docker 端口/跨 relay）与 Docker/nginx Web session 端到端；Android 不再作为下一阶段目标。
+
+## 部署产物结构（2026-11-08）
+
+```text
+deploy-prod/
+├── README-client.md              # 客户端入口：compose 或 systemd
+├── docker-server/
+│   ├── compose.yaml              # server + relay，标准 compose
+│   ├── Dockerfile.server         # COPY 预编译 server
+│   ├── Dockerfile.relay          # COPY 预编译 relay
+│   ├── .env.example
+│   └── README.md
+├── docker-client/
+│   ├── compose.yaml              # 标准 compose，无 build，image: snet-client:latest
+│   ├── Dockerfile.client         # 可选重建参考，不是部署必需
+│   ├── config.json.example
+│   └── README.md
+└── manual-client/                # 二进制 + systemd 备选
+    ├── README.md
+    ├── config.json.example
+    ├── snetd.service
+    ├── check-prereq.sh
+    └── SHA256SUMS
+```
+
+- VPS：`deploy-prod/docker-server/` + `dist-deploy/linux-amd64/{server,relay}`。
+- 客户端：`deploy-prod/docker-client/` + 预构建 `snet-client:latest` tar；不再带 build 段。
+- 服务端 compose 的 `build.context: ../..` 从 `docker-server/` 仍指向仓库根，可访问 `dist-deploy/`。
+- `deploy-prod/docker-client/Dockerfile.client` 仅作为可选重建参考保留。

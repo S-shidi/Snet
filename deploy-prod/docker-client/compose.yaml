@@ -1,14 +1,8 @@
 services:
   snetd:
-    build:
-      context: ../..
-      dockerfile: deploy-prod/docker/Dockerfile.client
-      args:
-        BIN_ARCH: ${BIN_ARCH:-amd64}
     image: snet-client:latest
     container_name: snetd
     restart: unless-stopped
-    # host network: ctl binds 127.0.0.1:19432, WG 52100/udp on the host.
     network_mode: host
     cap_add:
       - NET_ADMIN
