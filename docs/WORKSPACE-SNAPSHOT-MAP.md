@@ -476,3 +476,77 @@ Server 鉴权剩余项与 probe.go 盘点（2026-11-07）：
 - #11 static-token logout：`TestAdminLogoutStaticTokenNoop` 用 `AdminToken` 请求 `POST /admin/logout` → 204；随后 `GET /admin/stats` 同 token → 200，确认 static token 分支是 no-op，不清 session。
 - probe.go：`ProbeServer` 是独立 UDP echo，默认 `[::]:8091`（`cmd/server/main.go -probe-addr`），对任意 UDP 包回复 `{"endpoint":"observed ip:port"}`；无 Store 访问、无鉴权、无 payload 解析，`n` 被丢弃。调用方是 `cmd/server/main.go:129`；客户端 `internal/client/daemon.go` 的 `probePublicIP` 发送含 networkId/nodeId/token 的 JSON，但 server 不读取 payload、不记录 token。已补 `TestProbeServerEchoesSourceEndpoint`（127.0.0.1:0，UDP 发送后读 JSON，断言 endpoint 等于客户端 LocalAddr）和 `TestProbeServerClose`（Close 后重新 ListenUDP 成功，验证端口释放）；`-race -count=20` 全绿。
 - 测试命令：session `-race -count=20` 全绿；pending `-race -count=10` 全绿；static logout 全绿；probe `-race -count=20` 全绿；`go test ./internal/server` / `-race` / `go test ./...` / `go vet ./...` 全绿。commits `3a6b535`、`8e872de`、`270ceb3`、`c85d9c8`。
+
+## 可交付基线（2026-11-08）
+
+### 事实
+
+- 代码/测试 HEAD：`8b50a64`（本文件所在 docs 收口提交后 HEAD 前移；`verified_code_commit` 仍指代码/测试基线）。
+- 工作区：`git status --porcelain` 空；`du -sh .` = **7.8M**。
+- 全量测试：**389 PASS / 0 FAIL**（顶层 291 + 子测试 98）。
+- 按包：`internal/buildinfo` 1、`internal/client` 129（107+22）、`internal/protocol` 7（3+4）、`internal/relay` 9、`internal/server` 243（171+72）。
+- 代码规模：生产 **18,067** 行；测试 **13,689** 行；测试/生产 = **0.758**。
+- `go test ./... -count=1`：**WALL 14.732s**；各包 `ok` 行时间合计 **17.517s**（包并行，wall 更小）。
+- `go test -race ./...`：通过；`internal/client` 4.537s，`internal/server` 47.357s，其余 cached。
+- `go vet ./...`：exit 0。
+- 稳定性注记：一次并行包运行出现 `TestSelectRelayDiesAfterSelection` 瞬时失败（期望 `127.0.0.1:49654`，实际 `:39680`）；随后 `go test ./... -count=1` 连续 3 次通过，单测 `-count=100` 通过。未改测试/代码，记录为待观察的并行端口/时序抖动，不写成稳定失败。
+
+### 四条线闭环
+
+| 模块 | 闭环项 | 测试名 | 状态 / commit |
+|---|---|---|---|
+| relay T12 | 2B 跨 sibling 共享 `sentTo` | `TestRelayRouteSharesSentToAcrossSiblings` | 闭环 `9a33382` |
+| relay T12 | 2B follow-up：成功才置位，允许下一 sibling 重试 | `TestRelayRouteSharedSentToRetriesNextSiblingOnFailure` | 闭环 `6652f87` |
+| relay T12 | 1B+1C 收窄共享扇出 + bootstrap 兜底 + 计数 | `TestRelayRouteNarrowsSharedFanoutAndCountsFallback` | 闭环 `404f382` |
+| relay T12 | 3C 广播/多 flow 按 host 去重 | `TestRelaySendFannedDeduplicatesByHost` | 闭环 `908fca7` |
+| relay T12 | 3C legacy pair broadcast 去重 | `TestRelayPairLegacyBroadcastDeduplicatesByHost` | 闭环 `cf933a2` |
+| relay 相邻决策 | exact-flow 失败删 hint | `TestRelayRouteExactFlowFailureDeletesHintAndReattributes`、`TestRelayRouteExactFlowSuccessKeepsCandidate` | 闭环 `a9b9163` |
+| relay 相邻决策 | 全 sibling 失败 drop+count；删 hint 后 30s 抑制广播 | `TestRelayRouteDropsWhenAllSiblingSendsFail`、`TestRelayRouteSuppressesBroadcastAfterHintDeletion` | 闭环 `ff80f67`、`36aa257` |
+| NAT P0/P1 | #2 WAN IP 门禁 | `TestMappedEndpointFor` | 闭环 `15a8119` + `75b38aa` |
+| NAT P0/P1 | #3 unclaim teardown | `TestUnclaimTearsDownUPnPMapping`、`TestUnclaimSkipsTeardownForNatPMPAndPCP`、`TestReclaimWaitsForPendingTeardown` | 闭环 `cea1cab` |
+| NAT P0/P1 | #5 POST /ctl/nat | `TestCtlSetNATMappingTearsDownOnDisable`、`TestCtlSetNATMappingEnablePersistsWithoutTeardown` | 闭环 `053a684` |
+| NAT P0/P1 | #7 协议 fallback | `TestMapNATPortWith` | 闭环 `d4200f8` + `7e7f56a` |
+| pathmanager | #1 候选优先级 | `TestPathManagerCandidatePriority`、`TestPathManagerLowPriorityAckDoesNotOverrideHighPriority` | 闭环 `746431c` |
+| pathmanager | #2 10s 升级探测 | `TestPathManagerUpgradesToHigherPriorityCandidate`、`TestPathManagerDoesNotUpgradeBeforeInterval` | 闭环 `8124e15` |
+| pathmanager | #3 direct 来源校验 | `TestPathManagerRejectsWrongLANPort`、`TestPathManagerRejectsUnknownPublicSource`、`TestPathManagerAllowsPublicPortRebinding`、`TestPathManagerRejectsDirectFrameWhenNoCandidate` | 闭环 `746431c` |
+| pathmanager | #4 5s ping | `TestPathManagerDirectPingCadence`、`TestPathManagerDoesNotPingBeforeInterval` | 闭环 `65172c0` |
+| pathmanager | #5 发送失败回退 | `TestPathManagerDirectSendFailureFallsBack` | 闭环 `cd4ebb0` |
+| pathmanager | #6 对称 NAT 保持 relay | `TestPathManagerSymmetricNATStaysRelay` | 闭环 `cd4ebb0` |
+| pathmanager | #7 10s HELLO 超时 | `TestPathManagerHelloTimeoutReconnects`、`TestPathManagerDoesNotReconnectBeforeHelloTimeout` | 闭环 `ed9c0c7` |
+| pathmanager | #8 30s 静默重拨 | `TestPathManagerSilentLinkReconnectAfter30s`、`TestPathManagerKeepsLinkBefore30sSilence` | 闭环 `ed9c0c7` |
+| pathmanager | #9 多 link 只重连失败实例 | `TestPathManagerReconnectsOnlySilentRelayLink` | 闭环 `ed9c0c7` |
+| pathmanager | #10 `peerDirect` 全字段 | `TestPathManagerStatusPeerDirectFields` | 闭环 `65172c0` |
+| pathmanager | #11 真实 NAT rebinding/IPv6 防火墙/Docker 临时端口/多 relay 跨实例 | 建议 `TestRelayV2FourNodeHardware`（未实现） | **需真机，待验证** |
+| server | token 隔离 | `TestDeviceTokenNotAcceptedAsNodeBearer`、`TestNodeTokenNotAcceptedAsDeviceToken`、`TestDeviceTokenNotAcceptedForOwnerRoute` | 闭环 `a35eee4` |
+| server | sanitizeLog 控制字符 + 无 secret 日志 | `TestSanitizeLogEscapesControlChars`、`TestServerLogsDoNotContainSecrets` | 闭环 `4b9dbed` |
+| server | enrollment 限流 + device-auth 门禁 | `TestAnonymousEnrollmentRateLimited`、`TestRequireDeviceAuthBlocksAnonymousCreateJoinRegister` | 闭环 `37f5480` |
+| server | 路由鉴权矩阵 | `TestNodeTokenRoutesAuthMatrix`、`TestAdminRoutesAuthMatrix`、`TestAdminDisabledReturns404` | 闭环 `abbfe59`、`5a1903c` |
+| server | node-token 路径校验 | `TestNodeTokenRoutesAuthMatrix` 的 cross-network/wrong-node 子测试 | 闭环 `d46e38f`、`9bf9682` |
+| server | admin session 过期 | `TestAdminSessionExpiry` | 闭环 `3a6b535` |
+| server | pending poll 一次性消费/限流 | `TestPendingPollOneShotConsume`、`TestPendingPollRateLimited` | 闭环 `8e872de`；gone 语义 `8b50a64` |
+| server | static-token logout no-op | `TestAdminLogoutStaticTokenNoop` | 闭环 `270ceb3` |
+| server | probe.go echo/close | `TestProbeServerEchoesSourceEndpoint`、`TestProbeServerClose` | 闭环 `c85d9c8` |
+
+### 永久缺口 / 本快照无法验证
+
+| 缺口 | 缺什么 / 影响 | 验证命令（若可写） | 状态 |
+|---|---|---|---|
+| `VERSION` | 版本锚点缺失；版本一致性/发布无法验证 | `test -f VERSION` | 永久待补 / 需上游数据 |
+| `snetbind/` | gomobile 绑定缺失；Android 目标不可构建 | `ls snetbind`；`GOOS=android GOARCH=arm64 go build ./...` | 永久待补 / 需上游数据 |
+| `.github/workflows/` | CI/发布流程不可验证 | `ls .github/workflows` | 永久待补 |
+| `android/` | Android 客户端不可构建 | `ls android` | 永久待补 |
+| `.archify/` | 架构图缺失；project-audit 不完整 | `ls .archify` | 永久待补 |
+| `dist/` | 发布产物已删；无版本化产物对照 | `ls dist` | 永久待补 |
+| 真机四节点 | Relay v2 NAT rebinding / IPv6 防火墙 / Docker 临时端口 / 多 relay 跨实例未验证 | `ping -c 20 <peer>`；`iperf3 -c <peer> -t 30`；跨 relay 检查 `curl -s http://127.0.0.1:19432/ctl/status \| jq '.relayPath.peerDirect, .relayPath.relayIndex'` | 需真机，待验证 |
+| Web 端到端联调 | tsc 通过，但未起 snetd 跑真实 `/ctl/*` | `cd shared/web && npx tsc --noEmit`；启动 snetd 后浏览器/HTTP 联调 | 待验证 / 需环境 |
+| Docker/nginx Web session | 部署目录与 nginx session 集成缺失 | 恢复 `deploy/docker/web/` 与 nginx 配置后做未登录/登录 `/ctl/*` 联调 | 待验证 / 需部署环境 |
+
+### 决策记录
+
+已建立 `docs/DECISION-LOG.md`，记录 12 条：快照导入、收缩、relay exact-flow/2B/1B+1C/3C/全失败/TTL、node-token 路径校验、pending 幂等语义、`markDirectFailed` 保留 addr、admin.html 公开设计。
+
+### 下一阶段建议（若上游补齐数据）
+
+1. 恢复 `VERSION`/上游 `c379790` 对照与 `.github/workflows`，先把版本/CI 锚点补回。
+2. 恢复 `snetbind/` + `android/`，做 Android 交叉编译和真机安装验证。
+3. 做四节点 Relay v2 真机矩阵（NAT rebinding/IPv6/Docker 端口/跨 relay）并补 Docker/nginx Web session 端到端。
