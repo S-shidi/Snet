@@ -489,7 +489,7 @@ Server 鉴权剩余项与 probe.go 盘点（2026-11-07）：
 - `go test ./... -count=1`：**WALL 14.732s**；各包 `ok` 行时间合计 **17.517s**（包并行，wall 更小）。
 - `go test -race ./...`：通过；`internal/client` 4.537s，`internal/server` 47.357s，其余 cached。
 - `go vet ./...`：exit 0。
-- 稳定性注记：一次并行包运行出现 `TestSelectRelayDiesAfterSelection` 瞬时失败（期望 `127.0.0.1:49654`，实际 `:39680`）；随后 `go test ./... -count=1` 连续 3 次通过，单测 `-count=100` 通过。未改测试/代码，记录为待观察的并行端口/时序抖动，不写成稳定失败。
+- 稳定性注记（已定性）：`TestSelectRelayDiesAfterSelection` 一次并行包运行失败（期望 `127.0.0.1:49654`，实际 `:39680`）。定性为**测试自身缺陷**：测试假设两个 loopback relay 的 RTT 相等、第一候选必赢；实际 `selectRelay` 按实测 RTT 选最低，e1 更快时合法胜出。已改为捕获实际选中的 live relay 再做 failover，保留失败切换/缓存清理语义；生产选路未改。修复后 `-count=500` 与 `-race -count=200` 全过；commit `d534f74`。注：该测试位于 `internal/client/daemon_test.go`，不是 `internal/server`。
 
 ### 四条线闭环
 
