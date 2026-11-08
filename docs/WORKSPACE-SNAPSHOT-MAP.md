@@ -455,14 +455,15 @@ Server 路由鉴权矩阵（2026-11-07）：
 
 - #4/#5/#10 闭环：`TestNodeTokenRoutesAuthMatrix` 覆盖 7 条 node-token 路由；`TestAdminRoutesAuthMatrix` 覆盖 4 条 admin 路由；`TestAdminDisabledReturns404` 覆盖 admin 未配置语义。
 - Node-token 实际矩阵（无 token / garbage / 跨网络 token / 本网络合法 token；pending 另有 member）：
-  - `PUT .../direct-endpoints`：401 / 401 / **204** / 204
+  - `PUT .../direct-endpoints`：401 / 401 / **404** / 204；同网络错 nodeID → 404
   - `GET .../relay-ticket`：401 / 401 / 401 / 200
-  - `PATCH .../subnets`：401 / 401 / **204** / 204
+  - `PATCH .../subnets`：401 / 401 / **404** / 204
   - `GET .../exists`：401 / 404 / 404 / 200
-  - `DELETE .../nodes/{nodeID}`：401 / 401 / **204** / 204
+  - `DELETE .../nodes/{nodeID}`：401 / 401 / **404** / 204；同网络错 nodeID → 404
   - `POST .../pending/{id}/approve`：401 / 404 / 404 / member 401 / 200
   - `POST .../pending/{id}/deny`：401 / 404 / 404 / member 401 / 204
-- **当前行为 vs atlas 期望，待决策**：`direct-endpoints`、`subnets`、`delete-node` 的 handler 忽略路径 `nid/nodeID`，直接按 bearer token 操作 token 自身网络/节点；因此跨网络合法 token 返回 204，而不是 atlas/矩阵预期的 401/404。测试当前锁定的是“路径被忽略、操作自身资源”的现状，不视为符合 §5/§4 不变量 7；需后续决定是否在 handler 中校验路径网络/节点。
+- **方案 B 已实施（commit `9bf9682`）**：`direct-endpoints`、`subnets`、`delete-node` 现在先校验路径 `nid/nodeID` 是否匹配 bearer token 自身网络/节点；不匹配统一返回 404（`ErrNotFound`，隐藏存在性），匹配才调用原 Store 业务方法。跨网络 token 不再返回 204。
+- 实现：`server.go` 新增 `nodeTokenIDs` helper；`store.go` 新增只读 `NodeTokenTarget`（方案 i，一次 `byToken[hashToken(token)]` 查表返回 nid/nodeID）；未改 `SetDirectEndpoints`/`UpdateAllowedSubnets`/`RemoveNode` 业务逻辑。
 - owner 语义：`ownerNID` 对未知/跨网络 token 统一返回 404（隐藏网络存在性）；本网络 member token 通过 `ownerNID` 后被 `requireOwnerLocked` 拒绝，pending approve/deny 返回 401。
 - Admin 实际矩阵（无 token / garbage / static token / session token）：4 条路由均为 401 / 401 / 2xx / 2xx；`GET /admin/networks/{nid}` 200，`PATCH authcodes/{id}/renew` 204，`DELETE devices/{id}` 204，`PATCH devices/{id}` 204。admin 未配置时 4 条均 404。
 - 测试命令：`go test ./internal/server -run 'TestNodeTokenRoutesAuthMatrix|TestAdminRoutesAuthMatrix|TestAdminDisabledReturns404' -v` 全绿；`-race -count=10` 全绿；`go test ./internal/server` 与 `-race` 全包全绿。commits `abbfe59`、`5a1903c`。

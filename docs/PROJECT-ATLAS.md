@@ -172,6 +172,8 @@ snetd → 协调服务器 /api/v1/* (HTTPS)
   共享 Web UI：`shared/web/`。
 - 服务端路由表：`internal/server/server.go`；本地 `/ctl` 路由：`internal/client/ctl.go`。
   具体端点数量以代码为准，不在本文件硬编码。
+- node-token 路由的路径 `{nid}/{nodeID}` 必须匹配 bearer token 自身网络/节点，否则 404
+  （隐藏存在性）；授权始终由 token 决定，路径不授予额外权限。
 - 服务端存储：`internal/server/store.go`；relay：`internal/server/relay.go`；
   probe：`internal/server/probe.go`。
 - 客户端守护进程：`internal/client/daemon.go`；HTTP 客户端：`control.go`；
