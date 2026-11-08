@@ -448,5 +448,22 @@ Server 鉴权覆盖（2026-11-07）：
 - 日志测试：`TestSanitizeLogEscapesControlChars` 锁定 `\n`/`\x7f`/`\x00` → `\xNN`；`TestServerLogsDoNotContainSecrets` 捕获访问日志 + 无效 subnet 触发的 internal error，断言不含 token、`privateKey`、`pairingCode` 标记。
 - 公开 enrollment 限流/门禁：`TestAnonymousEnrollmentRateLimited` 选 `/devices/bind`（最小 20/min/IP）作代表，20 次未限流、第 21 次 429；`TestRequireDeviceAuthBlocksAnonymousCreateJoinRegister` 在 `RequireDeviceAuth=true` 时无绑定 deviceId 的 create/join/register 均 403，绑定 device 的 create/join/register 分别 201/200/200。注意门禁校验的是 DeviceID 的授权码绑定，不是 `X-Device-Token` 头。
 - `admin.html` 公开是设计：`TestAdminWebRoot` 验证无凭据 `/admin` 仍 200（首次 bootstrap/login UI），不列为缺口；管理 API 仍由 `requireAdmin` 保护。
-- 仍待补（低优先）：#8 admin session 过期、#9 pending poll 限流/一次性消费、#10 逐路由 401/403/404 矩阵、#11 static-token logout no-op。
+- 仍待补（低优先）：#8 admin session 过期、#9 pending poll 限流/一次性消费、#11 static-token logout no-op。
 - 测试命令：token 隔离 `-race -count=20` 全绿；enrollment `-race -count=10` 全绿；sanitize/log 全绿。commits `a35eee4`、`4b9dbed`、`37f5480`。
+
+Server 路由鉴权矩阵（2026-11-07）：
+
+- #4/#5/#10 闭环：`TestNodeTokenRoutesAuthMatrix` 覆盖 7 条 node-token 路由；`TestAdminRoutesAuthMatrix` 覆盖 4 条 admin 路由；`TestAdminDisabledReturns404` 覆盖 admin 未配置语义。
+- Node-token 实际矩阵（无 token / garbage / 跨网络 token / 本网络合法 token；pending 另有 member）：
+  - `PUT .../direct-endpoints`：401 / 401 / **204** / 204
+  - `GET .../relay-ticket`：401 / 401 / 401 / 200
+  - `PATCH .../subnets`：401 / 401 / **204** / 204
+  - `GET .../exists`：401 / 404 / 404 / 200
+  - `DELETE .../nodes/{nodeID}`：401 / 401 / **204** / 204
+  - `POST .../pending/{id}/approve`：401 / 404 / 404 / member 401 / 200
+  - `POST .../pending/{id}/deny`：401 / 404 / 404 / member 401 / 204
+- **当前行为 vs atlas 期望，待决策**：`direct-endpoints`、`subnets`、`delete-node` 的 handler 忽略路径 `nid/nodeID`，直接按 bearer token 操作 token 自身网络/节点；因此跨网络合法 token 返回 204，而不是 atlas/矩阵预期的 401/404。测试当前锁定的是“路径被忽略、操作自身资源”的现状，不视为符合 §5/§4 不变量 7；需后续决定是否在 handler 中校验路径网络/节点。
+- owner 语义：`ownerNID` 对未知/跨网络 token 统一返回 404（隐藏网络存在性）；本网络 member token 通过 `ownerNID` 后被 `requireOwnerLocked` 拒绝，pending approve/deny 返回 401。
+- Admin 实际矩阵（无 token / garbage / static token / session token）：4 条路由均为 401 / 401 / 2xx / 2xx；`GET /admin/networks/{nid}` 200，`PATCH authcodes/{id}/renew` 204，`DELETE devices/{id}` 204，`PATCH devices/{id}` 204。admin 未配置时 4 条均 404。
+- 测试命令：`go test ./internal/server -run 'TestNodeTokenRoutesAuthMatrix|TestAdminRoutesAuthMatrix|TestAdminDisabledReturns404' -v` 全绿；`-race -count=10` 全绿；`go test ./internal/server` 与 `-race` 全包全绿。commits `abbfe59`、`5a1903c`。
+- 仍待补：见上条 #8/#9/#11。
