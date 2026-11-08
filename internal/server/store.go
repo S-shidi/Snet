@@ -4149,6 +4149,22 @@ func (s *Store) NodeNetwork(token string) (string, error) {
 	return te.NetworkID, nil
 }
 
+// NodeTokenTarget returns the network ID and node ID that a coordination token
+// belongs to. It is a single hash lookup for handlers that must validate both
+// path components against the bearer token.
+func (s *Store) NodeTokenTarget(token string) (nid, nodeID string, ok bool) {
+	if token == "" {
+		return "", "", false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return "", "", false
+	}
+	return te.NetworkID, te.NodeID, true
+}
+
 // AdminDevicesPage returns one page of registered devices sorted by creation
 // time (newest first), optionally filtered by q across id/name/public key.
 func (s *Store) AdminDevicesPage(q string, page, pageSize int) ([]protocol.Device, int, int) {

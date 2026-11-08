@@ -362,12 +362,22 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	}))
 
 	mux.HandleFunc("PUT /api/v1/networks/{nid}/nodes/{nodeID}/direct-endpoints", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		token := tokenOf(r)
+		nid, nodeID, ok := nodeTokenIDs(s, token)
+		if !ok {
+			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+			return
+		}
+		if nid != r.PathValue("nid") || nodeID != r.PathValue("nodeID") {
+			writeErr(w, http.StatusNotFound, ErrNotFound)
+			return
+		}
 		var req protocol.SetDirectEndpointsReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		if err := s.SetDirectEndpoints(tokenOf(r), req.DirectEndpoint, req.DirectEndpointV6, req.NATType); err != nil {
+		if err := s.SetDirectEndpoints(token, req.DirectEndpoint, req.DirectEndpointV6, req.NATType); err != nil {
 			handleStoreErr(w, err)
 			return
 		}
@@ -394,12 +404,21 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	}))
 
 	mux.HandleFunc("PATCH /api/v1/networks/{nid}/subnets", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		token := tokenOf(r)
+		nid, _, ok := nodeTokenIDs(s, token)
+		if !ok {
+			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+			return
+		}
+		if nid != r.PathValue("nid") {
+			writeErr(w, http.StatusNotFound, ErrNotFound)
+			return
+		}
 		var req protocol.UpdateSubnetsReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		token := tokenOf(r)
 		if err := s.UpdateAllowedSubnets(token, req.Subnets); err != nil {
 			handleStoreErr(w, err)
 			return
@@ -408,7 +427,17 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	}))
 
 	mux.HandleFunc("DELETE /api/v1/networks/{nid}/nodes/{nodeID}", requireToken(func(w http.ResponseWriter, r *http.Request) {
-		if err := s.RemoveNode(tokenOf(r)); err != nil {
+		token := tokenOf(r)
+		nid, nodeID, ok := nodeTokenIDs(s, token)
+		if !ok {
+			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+			return
+		}
+		if nid != r.PathValue("nid") || nodeID != r.PathValue("nodeID") {
+			writeErr(w, http.StatusNotFound, ErrNotFound)
+			return
+		}
+		if err := s.RemoveNode(token); err != nil {
 			handleStoreErr(w, err)
 			return
 		}
@@ -1172,6 +1201,13 @@ func requireToken(next http.HandlerFunc) http.HandlerFunc {
 func tokenOf(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	return strings.TrimPrefix(h, "Bearer ")
+}
+
+// nodeTokenIDs returns the network ID and node ID that the bearer token
+// belongs to. The path {nid}/{nodeID} must match; otherwise the handler
+// returns 404 to hide whether the network/node exists, mirroring ownerNID.
+func nodeTokenIDs(s *Store, token string) (nid, nodeID string, ok bool) {
+	return s.NodeTokenTarget(token)
 }
 
 // deviceTokenOf extracts the device token from the X-Device-Token header.
