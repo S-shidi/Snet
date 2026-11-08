@@ -290,6 +290,15 @@ header {
 
 /* ── status page ────────────────────────── */
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+  align-items: stretch;
+}
+.status-grid > .card { margin-bottom: 0; }
+.status-grid > .stat { min-width: 0; }
 .stat {
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 14px 16px; position: relative; overflow: hidden;
