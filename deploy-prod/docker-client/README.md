@@ -1,7 +1,8 @@
 # 客户端 Docker Compose 部署（A/B 通用）
 
-> 客户端 A/B 都用预构建镜像 `snet-client:latest`；本目录不含 build，不需要 Go/Docker build。
-> 镜像 tar 由 VPS 构建：`/tmp/snet-client-linux-amd64.tgz`。
+> 客户端 A/B 都用预构建镜像；本目录不含 build，不需要 Go/Docker build。
+> 推荐从 VPS 的 basic-auth registry 拉取：`66.187.6.46:5000/snet-client:latest`。
+> 离线 tar 方案保留：`/tmp/snet-client-linux-amd64.tgz`。
 > 部署由用户在宿主机手动执行。
 
 ## 1. 前置检查
@@ -46,30 +47,69 @@ curl -fsS https://snet.uizhi.eu.org:8090/healthz
 
 本目录只依赖 `compose.yaml` + `config.json.example`；不再需要 `dist-deploy/` 或 `Dockerfile.client` 来启动。
 
-## 3. 加载镜像
+## 3. 获取镜像
 
-从 VPS 获取镜像 tar（示例）：
+### 方案 A：VPS Registry（推荐长期）
+
+Registry：`66.187.6.46:5000`，HTTP + basic auth。
+
+先在客户端配置 insecure registry：
 
 ```bash
-# VPS 上已有 /tmp/snet-client-linux-amd64.tgz
+sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
+{
+  "insecure-registries": ["66.187.6.46:5000"]
+}
+JSON
+sudo systemctl restart docker
+```
+
+注意：
+
+- 群晖重启 Docker 会中断 penpot/dpanel 等其他容器，建议维护窗口。
+- 标准 Linux 设备 A 同样需要 `insecure-registries`。
+- 若已有 `/etc/docker/daemon.json`，合并 `insecure-registries`，不要覆盖其他字段。
+
+登录（密码由管理员提供，不写入仓库/脚本）：
+
+```bash
+docker login 66.187.6.46:5000 -u snet
+```
+
+拉取：
+
+```bash
+cd /volume1/docker/snet/deploy-prod/docker-client   # NAS
+# 或 cd /opt/snet-deploy/deploy-prod/docker-client  # 标准 Linux
+docker compose pull
+docker compose up -d
+```
+
+更新镜像：
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+### 方案 B：离线 tar（备选）
+
+适合不想修改 Docker 配置的场景。
+
+```bash
+# VPS 上已有
 scp root@66.187.6.46:/tmp/snet-client-linux-amd64.tgz .
-# 或使用临时 HTTP（如仍开启）
-# curl -fLO http://66.187.6.46:18080/snet-client-linux-amd64.tgz
-```
-
-加载：
-
-```bash
 docker load -i snet-client-linux-amd64.tgz
-docker images | grep snet-client
+cd /volume1/docker/snet/deploy-prod/docker-client
+docker compose up -d
 ```
 
-预期镜像：`snet-client:latest`。
-当前 tar 的 sha256：
+离线 tar sha256：
 
 ```text
 40524219397b5203779f1eceaad291749157fb0772605ade1e89d4febe45c9cb
 ```
+
+> 注意：当前 `compose.yaml` 的 image 是 registry 地址；使用离线 tar 时，可临时把 image 改回 `snet-client:latest`，或在 A 上 `docker tag snet-client:latest 66.187.6.46:5000/snet-client:latest` 后再 compose up。
 
 ## 4. 配置
 
@@ -200,13 +240,21 @@ curl -s -H "X-Ctl-Token: $(cat /etc/snet/ctl-token)" \
 |---|---|---|
 | 部署目录 | `/opt/snet-deploy/deploy-prod/docker-client` | `/volume1/docker/snet/deploy-prod/docker-client` |
 | 配置 | `/etc/snet` | `/volume1/docker/snet/etc` 或 ContainerManager 重定向路径 |
-| 镜像 | `docker load` 同一 tar | `docker load` 同一 tar |
+| 镜像 | registry `docker compose pull` 或离线 tar | registry `docker compose pull` 或离线 tar |
 | WG 端口 | 52100 | 52101 |
 | ctl | 127.0.0.1:19432 | 127.0.0.1:19432（各自本机） |
 
-## 10. 说明
+## 10. 安全说明
 
-- 本目录不包含 build 段；镜像 tar 由 VPS 构建。
+- Registry：`66.187.6.46:5000`，basic auth 保护；不是匿名 registry。
+- Registry 密码在 VPS：`/opt/snet-registry/auth/password.txt`，仅管理员可见；不要把密码写入仓库、脚本或聊天。
+- 公网访问 5000/tcp 需要 Hostodo 防火墙放行。
+- 客户端必须配置 `insecure-registries`，因为 registry 当前是 HTTP。
+- `docker login` 凭据保存在客户端 Docker 配置中；共享主机注意权限。
+
+## 11. 说明
+
+- 本目录不包含 build 段；镜像由 VPS 构建并推送到 registry，或使用离线 tar。
 - `Dockerfile.client` 仅作为可选重建参考保留，不是部署必需。
 - 不使用 Docker MCP 自动部署。
-- 不提交 `ctl-token`、`device.id`、config 或镜像 tar。
+- 不提交 `ctl-token`、`device.id`、config、registry 密码或镜像 tar。

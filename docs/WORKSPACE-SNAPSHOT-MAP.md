@@ -579,3 +579,5 @@ deploy-prod/
 - 客户端：`deploy-prod/docker-client/` + 预构建 `snet-client:latest` tar；不再带 build 段。
 - 服务端 compose 的 `build.context: ../..` 从 `docker-server/` 仍指向仓库根，可访问 `dist-deploy/`。
 - `deploy-prod/docker-client/Dockerfile.client` 仅作为可选重建参考保留。
+- 客户端镜像 registry：`66.187.6.46:5000/snet-client:latest`，HTTP + basic auth；凭据在 VPS `/opt/snet-registry/auth/password.txt`（仅管理员，不提交）。
+- 离线 tar 方案保留：`/tmp/snet-client-linux-amd64.tgz`。

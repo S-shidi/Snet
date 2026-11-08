@@ -1,6 +1,8 @@
 services:
   snetd:
-    image: snet-client:latest
+    # Registry image (HTTP + basic auth). Run docker login 66.187.6.46:5000 -u snet first.
+    # Requires insecure-registries for 66.187.6.46:5000; offline tar fallback in README.
+    image: 66.187.6.46:5000/snet-client:latest
     container_name: snetd
     restart: unless-stopped
     network_mode: host
