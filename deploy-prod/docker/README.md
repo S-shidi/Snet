@@ -96,22 +96,9 @@ docker compose exec relay wget -qO- http://127.0.0.1:8094/healthz
 - Relay v2 使用 MTU 1320（`protocol.DefaultMTU`）；链路需允许 1320 内 UDP。
 - 如果 8092/udp 被云防火墙拦截，客户端会退化为 relay 不可用；先验证公网 UDP 可达。
 
-## 8. Docker MCP（本机 opencode）
+## 8. MCP 说明
 
-opencode 的 `~/.config/opencode/opencode.jsonc` 已合并一个 `docker` MCP：
-
-```jsonc
-"docker": {
-  "type": "local",
-  "command": ["/root/.local/bin/uvx", "docker-mcp-server"],
-  "environment": {
-    "DOCKER_MCP_SERVER_HOSTS": "local=auto, vps=ssh://root@66.187.6.46"
-  },
-  "enabled": true
-}
-```
-
-- `local=auto` 使用本机 Docker socket；`vps` 使用 SSH 到 VPS。
-- 本机需要 Docker daemon；若 `/root/.local/bin/uvx docker-mcp-server --help` 报 “cannot reach the Docker daemon”，先修 Docker socket/权限。
-- VPS 需要把 `~/.ssh/id_ed25519.pub` 加到 `root@66.187.6.46:~/.ssh/authorized_keys`。
-- 不提交 `.env`；不打印 secret。
+- `docker-mcp-server` 的 `ssh://` 方式已停用；opencode 配置中的 `docker` MCP 保留但 `enabled=false`。
+- VPS 远程操作改走 Hostodo MCP，但当前缺少 Bearer token，`tools/list` 未成功；不要假设其能力。
+- 详见 `docs/VPS-DEPLOY-VIA-HOSTODO.md`。
+- 客户端 A/B 均为手动部署，见 `deploy-prod/manual-client/README.md`。
