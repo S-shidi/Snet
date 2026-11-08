@@ -49,6 +49,7 @@ let refreshing = false;
 let lastNetHTML = "";
 let lastTunnelHTML = "";
 let lastEmptyHTML = "";
+let lastAuthHTML = "";
 async function refresh() {
   if (refreshing) return;
   refreshing = true;
@@ -1298,7 +1299,70 @@ function authExpiryLabel(s: DaemonStatus | null): string {
   if (!s || !s.bound) return "未绑定设备授权";
   if (s.authExpired) return s.authExpiresAt ? `已于 ${fmtDateTime(s.authExpiresAt)} 过期（请联系管理员续期）` : "已过期（请联系管理员续期）";
   if (s.authExpiresAt) return `有效期至 ${fmtDateTime(s.authExpiresAt)}`;
-  return "长期有效";
+  return "永久";
+}
+
+function openAuthBindModal() {
+  const s = loadSettings();
+  openModal({
+    title: "设备授权",
+    body: `<div class="settings-block">
+        <p class="msg">本机尚未绑定设备授权。请输入管理端生成的设备授权码。</p>
+        <div class="row"><label>设备授权码</label><input id="auth-code" type="text" placeholder="管理端生成的授权码" autocomplete="off" autofocus /></div>
+        <p class="msg" id="auth-result"></p>
+      </div>`,
+    footer: `<button data-close class="btn ghost">取消</button><button id="auth-submit" class="btn">立即授权</button>`,
+    onBody: (body) => {
+      const input = body.querySelector<HTMLInputElement>("#auth-code")!;
+      const result = body.querySelector<HTMLElement>("#auth-result")!;
+      const submit = body.querySelector<HTMLButtonElement>("#auth-submit")!;
+      const go = async () => {
+        const code = input.value.trim();
+        if (!code) {
+          result.className = "msg";
+          result.textContent = "请输入设备授权码";
+          return;
+        }
+        submit.disabled = true;
+        result.className = "msg";
+        result.textContent = "正在授权…";
+        try {
+          await backend.bind({ server: FIXED_SERVER, ca: s.ca, code });
+          saveSettings({ ...loadSettings(), server: FIXED_SERVER, ca: s.ca });
+          toast("设备已授权");
+          closeModal();
+          await refresh();
+        } catch (e) {
+          result.className = "msg";
+          result.textContent = `授权失败: ${e}`;
+          submit.disabled = false;
+        }
+      };
+      submit.addEventListener("click", go);
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") void go(); });
+    },
+  });
+}
+
+function renderAuthCard() {
+  const el = $("#auth-detail");
+  if (!el) return;
+  let html: string;
+  if (!status) {
+    html = `<p class="muted">后台服务未运行</p>`;
+  } else if (status.bound) {
+    const expired = !!status.authExpired;
+    html = `<div class="kv"><span>授权状态</span><span class="pill ${expired ? "warn" : "ok"}">${expired ? "已过期" : "已授权"}</span></div>
+      <div class="kv"><span>授权期限</span><span>${esc(authExpiryLabel(status))}</span></div>`;
+  } else {
+    html = `<div class="kv"><span>授权状态</span><span class="pill off">未授权</span></div>
+      <p class="msg">本机尚未绑定设备授权。</p>
+      <div class="settings-actions"><button id="auth-bind" class="btn">立即授权</button></div>`;
+  }
+  if (html === lastAuthHTML) return;
+  lastAuthHTML = html;
+  el.innerHTML = html;
+  $("#auth-bind")?.addEventListener("click", openAuthBindModal);
 }
 
 function natViaLabel(via: string): string {
@@ -1513,6 +1577,7 @@ function renderStatus() {
   const svcWgport = $("#svc-wgport");
   const tunnelDetail = $("#tunnel-detail");
   const statusJson = $("#status-json");
+  renderAuthCard();
   if (!status) {
     if (deviceId) deviceId.textContent = "-";
     if (svcWgport) svcWgport.textContent = "-";
