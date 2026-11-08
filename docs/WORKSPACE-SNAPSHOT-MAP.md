@@ -132,7 +132,7 @@ deploy/update-nas-synology.sh
 | TUN 工厂 | `tunnel_factory_android.go`(android) / `tunnel_factory_default.go`(!android) |
 | snetd 入口 | `main_unix.go`(!windows) / `main_windows.go`(windows) |
 
-说明：没有单独的 `tunnel_darwin.go`，darwin 走 `tunnel_unix.go`；Android 平台文件保留，但 `snetbind/` 缺失，Android 目标无法端到端构建/验证。
+说明：没有单独的 `tunnel_darwin.go`，darwin 走 `tunnel_unix.go`；Android 平台文件仍存在但已随 Android 客户端明确移出范围（2026-11-08 决策：只保留 Docker Web 客户端 UI）。
 
 ### `internal/constants`（1 文件 / 7 行）
 
@@ -212,7 +212,7 @@ deploy/update-nas-synology.sh
 
 1. **`scripts/build-web.sh` 输出目录缺失**：脚本写 `deploy/docker/web/`，该目录已移出；运行前需 `mkdir -p deploy/docker/web` 或改输出路径。另：`esbuild` 不在 PATH。
 2. **`shared/web` 无自带 TypeScript**：没有 `shared/web/node_modules/typescript`，`npx tsc` 会解析到错误的 npm 包；可借用 `/workspace/tj-web/site/node_modules/typescript`（v5.9.3，`--noEmit` 已验证通过）。
-3. **`snetbind/` 缺失**：Android 平台文件仍在 `internal/client`，但 gomobile 绑定层不存在，Android 目标不可构建/验证。
+3. **`snetbind/` 已移出范围**：Android 平台文件仍在 `internal/client`，但 2026-11-08 决策放弃 Android 客户端，只保留 Docker Web；不再把 snetbind 作为待补项。
 4. **`VERSION` 缺失**：版本锚点不存在；`check-version.sh`、`bump-version.sh`、`build-release.sh` 也已移出，版本校验不可做。
 
 ## 6. 缺失清单
@@ -221,11 +221,11 @@ deploy/update-nas-synology.sh
 
 ```text
 VERSION
-snetbind/
+snetbind/（已移出范围）
 .github/
 dist/
-Android SDK/NDK（ANDROID_HOME 为空）
-java / javac（JAVA_HOME 为空）
+Android SDK/NDK（已移出范围）
+java / javac（已移出范围）
 ```
 
 Go 工具链已装：`go1.26.4`（`/usr/local/go`，`/usr/local/bin/go`）。
@@ -273,7 +273,7 @@ AGENTS.md
 | `scripts/project-audit.sh` | 不存在 | 缺失 |
 | `scripts/check-version.sh` / `bump-version.sh` / `build-release.sh` / `rollout-*.sh` | 不存在 | 缺失 |
 | `VERSION` | 不存在 | 缺失 |
-| `snetbind/` | 不存在 | 缺失 |
+| `snetbind/` | 不存在 | 明确移出范围 |
 | `.github/workflows/` | 不存在 | 缺失 |
 | `.archify/` | 不存在 | 缺失 |
 | `.opencode/skills/snet-*` | 不存在 | 缺失 |
@@ -288,7 +288,7 @@ AGENTS.md
 | `go test -race ./...` | exit 0；5 个有测试包全通过，0 失败，0 跳过 | 通过 |
 | `GOOS=darwin/linux GOARCH=arm64 go build ./...` | Go 已装但未跑 | 待验证 |
 | `cd shared/web && npm i -D typescript && npx tsc --noEmit` | 项目内无 TypeScript；外部 tsc 5.9.3 通过 | 项目内无法验证 / 外部已验证 |
-| Android 交叉编译 | 无 `snetbind/`、无 SDK/NDK/JDK | 无法验证 |
+| Android 交叉编译 | 2026-11-08 决策放弃 Android 客户端 | 明确移出范围 |
 | 版本一致性校验 | 无 `VERSION`、无校验脚本 | 无法验证 |
 | `internal/client` Android 平台文件 | `device_android.go` 等存在 | 存在 |
 
@@ -301,7 +301,7 @@ AGENTS.md
 | 阅读/编辑 `shared/web` TypeScript | 可做 |
 | Web 类型检查 | 可借用外部 tsc v5.9.3；项目内 TypeScript 缺失 |
 | Web 资产构建（`build-web.sh`） | **不可做**：缺 `deploy/docker/web/` 输出目录与 `esbuild` |
-| Android 构建/验证 | **不可做**：缺 `snetbind/`、Android SDK/NDK、JDK |
+| Android 构建/验证 | 2026-11-08 决策放弃 Android 客户端；只保留 Docker Web | **明确移出范围** |
 | 发布/版本校验/产物 | **不可做**：缺 `VERSION`、发布脚本、CI、`dist/` |
 | Git 操作 | 可做（本地仓库，无 remote） |
 
@@ -376,7 +376,7 @@ Device 跨重启持久化（2026-11-07）：
 - `TestSweepZombiesReleasesNetworkPorts`：僵尸网络收割释放端口、清 port maps、`s.networks` 移除。
 - 已知少量内存残留：`s.nodeRelayHost[netID]` 空 map 在网络删除后保留，不影响功能。
 
-结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Web 打包、Android 与发布链路仍待补缺失目录/工具后再验证。
+结论：当前可研发范围是 **Go 源码阅读/编辑/编译/测试（含 `-race`） + `shared/web` 编辑与外部 tsc 类型检查**；Android 客户端已明确移出范围，只保留 Docker Web；Web 打包与发布链路仍待补缺失目录/工具后再验证。
 
 PathManager direct 来源校验与候选优先级（2026-11-07）：
 
@@ -532,9 +532,9 @@ Server 鉴权剩余项与 probe.go 盘点（2026-11-07）：
 | 缺口 | 缺什么 / 影响 | 验证命令（若可写） | 状态 |
 |---|---|---|---|
 | `VERSION` | 版本锚点缺失；版本一致性/发布无法验证 | `test -f VERSION` | 永久待补 / 需上游数据 |
-| `snetbind/` | gomobile 绑定缺失；Android 目标不可构建 | `ls snetbind`；`GOOS=android GOARCH=arm64 go build ./...` | 永久待补 / 需上游数据 |
-| `.github/workflows/` | CI/发布流程不可验证 | `ls .github/workflows` | 永久待补 |
-| `android/` | Android 客户端不可构建 | `ls android` | 永久待补 |
+| `snetbind/` | 2026-11-08 决策放弃 Android 客户端，只保留 Docker Web | `ls snetbind` | **明确移出范围** |
+| `.github/workflows/` | CI/发布流程不可验证；Android 构建 workflow 不再需要，若保留仅用于 Go 测试/Web 构建 | `ls .github/workflows` | 永久待补（范围收窄） |
+| `android/` | Android 客户端已放弃，只保留 Docker Web | `ls android` | **明确移出范围** |
 | `.archify/` | 架构图缺失；project-audit 不完整 | `ls .archify` | 永久待补 |
 | `dist/` | 发布产物已删；无版本化产物对照 | `ls dist` | 永久待补 |
 | 真机四节点 | Relay v2 NAT rebinding / IPv6 防火墙 / Docker 临时端口 / 多 relay 跨实例未验证 | `ping -c 20 <peer>`；`iperf3 -c <peer> -t 30`；跨 relay 检查 `curl -s http://127.0.0.1:19432/ctl/status \| jq '.relayPath.peerDirect, .relayPath.relayIndex'` | 需真机，待验证 |
@@ -543,10 +543,10 @@ Server 鉴权剩余项与 probe.go 盘点（2026-11-07）：
 
 ### 决策记录
 
-已建立 `docs/DECISION-LOG.md`，记录 12 条：快照导入、收缩、relay exact-flow/2B/1B+1C/3C/全失败/TTL、node-token 路径校验、pending 幂等语义、`markDirectFailed` 保留 addr、admin.html 公开设计。
+已建立 `docs/DECISION-LOG.md`，记录 13 条：快照导入、收缩、relay exact-flow/2B/1B+1C/3C/全失败/TTL、node-token 路径校验、pending 幂等语义、`markDirectFailed` 保留 addr、admin.html 公开设计、放弃 Android 只保留 Docker Web。
 
 ### 下一阶段建议（若上游补齐数据）
 
-1. 恢复 `VERSION`/上游 `c379790` 对照与 `.github/workflows`，先把版本/CI 锚点补回。
-2. 恢复 `snetbind/` + `android/`，做 Android 交叉编译和真机安装验证。
-3. 做四节点 Relay v2 真机矩阵（NAT rebinding/IPv6/Docker 端口/跨 relay）并补 Docker/nginx Web session 端到端。
+1. 先补齐 Docker Web 本地构建与部署文件，起本地 server + 2 个 snetd 做双节点互通。
+2. 按 `docs/NETWORK-VALIDATION-PLAN.md` 跑 T1/T2/T6/T7/T10/T12/T13/T14 的单机可验证子集。
+3. 再做四节点 Relay v2 真机矩阵（NAT rebinding/IPv6/Docker 端口/跨 relay）与 Docker/nginx Web session 端到端；Android 不再作为下一阶段目标。

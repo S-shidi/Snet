@@ -110,3 +110,12 @@
 - 理由：首次 bootstrap/login 需要页面公开；页面是静态 UI，不含服务端 secret；API 仍有 static token/session 保护。
 - 对应 commit：`e1c87c1`（文档确认；`TestAdminWebRoot` 锁定公开行为）。
 - 影响：admin.html 不作为鉴权缺口；不把页面公开误写成 API 公开。
+
+## 13. 2026-11-08：放弃 Android 客户端，只保留 Docker Web 用于组网验证
+
+- 背景：下一阶段主线是验证核心组网能力；Android/snetbind 构建链不在本快照，继续维护会分散验证重点。
+- 选项：A. 保留 Android 客户端与 snetbind 待补；B. 放弃 Android，只保留 Docker Web 客户端 UI。
+- 选择：B。
+- 理由：Docker Web + snetd 是当前保留的客户端路径，组网验证以它为准；Android 不是当前交付目标。
+- 对应 commit：`docs: drop android client, keep docker web for network validation`。
+- 影响：`snetbind/`、`android/` 从“永久缺口”改为“明确移出范围”；CI 若保留仅用于 Go 测试/Web 构建；下一阶段集中做 Docker Web 多节点组网验证，见 `docs/NETWORK-VALIDATION-PLAN.md`。

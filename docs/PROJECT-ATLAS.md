@@ -10,7 +10,7 @@
 last_verified:        2026-11-08
 verified_code_commit: 8b50a64（代码/测试基线；docs 收口提交后 HEAD 前移）
 verified_worktree:     快照收缩版，git status --porcelain 空
-state:                快照收缩版 + relay/NAT/pathmanager/server 四条线闭环；#11 真机待验证；永久缺口见 WORKSPACE-SNAPSHOT-MAP
+state:                快照收缩版 + Docker Web 唯一客户端 UI + relay/NAT/pathmanager/server 四条线闭环；#11 真机待验证；永久缺口见 WORKSPACE-SNAPSHOT-MAP
 verified_with:        2026-11-08：go test ./... -count=1（389 PASS/0 FAIL，WALL 14.732s）；go test -race ./...（client 4.537s/server 47.357s）；go vet ./... exit 0
 
 `verified_code_commit` 是最后一次跑完整验证的**代码**提交，不要求等于 HEAD；
@@ -29,8 +29,8 @@ verified_with:        2026-11-08：go test ./... -count=1（389 PASS/0 FAIL，WA
 ## 1. 一句话与边界
 
 SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服务端只做协调、探测和中继；
-真正的数据面在 `snetd` 的 WireGuard 隧道里。Web UI（Docker Web）
-只访问本机 `snetd` 的 `/ctl/*`，不直连协调服务器。
+真正的数据面在 `snetd` 的 WireGuard 隧道里。Docker Web 是唯一客户端 UI，只访问本机
+`snetd` 的 `/ctl/*`，不直连协调服务器；Android 客户端已明确移出范围（2026-11-08 决策）。
 
 核心边界：
 
@@ -46,7 +46,7 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 | Relay v2 | `cmd/relay/main.go` | 无状态 UDP session relay、按节点 ID 精确转发、metrics | `internal/relay/` | `snet-go-core`、`snet-deploy-ops` |
 | Go 守护进程（snetd） | `cmd/client/snetd/` | 隧道、peer 轮询、NAT 探测、密钥轮换、`/ctl/*`、Relay v2 shim | `internal/client/` | `snet-go-core` |
 | 协议层 | `internal/protocol/` | 共享类型、版本、`snet://` 链接、Relay v2 帧 | `types.go`、`link.go`、`relay.go` | `snet-go-core` |
-| 共享 Web UI | `shared/web/` | Web 控制台与 `Backend` 契约 | `ui.ts`、`types.ts`、`subnet.ts` | `snet-web-ui` |
+| 共享 Web UI | `shared/web/` | 唯一客户端 UI（Docker Web），用于组网验证与 `Backend` 契约 | `ui.ts`、`types.ts`、`subnet.ts` | `snet-web-ui` |
 
 ## 3. 三条主流程
 
@@ -62,7 +62,7 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 - 固定协调地址：`https://snet.uizhi.eu.org:8090`。
 - 设备身份：持久化 `device.id`，与 WireGuard 密钥共存。
 - 设备授权（可选）：管理台生成 code → 客户端 `/ctl/bind` → `BindDevice` 绑定 deviceID/公钥并返回 deviceToken → `SyncNetworks` 拉取该设备已建/已入网络并恢复隧道。
-- 启动复查：有 `deviceToken` 时 `snetd` 启动后立即查 `auth-status`；有效则恢复/同步网络，过期则跳过本地恢复并保持离线；`Daemon.Start` 幂等，Android VPN 重启复用后台循环。
+- 启动复查：有 `deviceToken` 时 `snetd` 启动后立即查 `auth-status`；有效则恢复/同步网络，过期则跳过本地恢复并保持离线；`Daemon.Start` 幂等，进程/VPN 重启复用后台循环。
 - 启动网络同步：服务端 `DeviceNetworkDetails` 每次调用都会轮换节点 token，`SyncNetworks` 必须把新 token 写回已存在网络并清掉旧 `serverState`；`pingServerState` 的 404 若发生在 token 已变化之后要重试，不能直接标记“已删除”。
 - 服务端 `Store` 是 bbolt + 内存缓存；新增持久字段必须走 `persist*`。
 - 成员视角的 peer 列表保留 `AllowedSubnets`（数据面安装 AllowedIPs/路由需要），
@@ -101,7 +101,7 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 - 自动端口映射：UPnP-IGD / NAT-PMP / PCP；默认开启，
   `NATMapping *bool` 为 nil/true 时启用，false 关闭；租约 5m、每 2m 续期。
 - `/ctl/status.natMapping` 暴露 `enabled`/`mappings`/`errors`；`POST /ctl/nat`
-  持久化开关，关闭时立即 teardown。桌面/Web/Android 设置页均可操作。
+  持久化开关，关闭时立即 teardown。Docker Web 设置页可操作。
 - 只有网关 WAN IP 与 relay 观测公网 IP 一致时，才把映射端点标记
   `EndpointMapped=true` 广播给 peer；否则继续用观测端点 + relay。
 - `/ctl/status` 的 `peerPaths` / `peerQuality`（旧路径）与 `relayPath.peerDirect`（Relay v2）是排障入口：先判断 direct 还是 relay。
@@ -117,9 +117,8 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
   `snet-runtime.tar.gz`，校验固定 sha256 后解包到 `/` 再 `exec /entrypoint.sh`；
   NAS 必须同时发布 daemon 实际使用的 `51820/udp` 并设置 `SNET_LOCAL_IP`。
   代价是容器重启依赖该产物服务（`snet-runtime-http.service`），升级镜像前不要下线。
-- `internal/client` 的 Android 平台文件（`device_android.go`、`tunnel_android.go`、
-  `tunnel_factory_android.go`、`gateway_proc.go` 的 android tag）保留，但 `snetbind/`
-  已移出，Android 目标交叉编译不可验证。
+- Android 客户端与 `snetbind/` 已移出范围（2026-11-08 决策：只保留 Docker Web 客户端）；
+  `internal/client` 的 Android 平台文件仅作为历史代码保留，不作为构建目标。
 - 同公网出口的 sibling（如 SDphone/SDnas/SDserver 共享 `39.180.206.133`）不能用
   公共 IP + 宿主端口做 hairpin 直连：握手会间歇成功但单播丢包极高。客户端对
   `Endpoint` 落在自身 `PublicIP` 的 peer 禁用该 direct 回退，固定走 relay。
@@ -156,8 +155,8 @@ snetd → 协调服务器 /api/v1/* (HTTPS)
 6. **鉴权与密钥**：`/ctl/*` 用 `ctl-token`；Docker Web 代理请求另需 Web session
    （`X-Snet-Web: 1`）；管理端用 bcrypt；日志经 `sanitizeLog`；绝不把 token、
    授权码、私钥写进仓库/日志/聊天。
-7. **snetbind 已移出**：`snetbind/` 已移出，Go↔Kotlin 契约仅存于 `internal/client`
-   平台文件，无法端到端验证。
+7. **Android 已移出范围**：Android 客户端与 `snetbind/` 不再作为交付目标；Docker Web 是
+   唯一客户端 UI，组网验证以 Docker Web + snetd 为准。
 8. **Web 构建**：`shared/web` 改动后必须 `scripts/build-web.sh`；不要手改
    `deploy/docker/web/` 产物。
 9. **NAT 映射**：默认开启；映射建立不等于可广播，必须校验 WAN IP == 观测公网 IP；
@@ -221,7 +220,8 @@ Go 工具链注意：本环境 `go` 不在 PATH，`/tmp/opencode/golang/go/bin/g
   多 relay 跨实例仍待真机验证。真机验证按 `docs/WORKSPACE-SNAPSHOT-MAP.md`
   “PathManager 覆盖收口”执行四节点 ping/iperf3/跨 relay 选路。
 - **构建/验证断链**：`scripts/build-web.sh` 输出目录 `deploy/docker/web/` 已移出；
-  `shared/web` 无自带 TypeScript；Android 平台文件保留但 `snetbind/` 绑定层缺失。
+  `shared/web` 无自带 TypeScript；Docker Web 部署文件（Dockerfile/nginx/entrypoint/compose）
+  不在本快照，验证前置见 `docs/NETWORK-VALIDATION-PLAN.md`。
 
 ## 8. 记忆维护协议
 
