@@ -99,6 +99,5 @@ docker compose exec relay wget -qO- http://127.0.0.1:8094/healthz
 ## 8. MCP 说明
 
 - `docker-mcp-server` 的 `ssh://` 方式已停用；opencode 配置中的 `docker` MCP 保留但 `enabled=false`。
-- VPS 远程操作改走 Hostodo MCP，但当前缺少 Bearer token，`tools/list` 未成功；不要假设其能力。
-- 详见 `docs/VPS-DEPLOY-VIA-HOSTODO.md`。
+- VPS 远程操作改走 Hostodo MCP，已配置并完成 `tools/list`；实际能力/部署边界见 `docs/VPS-DEPLOY-VIA-HOSTODO.md`。
 - 客户端 A/B 均为手动部署，见 `deploy-prod/manual-client/README.md`。
