@@ -1,7 +1,8 @@
 # VPS 部署路径：Hostodo MCP 能力与自动化边界
 
 > 状态：已配置 Hostodo MCP 并完成只读 `tools/list` + `list_vms` + `get_vm` 探测。
-> 未部署、未执行 docker compose、未执行 systemctl、未通过 MCP 执行 shell、未 SSH 登录 VPS。
+> 2026-11-08 尝试 `hostodo_exec_vm_command` 只读探测时返回 **403 `vms:exec` scope 缺失**；未执行任何 shell 命令。
+> 未部署、未执行 docker compose、未执行 systemctl、未 SSH 登录 VPS。
 > Bearer token 只写入 `/root/.config/opencode/opencode.jsonc`（仓库外）；本文件不包含 token。
 
 ## 1. Hostodo MCP 配置
@@ -89,32 +90,58 @@ bandwidth_gb:    3072
 
 另一台 `ins::941aeini7a`（SDVPS，158.51.126.58）为 suspended，`mcp_exec_enabled=false`；不是本次目标。
 
-**资源提醒**：目标 VPS 只有 1 vCPU / 1GB RAM。在 VPS 上直接 `docker compose build` 两个 Go 镜像可能 OOM；建议本机构建镜像后 `docker save` + 上传 + `docker load`，或分阶段/限内存构建。
+**资源提醒**：目标 VPS 只有 1 vCPU / 1GB RAM。Dockerfile 已改为 **COPY 预编译二进制**（`dist-deploy/linux-${BIN_ARCH}/{server,relay}`），不在 VPS 上运行 Go 构建；仍需要构建一个薄 Alpine 镜像（或本机构建镜像后 `docker save`/上传/`docker load`）。
+
+### 3.1 2026-11-08 exec 只读探测结果
+
+尝试：
+
+```text
+hostodo_exec_vm_command(vm_id=ins::y5a3ro01rd, command=<read-only probe>)
+HTTP 403
+error.code: -32003
+error.message: session lacks required scope: vms:exec
+required_scope: vms:exec
+```
+
+因此以下**未获取，不能假设**：
+
+- `uname -m` / OS 发行版 / nproc / free / df
+- Docker 是否已安装、docker compose 版本、docker service 状态
+- 旧 snet systemd units、`/usr/local/snet`、`/etc/snet`、`snet.db`
+- TLS 证书实际路径、nginx/caddy 是否占用 8090
+- 8090/8091/8092/8094 的实际监听进程
+- 目标 VPS 的 CPU 架构（Hostodo plan 是 EPYC，但未用 `uname -m` 确认）
+
+已有公网只读证据：`https://snet.uizhi.eu.org:8090/healthz` 返回 1.3.0；TLS 为 Let's Encrypt。
+`8090` 当前由谁监听、旧部署内部结构、证书路径均**待 vms:exec scope 或用户手动 SSH 确认**。
 
 ## 4. 能力判断
 
 | 能力 | 是否支持 | 说明 |
 |---|---|---|
-| 指定服务器执行 shell | **是** | `hostodo_exec_vm_command`，root 命令，最长 60s；长任务用 `hostodo_start_vm_command` |
-| Docker / compose | **无专用工具** | 可通过 shell 执行 `docker`/`docker compose`；VPS 是否已安装 Docker 需执行 `docker --version` 确认（未执行） |
-| 文件上传 | **是** | `create_artifact_upload` + `install_artifact`（presigned PUT，SHA-256 校验） |
+| 指定服务器执行 shell | **工具支持；当前 token 不可用** | `hostodo_exec_vm_command`，root 命令，最长 60s；当前 token 缺 `vms:exec`，返回 403 |
+| Docker / compose | **无专用工具** | 可通过 shell 执行 `docker`/`docker compose`；但当前 token 缺 `vms:exec`，无法执行；VPS 是否已安装 Docker 未确认 |
+| 文件上传 | **工具支持；当前 token 不可用** | `create_artifact_upload` + `install_artifact`；需 `vms:exec`，当前 token 缺 scope |
 | 文件下载 | **否（通用）** | 只有 `get_service_logs` 可读日志；没有通用 download 工具 |
 | 防火墙 / 端口 | **无专用工具** | 可通过 shell 执行 `ufw`/`firewall-cmd`/`iptables`，需先确认系统工具 |
 | systemd 服务管理 | **无直接工具** | `restart_service` 是 coming soon stub；可通过 shell `systemctl` |
 | 日志 | **是** | `get_service_logs`（systemd 或 `/var/log/**`） |
-| 异步长命令 | **是** | `start_vm_command` + output/log/cancel |
+| 异步长命令 | **工具支持；当前 token 不可用** | `start_vm_command` + output/log/cancel；需 `vms:exec` |
 
 ## 5. VPS 部署自动化边界
 
-### 5.1 可全自动（经用户批准后，通过 MCP）
+### 5.1 若补齐 `vms:exec` scope：可全自动（经用户批准后，通过 MCP）
 
 1. `hostodo_list_vms` / `get_vm` 确认目标 `ins::y5a3ro01rd`，`mcp_exec_enabled=true`。
 2. `hostodo_exec_vm_command` 备份旧部署（tar `/usr/local/snet`、`/etc/snet` 到 `/root/snet-backup-*`）。
 3. `hostodo_exec_vm_command` 检查 Docker；未装则按 OS 执行安装命令。
-4. 本机打包 `deploy-prod/docker/`，`hostodo_create_artifact_upload` 上传，`hostodo_install_artifact` 落到 VPS。
+4. 本机打包 `deploy-prod/docker/` + `dist-deploy/linux-<arch>/`，`hostodo_create_artifact_upload` 上传，`hostodo_install_artifact` 落到 VPS。
 5. `hostodo_exec_vm_command` 生成 secret 到 `/etc/snet/relay.secret`（不打印），写 `.env`（secret 从文件引用）。
-6. `hostodo_start_vm_command` 执行 `docker compose up -d --build`，用 `get_vm_command_output` 轮询。
+6. `hostodo_start_vm_command` 执行 `docker compose up -d --build`（薄镜像只 COPY 预编译二进制），用 `get_vm_command_output` 轮询。
 7. `hostodo_get_service_logs` / `exec_vm_command` 验证 `docker compose ps`、`curl /healthz`、8092/udp 监听。
+
+当前 token **缺少 `vms:exec`**，上述第 2-7 步尚不能执行。
 
 ### 5.2 半自动（MCP + 用户确认）
 
@@ -133,44 +160,38 @@ bandwidth_gb:    3072
 - 证书续期/证书私钥处理（不要通过 MCP 回传私钥）。
 - 两台客户端主机的 TUN/root/端口检查（客户端手动部署）。
 
-## 6. 通过 MCP 部署步骤草案（不执行，待批准）
+## 6. 部署顺序草案（不执行，待批准）
 
 ```text
-1. list_vms / get_vm -> 确认 ins::y5a3ro01rd，exec=true
-2. exec_vm_command:
-   mkdir -p /root/snet-backup-YYYYMMDD
-   tar czf /root/snet-backup-YYYYMMDD/snet-old.tgz /usr/local/snet /etc/snet 2>/dev/null || true
-3. exec_vm_command:
-   docker --version && docker compose version
-   若未安装：按 OS 包管理器安装 Docker + compose plugin
-4. 本机：tar czf snet-deploy.tgz -C deploy-prod docker
-   create_artifact_upload(vm_id, filename, size_bytes, sha256, purpose=file)
-   PUT 到 presigned URL
-   install_artifact(artifact_id, /tmp/snet-deploy.tgz, mode=0600)
-5. exec_vm_command:
-   mkdir -p /opt/snet
-   tar xzf /tmp/snet-deploy.tgz -C /opt/snet
-6. exec_vm_command:
-   umask 077; openssl rand -hex 32 > /etc/snet/relay.secret
-   写 /opt/snet/docker/.env（SNET_RELAY_SECRET 从文件读取；SNET_RELAY_V2_ENDPOINTS=snet.uizhi.eu.org:8092）
-7. start_vm_command:
-   cd /opt/snet/docker && docker compose --env-file .env up -d --build
-   get_vm_command_output 轮询
-8. 验证：
-   docker compose ps
-   curl -fsS https://snet.uizhi.eu.org:8090/healthz
-   docker compose exec relay wget -qO- http://127.0.0.1:8094/healthz
-   外部确认 8092/udp 可达
+0. 只读确认：uname -m / Docker / 旧 snet units / 8090 listener / TLS 路径 / 端口
+   （当前被 vms:exec 403 阻塞）
+1. 备份旧部署：tar /usr/local/snet /etc/snet /root/snet-backup-YYYYMMDD
+2. 停旧 snet-server（用户批准后）
+3. 上传：
+   - dist-deploy/linux-<arch>/{server,relay}
+   - deploy-prod/docker/（Dockerfile/compose/.env.example）
+4. 生成 secret：umask 077; openssl rand -hex 32 > /etc/snet/relay.secret（不打印）
+5. 写 .env：SNET_RELAY_SECRET 从文件引用；SNET_RELAY_V2_ENDPOINTS=snet.uizhi.eu.org:8092；
+   BIN_ARCH=<amd64|arm64> 按 uname -m 确认
+6. docker compose up -d --build（薄镜像 COPY 预编译二进制；不在 VPS 跑 Go build）
+7. 验证：docker compose ps；curl https://snet.uizhi.eu.org:8090/healthz；
+   relay 127.0.0.1:8094/healthz；外部 8092/udp 可达
 ```
 
-注意：`exec_vm_command` 最长 60s；`docker compose build` 用 `start_vm_command`。secret 不在命令回显/日志中出现；artifact 的 presigned URL 也不写入报告。
+前置判断：
+
+- 若 8090 已被 nginx/caddy 监听，必须先确认反代配置；不能直接让 server 绑定 8090。按 `ss -lntup` 实际输出决定停旧服务/改端口/改反代。
+- TLS 证书路径必须确认后再写 compose 挂载；当前公网证书是 Let's Encrypt，但内部路径未探测。
+- 1GB VPS 不运行 Go build；Dockerfile 已改为 COPY 预编译二进制。薄镜像 build 仍需要 Docker；若 Docker 未装，先装 Docker。
+- 目标架构未确认；Dockerfile 默认 `BIN_ARCH=amd64`，`uname -m` 为 `aarch64` 时必须设 `BIN_ARCH=arm64`。
 
 ## 7. 当前结论
 
-- Hostodo MCP **支持 root shell + 异步长命令 + 文件上传/安装 + 日志**；目标 VPS `mcp_exec_enabled=true`。
-- **没有专用 Docker/防火墙/systemd 管理工具**；这些通过 shell 执行，需确认 VPS 已安装对应工具。
-- VPS 部署**可以大部分通过 MCP 自动化**（备份、安装 Docker、上传 compose、写 secret、compose up、验证），但需要用户批准写操作，并处理 1GB RAM 构建风险、TLS 路径/防火墙和外部 UDP 验证。
-- 本次未执行任何部署或 shell 命令；仅调用只读 `tools/list`、`list_vms`、`get_vm`。
+- Hostodo MCP 工具面支持 root shell、异步长命令、文件上传/安装、日志；目标 VPS `mcp_exec_enabled=true`。
+- **但当前 token 缺 `vms:exec` scope**：`hostodo_exec_vm_command` 返回 403，无法执行任何只读/写 shell；因此 OS、Docker、旧部署、TLS 路径、8090 监听者、端口占用、架构均未确认。
+- **没有专用 Docker/防火墙/systemd 管理工具**；即使有 scope，也需要 shell 执行并确认 VPS 已安装 Docker/防火墙工具。
+- Dockerfile 已改为 COPY `dist-deploy/linux-${BIN_ARCH}/{server,relay}`，避免在 1GB VPS 上跑 Go build；但薄镜像 build 仍需 Docker，且架构需 `uname -m` 确认。
+- 本次未执行任何部署或 shell 命令；仅调用只读 `tools/list`、`list_vms`、`get_vm`，以及被 403 拒绝的 `exec_vm_command` 尝试。
 
 ## 8. 仍需用户确认
 

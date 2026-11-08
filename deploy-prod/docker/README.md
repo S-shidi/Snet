@@ -39,6 +39,8 @@ relay 和 server 必须使用**同一个** `SNET_RELAY_SECRET`。
 
 ## 3. 构建与启动
 
+Dockerfile 使用 **COPY 预编译二进制**（`dist-deploy/linux-${BIN_ARCH}/{server,relay}`），不在 VPS 上运行 Go 构建。默认 `BIN_ARCH=amd64`；`uname -m` 为 `aarch64` 时在 `.env` 设置 `BIN_ARCH=arm64`。
+
 ```bash
 cd deploy-prod/docker
 docker compose --env-file .env up -d --build

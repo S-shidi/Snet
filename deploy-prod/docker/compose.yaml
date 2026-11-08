@@ -3,6 +3,8 @@ services:
     build:
       context: ../..
       dockerfile: deploy-prod/docker/Dockerfile.relay
+      args:
+        BIN_ARCH: ${BIN_ARCH:-amd64}
     image: snet-relay:local
     container_name: snet-relay
     restart: unless-stopped
@@ -26,6 +28,8 @@ services:
     build:
       context: ../..
       dockerfile: deploy-prod/docker/Dockerfile.server
+      args:
+        BIN_ARCH: ${BIN_ARCH:-amd64}
     image: snet-server:local
     container_name: snet-server
     restart: unless-stopped
