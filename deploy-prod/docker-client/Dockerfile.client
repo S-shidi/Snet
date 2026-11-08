@@ -27,5 +27,5 @@ COPY deploy-prod/docker-client/supervisord.conf /etc/supervisord.conf
 
 RUN chmod +x /usr/local/bin/snetd /usr/local/bin/nginx-entrypoint.sh
 
-EXPOSE 8080
+EXPOSE 8081
 CMD ["supervisord", "-c", "/etc/supervisord.conf"]

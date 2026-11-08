@@ -11,7 +11,7 @@ uname -m
 ls -l /dev/net/tun
 docker --version
 docker compose version
-ss -lntup | grep -E ':(8080|19432|52100)' || true
+ss -lntup | grep -E ':(8081|19432|52100)' || true
 curl -s https://ifconfig.me; echo
 curl -fsS https://snet.uizhi.eu.org:8090/healthz
 ```
@@ -21,7 +21,7 @@ curl -fsS https://snet.uizhi.eu.org:8090/healthz
 - `x86_64` → amd64 镜像；`aarch64` → 需 arm64 镜像
 - `/dev/net/tun` 存在
 - Docker + Compose 可用
-- 8080、19432、52100 空闲（B 的 WG 用 52101）
+- 8081、19432、52100 空闲（B 的 WG 用 52101）
 - 服务端 healthz 可访问
 
 ## 2. 目录
@@ -179,7 +179,7 @@ cd /volume1/docker/snet/deploy-prod/docker-client
 docker compose up -d
 ```
 
-- `network_mode: host`：nginx 监听宿主机 8080，snetd 监听 127.0.0.1:19432 和 WG 52100/52101。
+- `network_mode: host`：nginx 监听宿主机 8081，snetd 监听 127.0.0.1:19432 和 WG 52100/52101。
 - 不需要 `ports:`；不需要单独的 `web` service。
 - supervisord 启动 snetd + nginx；nginx 会等待 `/etc/snet/ctl-token` 后生成配置。
 
@@ -188,7 +188,7 @@ docker compose up -d
 浏览器访问：
 
 ```text
-http://<NAS_IP>:8080
+http://<NAS_IP>:8081
 ```
 
 首次使用：设置/输入 **Web 管理密码**。nginx 自动从 `/etc/snet/ctl-token` 注入 `X-Ctl-Token` 并设置 `X-Snet-Web: 1`；不需要在页面输入 ctl-token。
@@ -201,10 +201,10 @@ http://<NAS_IP>:8080
 /etc/snet/ctl-token
 ```
 
-8080 被占用时：
+8081 被占用时：
 
-- 改 `nginx.conf` 的 `listen 8080;` 为 `8081`，重建镜像；或
-- 改用 bridge + `ports: "8081:80"`，但需把 snetd `-ctl` 改为 `0.0.0.0:19432` 并用防火墙限制 19432；host network 更简单。
+- 改 `nginx.conf` 的 `listen 8081;` 为 `8082`，重建镜像；或
+- 改用 bridge + `ports: "8082:80"`，但需把 snetd `-ctl` 改为 `0.0.0.0:19432` 并用防火墙限制 19432；host network 更简单。
 
 ## 8. 验证
 
@@ -215,13 +215,13 @@ docker logs snetd --tail 50
 TOKEN=$(cat /etc/snet/ctl-token)
 curl -s -H "X-Ctl-Token: $TOKEN" http://127.0.0.1:19432/ctl/status | head -c 500
 
-curl -sI http://127.0.0.1:8080/ | head
+curl -sI http://127.0.0.1:8081/ | head
 ```
 
 期望：
 
 - 容器 running；
-- 8080 返回 HTML；
+- 8081 返回 HTML；
 - ctl 返回 `mode=relay-v2` / 网络状态；
 - 日志无 TUN/nginx/token 错误。
 
@@ -255,7 +255,7 @@ snetctl -ctl http://127.0.0.1:19432 join --nid <nid> --code <code>
 | 现象 | 检查 |
 |---|---|
 | TUN 创建失败 | `cap_add: NET_ADMIN` + `devices: /dev/net/tun`；宿主内核 TUN |
-| 8080 被占 | `ss -lntp \| grep :8080`；改 nginx listen 并重建，或维护窗口 |
+| 8081 被占 | `ss -lntp \| grep :8081`；改 nginx listen 并重建，或维护窗口 |
 | ctl 401 | `/etc/snet/ctl-token` 是否存在；群晖实际挂载路径 |
 | nginx 退出 | `docker logs snetd`；是否缺少 ctl-token 或 nginx 配置错误 |
 | 服务端不可达 | `curl -fsS https://snet.uizhi.eu.org:8090/healthz` |
@@ -269,7 +269,7 @@ snetctl -ctl http://127.0.0.1:19432 join --nid <nid> --code <code>
 | 配置 | `/etc/snet` | `/volume1/docker/snet/etc` 或 ContainerManager 重定向路径 |
 | 镜像 | registry pull 或离线 tar | registry pull 或离线 tar |
 | WG 端口 | 52100 | 52101 |
-| Web | `http://<A_IP>:8080` | `http://<NAS_IP>:8080` |
+| Web | `http://<A_IP>:8081` | `http://<NAS_IP>:8081` |
 
 ## 12. 安全说明
 
