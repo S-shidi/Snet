@@ -276,3 +276,118 @@ dpanel
 3. VPS 是否已有 Docker；若无，允许用哪种安装方式。
 4. 8092/udp 的外部可达性/云防火墙。
 5. 是否采用本机构建镜像 + `docker save/load`，避免 1GB VPS OOM。
+
+## 9. 2026-11-08 实际部署结果（已执行）
+
+### 备份
+
+```text
+备份路径: /root/snet-backup-20261108_084059
+内容:
+  snet.db                 131072 bytes
+  snet-server.env            123 bytes
+  snet-server.service.txt    644 bytes
+总大小: 76K
+```
+
+旧服务已停止并 disable：
+
+```text
+snet-server.service        inactive
+snet-runtime-http.service  inactive
+```
+
+8090/8091 已释放；未动 penpot/dpanel 等其他容器；旧备份保留。
+
+### 上传与部署
+
+- 上传到 `/opt/snet-deploy/`：
+  - `Dockerfile.server`
+  - `Dockerfile.relay`
+  - `compose.yaml`（为平铺目录改为 `context: .` / `dockerfile: Dockerfile.*`）
+  - `dist-deploy/linux-amd64/server`
+  - `dist-deploy/linux-amd64/relay`
+- 远程 sha256 与本地一致：
+  - server `5791c664e436120b89a0e56accbdf4072a2406dae3b1fcda65493b0e16753c54`
+  - relay `ab6e4bb08deee32b3aec0f90bae9499ea909cb4cf8f118e3fd6d78b444cf8f96`
+- `/opt/snet-deploy/relay.secret` 与 `.env` 已生成，均为 0600；未打印 secret。
+- `docker compose --env-file .env up -d --build` 异步执行成功：
+  - duration 40s
+  - exit_code 0
+  - 未 OOM
+  - 构建仅 COPY 预编译二进制，未在 VPS 运行 Go build
+
+### 验证
+
+```text
+docker compose ps
+snet-relay   Up (healthy)   0.0.0.0:8092->8092/udp
+snet-server  Up             0.0.0.0:8090->8090/tcp, 0.0.0.0:8091->8091/udp
+```
+
+```text
+relay log: snet-relay 1.3.0 listening on [::]:8092 (metrics 127.0.0.1:8094)
+server log: relay v2: tickets for snet.uizhi.eu.org:8092
+server log: admin: no credentials configured yet; initialize via /admin
+server log: require-device-auth: false
+```
+
+端口：
+
+```text
+0.0.0.0:8090 tcp  docker-proxy -> server
+0.0.0.0:8091 udp  docker-proxy -> server
+0.0.0.0:8092 udp  docker-proxy -> relay
+8094 未发布，仅容器内 127.0.0.1
+```
+
+本地/外部 healthz：
+
+```json
+{"apiVersion":1,"buildDate":"unknown","commit":"unknown","serverVersion":"1.3.0","status":"ok"}
+```
+
+- `buildDate/commit` 为 `unknown`：预编译二进制未注入 ldflags；`serverVersion=1.3.0`。
+- TLS 仍为 Let's Encrypt `snet.uizhi.eu.org`，证书未更换。
+- relay metrics（容器内）：
+
+```json
+{"status":"ok","sessions":0,"packetsIn":0,"packetsOut":0}
+```
+
+`docker stats --no-stream`：
+
+```text
+snet-server 1.961MiB / 967.9MiB
+snet-relay  6.758MiB / 967.9MiB
+```
+
+均远低于 300M；penpot/dpanel 未被操作。
+
+### 当前状态与后续
+
+- 新 server/relay 已运行；Relay v2 endpoint 已配置为 `snet.uizhi.eu.org:8092`。
+- 管理台当前无 admin 凭据：需要首次打开 `https://snet.uizhi.eu.org:8090/admin` 完成 bootstrap。
+- `require-device-auth=false`；如要启用设备授权，需要后续调整 server 启动参数/env 并重启。
+- 云防火墙需用户放行 8090/tcp、8091/udp、8092/udp；8094 不对外。
+
+### 回滚命令（未使用）
+
+```bash
+cd /opt/snet-deploy
+docker compose --env-file .env down
+cp /root/snet-backup-20261108_084059/snet.db /var/lib/snet/snet.db
+cp /root/snet-backup-20261108_084059/snet-server.env /etc/snet-server.env
+systemctl enable --now snet-server snet-runtime-http
+```
+
+### 外部验证命令（给用户）
+
+```bash
+curl -fsS https://snet.uizhi.eu.org:8090/healthz
+# UDP 8092（按本机工具选择）
+nc -u -z -v snet.uizhi.eu.org 8092
+# 客户端手动部署后：
+snetctl -ctl http://127.0.0.1:19432 status
+snetctl -ctl http://127.0.0.1:19432 peers <nid>
+```
