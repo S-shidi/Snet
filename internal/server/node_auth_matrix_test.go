@@ -16,6 +16,7 @@ type nodeAuthFixture struct {
 	ownerToken       string
 	ownerNodeID      string
 	memberToken      string
+	memberNodeID     string
 	otherNID         string
 	otherToken       string
 	otherNodeID      string
@@ -65,6 +66,7 @@ func newNodeAuthFixture(t *testing.T) *nodeAuthFixture {
 		ownerToken:       owner.Token,
 		ownerNodeID:      owner.NodeID,
 		memberToken:      approved.Token,
+		memberNodeID:     approved.NodeID,
 		otherNID:         other.NetworkID,
 		otherToken:       other.Token,
 		otherNodeID:      other.NodeID,
@@ -76,15 +78,14 @@ func newNodeAuthFixture(t *testing.T) *nodeAuthFixture {
 func TestNodeTokenRoutesAuthMatrix(t *testing.T) {
 	f := newNodeAuthFixture(t)
 
-	// Current behavior note: direct-endpoints, subnets and delete-node ignore
-	// the path nid/nodeID and act on the bearer token's own network/node. A
-	// valid token from another network therefore returns 204, not 401/404.
-	// This matrix locks the current behavior; atlas §4/§5 compliance is
-	// pending a decision.
+	// Decision B: direct-endpoints, subnets and delete-node must validate the
+	// path nid/nodeID against the bearer token's own network/node. Mismatches
+	// return 404, matching ownerNID's hidden-existence semantics.
 	cases := []struct {
 		name      string
 		method    string
 		path      func(*nodeAuthFixture) string
+		wrongNode func(*nodeAuthFixture) string
 		body      any
 		success   int
 		noToken   int
@@ -99,8 +100,11 @@ func TestNodeTokenRoutesAuthMatrix(t *testing.T) {
 			path: func(f *nodeAuthFixture) string {
 				return "/api/v1/networks/" + f.nid + "/nodes/" + f.ownerNodeID + "/direct-endpoints"
 			},
+			wrongNode: func(f *nodeAuthFixture) string {
+				return "/api/v1/networks/" + f.nid + "/nodes/" + f.memberNodeID + "/direct-endpoints"
+			},
 			body:    protocol.SetDirectEndpointsReq{DirectEndpoint: "127.0.0.1:12345"},
-			success: http.StatusNoContent, noToken: http.StatusUnauthorized, garbage: http.StatusUnauthorized, cross: http.StatusNoContent,
+			success: http.StatusNoContent, noToken: http.StatusUnauthorized, garbage: http.StatusUnauthorized, cross: http.StatusNotFound,
 		},
 		{
 			name:    "relay-ticket",
@@ -113,7 +117,7 @@ func TestNodeTokenRoutesAuthMatrix(t *testing.T) {
 			method:  http.MethodPatch,
 			path:    func(f *nodeAuthFixture) string { return "/api/v1/networks/" + f.nid + "/subnets" },
 			body:    protocol.UpdateSubnetsReq{Subnets: []string{}},
-			success: http.StatusNoContent, noToken: http.StatusUnauthorized, garbage: http.StatusUnauthorized, cross: http.StatusNoContent,
+			success: http.StatusNoContent, noToken: http.StatusUnauthorized, garbage: http.StatusUnauthorized, cross: http.StatusNotFound,
 		},
 		{
 			name:    "exists",
@@ -148,10 +152,13 @@ func TestNodeTokenRoutesAuthMatrix(t *testing.T) {
 			memberSet: true,
 		},
 		{
-			name:    "delete-node",
-			method:  http.MethodDelete,
-			path:    func(f *nodeAuthFixture) string { return "/api/v1/networks/" + f.nid + "/nodes/" + f.ownerNodeID },
-			success: http.StatusNoContent, noToken: http.StatusUnauthorized, garbage: http.StatusUnauthorized, cross: http.StatusNoContent,
+			name:   "delete-node",
+			method: http.MethodDelete,
+			path:   func(f *nodeAuthFixture) string { return "/api/v1/networks/" + f.nid + "/nodes/" + f.ownerNodeID },
+			wrongNode: func(f *nodeAuthFixture) string {
+				return "/api/v1/networks/" + f.nid + "/nodes/" + f.memberNodeID
+			},
+			success: http.StatusNoContent, noToken: http.StatusUnauthorized, garbage: http.StatusUnauthorized, cross: http.StatusNotFound,
 		},
 	}
 
@@ -160,35 +167,33 @@ func TestNodeTokenRoutesAuthMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Keep DELETE last in the case list: its success state removes the
 			// owner node, so later owner-token cases would no longer be valid.
-			states := []struct {
+			type matrixState struct {
 				name  string
 				token string
+				path  string
 				want  int
-			}{
-				{"no-token", "", tc.noToken},
-				{"garbage", "garbage", tc.garbage},
-				{"cross-network", f.otherToken, tc.cross},
+			}
+			path := tc.path(f)
+			states := []matrixState{
+				{"no-token", "", path, tc.noToken},
+				{"garbage", "garbage", path, tc.garbage},
+				{"cross-network", f.otherToken, path, tc.cross},
 			}
 			if tc.memberSet {
-				states = append(states, struct {
-					name  string
-					token string
-					want  int
-				}{"member", f.memberToken, tc.member})
+				states = append(states, matrixState{"member", f.memberToken, path, tc.member})
 			}
-			states = append(states, struct {
-				name  string
-				token string
-				want  int
-			}{"valid-owner", f.ownerToken, tc.success})
+			if tc.wrongNode != nil {
+				states = append(states, matrixState{"same-network-wrong-node", f.ownerToken, tc.wrongNode(f), http.StatusNotFound})
+			}
+			states = append(states, matrixState{"same-network", f.ownerToken, path, tc.success})
 
 			for _, st := range states {
 				st := st
 				t.Run(st.name, func(t *testing.T) {
-					resp := doJSON(t, tc.method, f.url+tc.path(f), st.token, tc.body, nil)
+					resp := doJSON(t, tc.method, f.url+st.path, st.token, tc.body, nil)
 					if resp.StatusCode != st.want {
 						t.Fatalf("%s %s with %s = %d, want %d",
-							tc.method, tc.path(f), st.name, resp.StatusCode, st.want)
+							tc.method, st.path, st.name, resp.StatusCode, st.want)
 					}
 				})
 			}
