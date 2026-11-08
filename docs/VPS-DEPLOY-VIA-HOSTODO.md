@@ -1,8 +1,7 @@
 # VPS 部署路径：Hostodo MCP 能力与自动化边界
 
-> 状态：已配置 Hostodo MCP 并完成只读 `tools/list` + `list_vms` + `get_vm` 探测。
-> 2026-11-08 尝试 `hostodo_exec_vm_command` 只读探测时返回 **403 `vms:exec` scope 缺失**；未执行任何 shell 命令。
-> 未部署、未执行 docker compose、未执行 systemctl、未 SSH 登录 VPS。
+> 状态：已配置 Hostodo MCP，`vms:exec` token 验证成功，并完成只读 `exec_vm_command` 探测。
+> 未部署、未执行 docker compose、未执行 systemctl 写操作、未停旧服务、未 SSH 登录 VPS。
 > Bearer token 只写入 `/root/.config/opencode/opencode.jsonc`（仓库外）；本文件不包含 token。
 
 ## 1. Hostodo MCP 配置
@@ -92,46 +91,112 @@ bandwidth_gb:    3072
 
 **资源提醒**：目标 VPS 只有 1 vCPU / 1GB RAM。Dockerfile 已改为 **COPY 预编译二进制**（`dist-deploy/linux-${BIN_ARCH}/{server,relay}`），不在 VPS 上运行 Go 构建；仍需要构建一个薄 Alpine 镜像（或本机构建镜像后 `docker save`/上传/`docker load`）。
 
-### 3.1 2026-11-08 exec 只读探测结果
+### 3.1 2026-11-08 只读探测结果（exec 成功）
 
-尝试：
+最小验证：
 
 ```text
-hostodo_exec_vm_command(vm_id=ins::y5a3ro01rd, command=<read-only probe>)
-HTTP 403
-error.code: -32003
-error.message: session lacks required scope: vms:exec
-required_scope: vms:exec
+uname -m && id && free -m | head -2
+exit_code=0
+x86_64
+uid=0(root) gid=0(root)
+Mem: 967 total, 806 used, 97 free, 161 available
 ```
 
-因此以下**未获取，不能假设**：
+完整只读探测：
 
-- `uname -m` / OS 发行版 / nproc / free / df
-- Docker 是否已安装、docker compose 版本、docker service 状态
-- 旧 snet systemd units、`/usr/local/snet`、`/etc/snet`、`snet.db`
-- TLS 证书实际路径、nginx/caddy 是否占用 8090
-- 8090/8091/8092/8094 的实际监听进程
-- 目标 VPS 的 CPU 架构（Hostodo plan 是 EPYC，但未用 `uname -m` 确认）
+```text
+OS:        Debian GNU/Linux 13 (trixie)
+Kernel:    6.12.113+deb13-cloud-amd64
+Arch:      x86_64 (amd64)
+CPU:       1
+Memory:    967 MB total, 814 MB used, 88 MB free, 153 MB available
+Swap:      4095 MB total, 722 MB used, 3373 MB free (/swapfile)
+Disk:      /dev/sda1 20G, 13G used, 6.3G avail, 67%
+Docker:    /usr/bin/docker, Docker 29.7.2, Compose v5.5.0, service active
+```
 
-已有公网只读证据：`https://snet.uizhi.eu.org:8090/healthz` 返回 1.3.0；TLS 为 Let's Encrypt。
-`8090` 当前由谁监听、旧部署内部结构、证书路径均**待 vms:exec scope 或用户手动 SSH 确认**。
+旧部署：
+
+```text
+snet-server.service        active (running) PID 357564
+snet-runtime-http.service  active (running)
+binary: /usr/local/snet/bin/server
+db:     /var/lib/snet/snet.db
+unit:   /etc/systemd/system/snet-server.service
+env:    /etc/snet-server.env
+command:
+  server -addr 0.0.0.0:8090 -probe-addr [::]:8091
+         -db /var/lib/snet/snet.db
+         -tls-cert /usr/local/snet/certs/server.pem
+         -tls-key /usr/local/snet/certs/server-key.pem
+         -relay-host 66.187.6.46 -relay-base 51820 -relay-count 256
+         -zombie-ttl 72h
+```
+
+bbolt 发现：
+
+```text
+/var/lib/snet/snet.db
+/usr/local/snet/backups/1.3.0-20261027_015222/snet.db
+/usr/local/snet/backups/1.2.0-20261027_000755/snet.db
+/root/snet-client-removal-20261026_162417/snet.db
+```
+
+端口：
+
+```text
+udp *:8091 users:(("server",pid=357564,fd=6))
+tcp *:8090 users:(("server",pid=357564,fd=7))
+```
+
+- 8090/8091 都由旧 `server` 进程直接监听，不是 nginx/caddy。
+- 8092/8094 当前未监听，可用于新 relay。
+- `systemctl cat nginx/caddy` 未发现相关配置输出。
+
+TLS：
+
+```text
+/etc/letsencrypt/live/snet.uizhi.eu.org/fullchain.pem
+/etc/letsencrypt/live/snet.uizhi.eu.org/privkey.pem
+/usr/local/snet/certs/server.pem -> /etc/letsencrypt/live/snet.uizhi.eu.org/fullchain.pem
+/usr/local/snet/certs/server-key.pem -> /etc/letsencrypt/live/snet.uizhi.eu.org/privkey.pem
+```
+
+实际 archive 文件：
+
+```text
+/etc/letsencrypt/archive/snet.uizhi.eu.org/fullchain2.pem
+/etc/letsencrypt/archive/snet.uizhi.eu.org/privkey2.pem
+```
+
+Docker 现有容器（与本项目无关）：
+
+```text
+penpot-penpot-* (frontend/backend/exporter/postgres/valkey)
+dpanel
+```
+
+没有 snet 容器。
+
+**资源提醒**：目标 VPS 只有 1 vCPU / 1GB RAM；当前可用内存约 153MB，swap 已 4GB（约 3.3GB free）。Dockerfile 已改为 COPY 预编译二进制，不在 VPS 跑 Go build；仍建议给 compose 容器设置 300M-400M memory limit，并优先用本机构建镜像 + `docker save/load`，避免薄镜像 build 期间的峰值内存压力。
 
 ## 4. 能力判断
 
 | 能力 | 是否支持 | 说明 |
 |---|---|---|
-| 指定服务器执行 shell | **工具支持；当前 token 不可用** | `hostodo_exec_vm_command`，root 命令，最长 60s；当前 token 缺 `vms:exec`，返回 403 |
-| Docker / compose | **无专用工具** | 可通过 shell 执行 `docker`/`docker compose`；但当前 token 缺 `vms:exec`，无法执行；VPS 是否已安装 Docker 未确认 |
-| 文件上传 | **工具支持；当前 token 不可用** | `create_artifact_upload` + `install_artifact`；需 `vms:exec`，当前 token 缺 scope |
+| 指定服务器执行 shell | **是** | `hostodo_exec_vm_command`，root 命令，最长 60s；已验证 `vms:exec` 成功 |
+| Docker / compose | **无专用工具** | 可通过 shell 执行；VPS 已装 Docker 29.7.2 + Compose v5.5.0，service active |
+| 文件上传 | **是** | `create_artifact_upload` + `install_artifact`；`vms:exec` 已验证 |
 | 文件下载 | **否（通用）** | 只有 `get_service_logs` 可读日志；没有通用 download 工具 |
 | 防火墙 / 端口 | **无专用工具** | 可通过 shell 执行 `ufw`/`firewall-cmd`/`iptables`，需先确认系统工具 |
 | systemd 服务管理 | **无直接工具** | `restart_service` 是 coming soon stub；可通过 shell `systemctl` |
 | 日志 | **是** | `get_service_logs`（systemd 或 `/var/log/**`） |
-| 异步长命令 | **工具支持；当前 token 不可用** | `start_vm_command` + output/log/cancel；需 `vms:exec` |
+| 异步长命令 | **是** | `start_vm_command` + output/log/cancel |
 
 ## 5. VPS 部署自动化边界
 
-### 5.1 若补齐 `vms:exec` scope：可全自动（经用户批准后，通过 MCP）
+### 5.1 已验证 `vms:exec`：可全自动（经用户批准后，通过 MCP）
 
 1. `hostodo_list_vms` / `get_vm` 确认目标 `ins::y5a3ro01rd`，`mcp_exec_enabled=true`。
 2. `hostodo_exec_vm_command` 备份旧部署（tar `/usr/local/snet`、`/etc/snet` 到 `/root/snet-backup-*`）。
@@ -141,7 +206,7 @@ required_scope: vms:exec
 6. `hostodo_start_vm_command` 执行 `docker compose up -d --build`（薄镜像只 COPY 预编译二进制），用 `get_vm_command_output` 轮询。
 7. `hostodo_get_service_logs` / `exec_vm_command` 验证 `docker compose ps`、`curl /healthz`、8092/udp 监听。
 
-当前 token **缺少 `vms:exec`**，上述第 2-7 步尚不能执行。
+当前 token 已通过 `vms:exec` 验证；上述步骤技术上可执行，但仍需用户批准写操作。
 
 ### 5.2 半自动（MCP + 用户确认）
 
@@ -149,9 +214,17 @@ required_scope: vms:exec
 - DNS 指向确认（当前 `snet.uizhi.eu.org` → `66.187.6.46` 已由公网探测确认）。
 - 防火墙/云安全组放行 8090/tcp、8091/udp、8092/udp；MCP 无专用防火墙工具，需 shell 或用户控制台。
 - VPS 资源不足时的镜像构建策略（本地 build + `docker save/load`）。
-- 首次安装 Docker 若 shell/权限/OS 包管理不支持，需要用户手动。
+- Docker 已安装且 service active，不需要首次安装；若后续升级 Docker，需用户批准。
 
-### 5.3 必须用户手动 / 明确授权
+### 5.3 8090 部署路径决策
+
+- 实际监听：`server` PID 357564，systemd unit `snet-server.service`，直接监听 8090/8091；不是 nginx/caddy。
+- 因此新 server 方案：**停旧 `snet-server.service` → compose server 直接绑定 8090/8091，使用 `-tls-cert/-tls-key` 直连 TLS**。
+- 不需要保留 nginx/caddy 反代；`systemctl cat nginx/caddy` 未发现相关配置。
+- `snet-runtime-http.service` 仍 active；新 server/relay 不需要它，是否停用/保留由用户决定（先备份）。
+- 复用 TLS 路径：`/etc/letsencrypt/live/snet.uizhi.eu.org/fullchain.pem` + `privkey.pem`；compose 默认挂载 `/etc/letsencrypt`，无需改路径。
+
+### 5.4 必须用户手动 / 明确授权
 
 - 批准清理旧部署（destructive）。
 - 批准通过 MCP 执行写操作（本次未执行）。
@@ -163,35 +236,38 @@ required_scope: vms:exec
 ## 6. 部署顺序草案（不执行，待批准）
 
 ```text
-0. 只读确认：uname -m / Docker / 旧 snet units / 8090 listener / TLS 路径 / 端口
-   （当前被 vms:exec 403 阻塞）
-1. 备份旧部署：tar /usr/local/snet /etc/snet /root/snet-backup-YYYYMMDD
-2. 停旧 snet-server（用户批准后）
+0. 已完成只读确认：Debian 13 x86_64(amd64), Docker 29.7.2 + Compose v5.5.0 active,
+   8090/8091 由旧 server 监听，8092/8094 空闲，TLS 路径已确认
+1. 备份旧部署：tar /usr/local/snet /etc/snet /etc/snet-server.env /var/lib/snet/snet.db
+   到 /root/snet-backup-YYYYMMDD（先确认备份可读）
+2. 停旧 snet-server.service（用户批准后）；如保留 snet-runtime-http，先确认其用途
 3. 上传：
    - dist-deploy/linux-<arch>/{server,relay}
    - deploy-prod/docker/（Dockerfile/compose/.env.example）
 4. 生成 secret：umask 077; openssl rand -hex 32 > /etc/snet/relay.secret（不打印）
 5. 写 .env：SNET_RELAY_SECRET 从文件引用；SNET_RELAY_V2_ENDPOINTS=snet.uizhi.eu.org:8092；
-   BIN_ARCH=<amd64|arm64> 按 uname -m 确认
+   BIN_ARCH=amd64（uname -m 已确认 x86_64）
 6. docker compose up -d --build（薄镜像 COPY 预编译二进制；不在 VPS 跑 Go build）
+   建议 compose 容器 memory limit 300M-400M；当前 swap 4G，无需再加
 7. 验证：docker compose ps；curl https://snet.uizhi.eu.org:8090/healthz；
    relay 127.0.0.1:8094/healthz；外部 8092/udp 可达
 ```
 
 前置判断：
 
-- 若 8090 已被 nginx/caddy 监听，必须先确认反代配置；不能直接让 server 绑定 8090。按 `ss -lntup` 实际输出决定停旧服务/改端口/改反代。
-- TLS 证书路径必须确认后再写 compose 挂载；当前公网证书是 Let's Encrypt，但内部路径未探测。
-- 1GB VPS 不运行 Go build；Dockerfile 已改为 COPY 预编译二进制。薄镜像 build 仍需要 Docker；若 Docker 未装，先装 Docker。
-- 目标架构未确认；Dockerfile 默认 `BIN_ARCH=amd64`，`uname -m` 为 `aarch64` 时必须设 `BIN_ARCH=arm64`。
+- 8090/8091 由旧 `snet-server` systemd 二进制监听；不是 nginx/caddy。停旧 unit 后 compose server 可直接绑定 8090/8091。
+- TLS 路径已确认：`/etc/letsencrypt/live/snet.uizhi.eu.org/{fullchain,privkey}.pem`；compose 挂载 `/etc/letsencrypt` 即可。
+- 1GB VPS 不运行 Go build；Dockerfile 已改为 COPY 预编译二进制。Docker 已安装；薄镜像 build 仍会占用少量内存，建议本机构建 + `docker save/load` 或设置 300M-400M memory limit。
+- 架构已确认：`x86_64` → `BIN_ARCH=amd64`。
+- 现有 4GB swap（约 3.3GB free），不需要再新增 1-2GB；注意当前可用内存约 153MB，且已有 penpot/dpanel 容器。
 
 ## 7. 当前结论
 
-- Hostodo MCP 工具面支持 root shell、异步长命令、文件上传/安装、日志；目标 VPS `mcp_exec_enabled=true`。
-- **但当前 token 缺 `vms:exec` scope**：`hostodo_exec_vm_command` 返回 403，无法执行任何只读/写 shell；因此 OS、Docker、旧部署、TLS 路径、8090 监听者、端口占用、架构均未确认。
-- **没有专用 Docker/防火墙/systemd 管理工具**；即使有 scope，也需要 shell 执行并确认 VPS 已安装 Docker/防火墙工具。
-- Dockerfile 已改为 COPY `dist-deploy/linux-${BIN_ARCH}/{server,relay}`，避免在 1GB VPS 上跑 Go build；但薄镜像 build 仍需 Docker，且架构需 `uname -m` 确认。
-- 本次未执行任何部署或 shell 命令；仅调用只读 `tools/list`、`list_vms`、`get_vm`，以及被 403 拒绝的 `exec_vm_command` 尝试。
+- Hostodo MCP `vms:exec` 已成功；目标 VPS 为 Debian 13 x86_64/amd64，1 vCPU / 967MB RAM / 4GB swap / 20GB disk（6.3G free）。
+- Docker 29.7.2 + Compose v5.5.0 已安装且 active；8090/8091 由旧 `snet-server` systemd 二进制监听，8092/8094 空闲；TLS 路径已确认。
+- **没有专用 Docker/防火墙/systemd 管理工具**；Docker/compose/systemctl/防火墙需通过 shell 执行。
+- Dockerfile 已改为 COPY `dist-deploy/linux-amd64/{server,relay}`，避免在 1GB VPS 上跑 Go build；部署时仍需用户批准停旧服务、备份/清理旧部署、写 secret、compose up 和防火墙放行。
+- 本次只执行只读 `tools/list`、`list_vms`、`get_vm`、`exec_vm_command`；未部署、未停服务、未写 VPS。
 
 ## 8. 仍需用户确认
 
