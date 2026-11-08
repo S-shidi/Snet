@@ -1,0 +1,23 @@
+services:
+  snetd:
+    build:
+      context: ../..
+      dockerfile: deploy-prod/docker/Dockerfile.client
+    image: snetd:local
+    container_name: snetd
+    restart: unless-stopped
+    # host network: ctl binds 127.0.0.1:19432, WG 52100/udp on the host.
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - /etc/snet:/etc/snet
+    command:
+      - "-config"
+      - "/etc/snet/config.json"
+      - "-ctl"
+      - "127.0.0.1:19432"
+      - "-device-id-file"
+      - "/etc/snet/device.id"

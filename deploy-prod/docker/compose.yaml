@@ -1,0 +1,57 @@
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: deploy-prod/docker/Dockerfile.relay
+    image: snet-relay:local
+    container_name: snet-relay
+    restart: unless-stopped
+    environment:
+      SNET_RELAY_SECRET: ${SNET_RELAY_SECRET:?set SNET_RELAY_SECRET in deploy-prod/docker/.env}
+    command:
+      - "-addr"
+      - "0.0.0.0:8092"
+      - "-metrics-addr"
+      - "127.0.0.1:8094"
+    ports:
+      - "8092:8092/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8094/healthz >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy-prod/docker/Dockerfile.server
+    image: snet-server:local
+    container_name: snet-server
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+    environment:
+      SNET_RELAY_SECRET: ${SNET_RELAY_SECRET:?set SNET_RELAY_SECRET in deploy-prod/docker/.env}
+      SNET_RELAY_V2_ENDPOINTS: ${SNET_RELAY_V2_ENDPOINTS:-snet.uizhi.eu.org:8092}
+    command:
+      - "-addr"
+      - "0.0.0.0:8090"
+      - "-probe-addr"
+      - "0.0.0.0:8091"
+      - "-db"
+      - "/data/snet.db"
+      - "-tls-cert"
+      - "${TLS_CERT_PATH:-/etc/letsencrypt/live/snet.uizhi.eu.org/fullchain.pem}"
+      - "-tls-key"
+      - "${TLS_KEY_PATH:-/etc/letsencrypt/live/snet.uizhi.eu.org/privkey.pem}"
+    ports:
+      - "8090:8090/tcp"
+      - "8091:8091/udp"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - snet-data:/data
+
+volumes:
+  snet-data:
