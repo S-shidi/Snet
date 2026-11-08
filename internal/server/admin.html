@@ -3639,19 +3639,26 @@ async function renderMembersModal(nid) {
         ? `<div class="ip-cell"><span class="ip-v4">${esc(nd.ip)}</span><span class="ip-v6">${esc(nd.ipv6)}</span></div>`
         : `<span class="ip-v4">${esc(nd.ip)}</span>`;
       
-      // Build public IP cell (IPv4 + IPv6)
-      let publicIP = '<span class="hint">-</span>';
-      if (nd.publicIPv4 || nd.publicIPv6) {
-        const parts = [];
-        if (nd.publicIPv4) {
-          parts.push(`<span class="ip-v4" title="公网 IPv4">${esc(nd.publicIPv4)}</span>`);
-        }
-        if (nd.publicIPv6) {
-          parts.push(`<span class="ip-v6" title="公网 IPv6">${esc(nd.publicIPv6)}</span>`);
-        }
-        publicIP = parts.length > 1 
-          ? `<div class="ip-cell">${parts.join('')}</div>`
-          : parts[0];
+      // Build public IP cell (IPv4 + IPv6). Relay-v2 nodes often have only a
+      // direct IPv6 endpoint, so show that instead of a bare dash.
+      const publicParts = [];
+      if (nd.publicIPv4) {
+        publicParts.push(`<span class="ip-v4" title="公网 IPv4">${esc(nd.publicIPv4)}</span>`);
+      }
+      if (nd.publicIPv6) {
+        publicParts.push(`<span class="ip-v6" title="公网 IPv6">${esc(nd.publicIPv6)}</span>`);
+      }
+      let publicIP;
+      if (publicParts.length) {
+        publicIP = publicParts.length > 1
+          ? `<div class="ip-cell">${publicParts.join('')}</div>`
+          : publicParts[0];
+      } else if (nd.directEndpointV6) {
+        publicIP = `<span class="ip-v6" title="IPv6 直连：${esc(nd.directEndpointV6)}">IPv6直连</span>`;
+      } else if (!nd.natType || nd.natType === 'symmetric' || nd.natType === 'unknown') {
+        publicIP = '<span class="hint" title="未获得可用的公网地址">受限网络 (NAT)</span>';
+      } else {
+        publicIP = '<span class="hint">-</span>';
       }
       
       rows += `<tr>

@@ -5371,6 +5371,28 @@ func extractIPFromEndpoint(endpoint string) string {
 	return strings.Trim(host, "[]")
 }
 
+// publicIPFromEndpoint extracts a routable public IP from an endpoint. It
+// accepts bare IPs and host:port forms, and rejects loopback, private,
+// link-local, multicast and unspecified addresses.
+func publicIPFromEndpoint(endpoint string, ipv4 bool) string {
+	ip := net.ParseIP(extractIPFromEndpoint(endpoint))
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() ||
+		ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return ""
+	}
+	if ipv4 {
+		v4 := ip.To4()
+		if v4 == nil {
+			return ""
+		}
+		return v4.String()
+	}
+	if ip.To4() != nil {
+		return ""
+	}
+	return ip.String()
+}
+
 // enrichNodeWithIPInfo fills in the IPv6, PublicIPv4, and PublicIPv6 fields
 // for a node based on its existing IP, subnet, and endpoint information.
 func enrichNodeWithIPInfo(node *protocol.Node, subnet string) {
@@ -5379,21 +5401,24 @@ func enrichNodeWithIPInfo(node *protocol.Node, subnet string) {
 		node.IPv6 = deriveIPv6FromV4(node.IP, subnet)
 	}
 
-	// Extract public IPv4 from RelayFlow or Endpoint
-	if node.RelayFlow != "" {
-		node.PublicIPv4 = extractIPFromEndpoint(node.RelayFlow)
-	} else if node.Endpoint != "" {
-		ep := extractIPFromEndpoint(node.Endpoint)
-		// Only set as public if it's not a private/LAN address
-		if ip := net.ParseIP(ep); ip != nil && !ip.IsPrivate() {
-			node.PublicIPv4 = ep
+	// Extract public IPv4 from the relay-observed mapping first, then from the
+	// self-advertised endpoint, and finally from the Relay v2 direct socket.
+	node.PublicIPv4 = ""
+	for _, ep := range []string{node.RelayFlow, node.Endpoint, node.DirectEndpoint} {
+		if ip := publicIPFromEndpoint(ep, true); ip != "" {
+			node.PublicIPv4 = ip
+			break
 		}
 	}
 
-	// Extract public IPv6 from EndpointV6
-	if node.EndpointV6 != "" {
-		ep := extractIPFromEndpoint(node.EndpointV6)
-		// IPv6 addresses in EndpointV6 are already global (no NAT)
-		node.PublicIPv6 = ep
+	// Extract public IPv6 from the legacy endpoint or the Relay v2 direct
+	// socket. DirectEndpointV6 is the only public IPv6 address relay-v2 nodes
+	// advertise, so it must be considered even when EndpointV6 is empty.
+	node.PublicIPv6 = ""
+	for _, ep := range []string{node.EndpointV6, node.DirectEndpointV6} {
+		if ip := publicIPFromEndpoint(ep, false); ip != "" {
+			node.PublicIPv6 = ip
+			break
+		}
 	}
 }
