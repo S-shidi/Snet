@@ -448,7 +448,7 @@ Server 鉴权覆盖（2026-11-07）：
 - 日志测试：`TestSanitizeLogEscapesControlChars` 锁定 `\n`/`\x7f`/`\x00` → `\xNN`；`TestServerLogsDoNotContainSecrets` 捕获访问日志 + 无效 subnet 触发的 internal error，断言不含 token、`privateKey`、`pairingCode` 标记。
 - 公开 enrollment 限流/门禁：`TestAnonymousEnrollmentRateLimited` 选 `/devices/bind`（最小 20/min/IP）作代表，20 次未限流、第 21 次 429；`TestRequireDeviceAuthBlocksAnonymousCreateJoinRegister` 在 `RequireDeviceAuth=true` 时无绑定 deviceId 的 create/join/register 均 403，绑定 device 的 create/join/register 分别 201/200/200。注意门禁校验的是 DeviceID 的授权码绑定，不是 `X-Device-Token` 头。
 - `admin.html` 公开是设计：`TestAdminWebRoot` 验证无凭据 `/admin` 仍 200（首次 bootstrap/login UI），不列为缺口；管理 API 仍由 `requireAdmin` 保护。
-- 仍待补（低优先）：#8 admin session 过期、#9 pending poll 限流/一次性消费、#11 static-token logout no-op。
+- server #8/#9/#11 已补测试；结果与 #9 状态码差异见下节。
 - 测试命令：token 隔离 `-race -count=20` 全绿；enrollment `-race -count=10` 全绿；sanitize/log 全绿。commits `a35eee4`、`4b9dbed`、`37f5480`。
 
 Server 路由鉴权矩阵（2026-11-07）：
@@ -467,4 +467,12 @@ Server 路由鉴权矩阵（2026-11-07）：
 - owner 语义：`ownerNID` 对未知/跨网络 token 统一返回 404（隐藏网络存在性）；本网络 member token 通过 `ownerNID` 后被 `requireOwnerLocked` 拒绝，pending approve/deny 返回 401。
 - Admin 实际矩阵（无 token / garbage / static token / session token）：4 条路由均为 401 / 401 / 2xx / 2xx；`GET /admin/networks/{nid}` 200，`PATCH authcodes/{id}/renew` 204，`DELETE devices/{id}` 204，`PATCH devices/{id}` 204。admin 未配置时 4 条均 404。
 - 测试命令：`go test ./internal/server -run 'TestNodeTokenRoutesAuthMatrix|TestAdminRoutesAuthMatrix|TestAdminDisabledReturns404' -v` 全绿；`-race -count=10` 全绿；`go test ./internal/server` 与 `-race` 全包全绿。commits `abbfe59`、`5a1903c`。
-- 仍待补：见上条 #8/#9/#11。
+- server #8/#9/#11 已闭环（#9 状态码差异待决策），见下节。
+
+Server 鉴权剩余项与 probe.go 盘点（2026-11-07）：
+
+- #8 admin session 过期：`TestAdminSessionExpiry` 登录后把 `handler.sessions[hashToken(token)]` 的 `expires` 改为过去时间，请求 `GET /admin/stats` → 401；`sessionValid` 同时删除该过期 map 项，测试断言已删除。
+- #9 pending poll：`TestPendingPollOneShotConsume` 先 `OwnerApprove`，第一次 `GET /api/v1/pending/{id}` → 200 + approved + token；第二次 → **200 `{"status":"gone"}` 且无 token**。任务期望 404，实际是 200/gone；一次性消费（不重复返回凭据）成立，但状态码与期望不符，**当前行为待决策**。`TestPendingPollRateLimited` 使用 `pendingPolls` 10/min/IP：前 10 次 200，第 11 次 429。
+- #11 static-token logout：`TestAdminLogoutStaticTokenNoop` 用 `AdminToken` 请求 `POST /admin/logout` → 204；随后 `GET /admin/stats` 同 token → 200，确认 static token 分支是 no-op，不清 session。
+- probe.go：`ProbeServer` 是独立 UDP echo，默认 `[::]:8091`（`cmd/server/main.go -probe-addr`），对任意 UDP 包回复 `{"endpoint":"observed ip:port"}`；无 Store 访问、无鉴权、无 payload 解析，`n` 被丢弃。调用方是 `cmd/server/main.go:129`；客户端 `internal/client/daemon.go` 的 `probePublicIP` 发送含 networkId/nodeId/token 的 JSON，但 server 不读取 payload、不记录 token。无专项测试（`relay_test.go` 的 probe 只是注释）。建议可选补 `TestProbeServerEchoesSourceEndpoint`（127.0.0.1:0 启动，UDP 发送后读 JSON，直接可测）和 `TestProbeServerClose`；属低优先，未执行。
+- 测试命令：session `-race -count=20` 全绿；pending `-race -count=10` 全绿；static logout 全绿；`go test ./internal/server` / `-race` / `go test ./...` / `go vet ./...` 全绿。commits `3a6b535`、`8e872de`、`270ceb3`。
