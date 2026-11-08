@@ -207,7 +207,7 @@ func TestBindRoundTrip(t *testing.T) {
 	}
 
 	d, _ := newTestDaemon(t)
-	if err := d.Bind(ts.URL, "", codes[0].Code); err != nil {
+	if err := d.Bind(ts.URL, codes[0].Code); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	if !d.cfg.Bound() {
@@ -236,7 +236,7 @@ func TestBindRoundTrip(t *testing.T) {
 		t.Fatalf("unbound create err = %v, want 设备未授权 hint", err)
 	}
 	// after binding its own code, the same device joins the owner's network
-	if err := d2.Bind(ts.URL, "", codes[1].Code); err != nil {
+	if err := d2.Bind(ts.URL, codes[1].Code); err != nil {
 		t.Fatalf("bind d2: %v", err)
 	}
 	join, err := d2.Join(ts.URL, 0, created.NetworkID, created.PairingCode)
@@ -256,7 +256,7 @@ func TestBindRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d2.Bind(tsB.URL, "", codesB[0].Code); err != nil {
+	if err := d2.Bind(tsB.URL, codesB[0].Code); err != nil {
 		t.Fatalf("switch server bind: %v", err)
 	}
 	if len(d2.cfg.Networks) != 0 {
@@ -321,7 +321,7 @@ func TestJoinViaLinkServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	d3, _ := newTestDaemon(t)
-	if err := d3.Bind(te.URL, "", codes[0].Code); err != nil {
+	if err := d3.Bind(te.URL, codes[0].Code); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	createdE, err := d3.Create(te.URL, 0, "secure", "", false)
@@ -598,7 +598,7 @@ func TestBindFailureRollsBackServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Bind(tsB.URL, "", "WRONG-CODE"); err == nil {
+	if err := d.Bind(tsB.URL, "WRONG-CODE"); err == nil {
 		t.Fatal("bind with wrong code should fail")
 	}
 	if d.cfg.ServerAddr != normalizeServer(tsA.URL) {
@@ -626,7 +626,7 @@ func TestStartupAuthSyncRestoresNetworks(t *testing.T) {
 
 	d, _ := newTestDaemon(t)
 	d.SetDeviceID("startup-dev-1")
-	if err := d.Bind(ts.URL, "", codes[0].Code); err != nil {
+	if err := d.Bind(ts.URL, codes[0].Code); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	created, err := d.Create(ts.URL, 0, "home", "", false)
@@ -669,7 +669,7 @@ func TestStartupAuthSyncRevocationKeepsMembership(t *testing.T) {
 
 	d, _ := newTestDaemon(t)
 	d.SetDeviceID("startup-dev-2")
-	if err := d.Bind(ts.URL, "", codes[0].Code); err != nil {
+	if err := d.Bind(ts.URL, codes[0].Code); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	created, err := d.Create(ts.URL, 0, "home", "", false)
@@ -711,7 +711,7 @@ func TestVerifyBindingDetectsRevocation(t *testing.T) {
 	}
 	d, _ := newTestDaemon(t)
 	d.SetDeviceID("revoke-dev-1")
-	if err := d.Bind(ts.URL, "", codes[0].Code); err != nil {
+	if err := d.Bind(ts.URL, codes[0].Code); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	if !d.cfg.Bound() {
@@ -745,7 +745,7 @@ func TestVerifyBindingNonEnforcementExplicitFalse(t *testing.T) {
 	}
 	d, _ := newTestDaemon(t)
 	d.SetDeviceID("revoke-dev-2")
-	if err := d.Bind(ts.URL, "", codes[0].Code); err != nil {
+	if err := d.Bind(ts.URL, codes[0].Code); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	if !d.cfg.Bound() {
@@ -773,7 +773,7 @@ func TestVerifyBindingKeepsOnTransientError(t *testing.T) {
 	}
 	d, _ := newTestDaemon(t)
 	d.SetDeviceID("revoke-dev-3")
-	if err := d.Bind(ts.URL, "", codes[0].Code); err != nil {
+	if err := d.Bind(ts.URL, codes[0].Code); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	ts.Close() // server goes away
@@ -797,7 +797,7 @@ func TestVerifyBindingRejectsInvalidDeviceToken(t *testing.T) {
 	}
 	d, _ := newTestDaemon(t)
 	d.SetDeviceID("revoke-dev-bad-token")
-	if err := d.Bind(ts.URL, "", codes[0].Code); err != nil {
+	if err := d.Bind(ts.URL, codes[0].Code); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	d.mu.Lock()
@@ -824,7 +824,7 @@ func TestCreateAfterRevocationClearsBinding(t *testing.T) {
 	}
 	d, _ := newTestDaemon(t)
 	d.SetDeviceID("revoke-dev-4")
-	if err := d.Bind(ts.URL, "", codes[0].Code); err != nil {
+	if err := d.Bind(ts.URL, codes[0].Code); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	if err := s.AdminUnbindDevice("revoke-dev-4"); err != nil {
@@ -855,7 +855,7 @@ func TestForeignServerRevokeDoesNotClearBinding(t *testing.T) {
 	defer tsB.Close()
 	d, _ := newTestDaemon(t)
 	d.SetDeviceID("revoke-dev-5")
-	if err := d.Bind(tsA.URL, "", codesA[0].Code); err != nil {
+	if err := d.Bind(tsA.URL, codesA[0].Code); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	if _, err := d.Create(tsB.URL, 0, "x", "", false); err == nil || !strings.Contains(err.Error(), "设备未授权") {

@@ -77,7 +77,6 @@ chmod 0600 /etc/snet/config.json
 
 - `serverAddr`：固定 `https://snet.uizhi.eu.org:8090`
 - `wireguardPort`：本机 WireGuard 端口，默认示例 `52100`
-- `serverCaPath`：空 = 系统信任（Let's Encrypt）；自签时才填 CA PEM 路径
 - `networks`：首次为空，由 create/join 写入
 - `keyRotationDays`：可选，0 关闭
 - `natMapping`：`true` 开启 UPnP/NAT-PMP/PCP

@@ -19,8 +19,7 @@ let skipOnboarding = false;
 
 /* ── Settings (localStorage) ──────────────────────────────────── */
 const SETTINGS_KEY = "snet.settings";
-const LEGACY_CA = "/usr/local/snet/certs/server.pem";
-const DEFAULT_SETTINGS = { server: FIXED_SERVER, ca: "", wgport: 51820 };
+const DEFAULT_SETTINGS = { server: FIXED_SERVER, wgport: 51820 };
 type Settings = typeof DEFAULT_SETTINGS;
 
 function loadSettings(): Settings {
@@ -29,10 +28,6 @@ function loadSettings(): Settings {
     s = { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") };
   } catch {
     s = { ...DEFAULT_SETTINGS };
-  }
-  if (navigator.platform.toLowerCase().includes("mac") && s.ca === LEGACY_CA) {
-    s.ca = "";
-    saveSettings(s);
   }
   return s;
 }
@@ -1082,7 +1077,7 @@ function openCreateModal() {
           const server = currentServer();
           if (!name) throw new Error("请输入网络名称");
           if (!server) throw new Error("设备尚未绑定授权，请先在设置中绑定");
-          const r: CreateResp = await backend.create({ server, port: s.wgport, ca: s.ca, name, subnet, approvalRequired: false, description, tags, visibility: "" });
+          const r: CreateResp = await backend.create({ server, port: s.wgport, name, subnet, approvalRequired: false, description, tags, visibility: "" });
           const modalEl = body;
           const mBody = modalEl.querySelector<HTMLElement>(".modal-body")!;
           const mFoot = modalEl.querySelector<HTMLElement>(".modal-foot")!;
@@ -1193,9 +1188,8 @@ function openJoinModal() {
           bindBtn.disabled = true;
           bindResult.className = "msg"; bindResult.textContent = "正在绑定…";
           try {
-            const ca = s.ca;
-            await backend.bind({ server: FIXED_SERVER, ca, code });
-            saveSettings({ ...loadSettings(), server: FIXED_SERVER, ca });
+            await backend.bind({ server: FIXED_SERVER, code });
+            saveSettings({ ...loadSettings(), server: FIXED_SERVER });
             bindResult.className = "msg ok"; bindResult.textContent = `已绑定，正在加入…`;
             await then();
           } catch (e) {
@@ -1213,7 +1207,6 @@ function openJoinModal() {
         result.className = "msg";
         result.textContent = "";
         try {
-          const ca = s.ca;
           let link = (body.querySelector("#m-link") as HTMLInputElement).value.trim();
           if (!link) {
             const nid = (body.querySelector("#m-nid") as HTMLInputElement).value.trim();
@@ -1232,7 +1225,7 @@ function openJoinModal() {
           const doJoin = async () => {
             const server = FIXED_SERVER;
             try {
-              const r: JoinResp = await backend.join({ server, port: s.wgport, ca, link });
+              const r: JoinResp = await backend.join({ server, port: s.wgport, link });
               result.className = "msg ok";
               if (r.status === "pending") {
                 result.innerHTML = `<p>已提交加入请求，等待网络创建者批准。</p><p class="hint">批准后本机会自动加入并连接；也可在上方「待批准 · 加入请求」卡片中取消。</p>`;
@@ -1327,8 +1320,8 @@ function openAuthBindModal() {
         result.className = "msg";
         result.textContent = "正在授权…";
         try {
-          await backend.bind({ server: FIXED_SERVER, ca: s.ca, code });
-          saveSettings({ ...loadSettings(), server: FIXED_SERVER, ca: s.ca });
+          await backend.bind({ server: FIXED_SERVER, code });
+          saveSettings({ ...loadSettings(), server: FIXED_SERVER });
           toast("设备已授权");
           closeModal();
           await refresh();
@@ -1385,7 +1378,6 @@ function openSettingsModal() {
     body: `<div class="settings-block">
         <div class="row"><label>授权期限</label><span id="s-auth-expiry" class="value">…</span></div>
         <div class="row"><label>设备授权码</label><input id="s-code" type="text" placeholder="管理端生成的设备授权码（仅用于链接，不保存）" autocomplete="off" /></div>
-        <div class="row"><label>CA 证书路径</label><input id="s-ca" type="text" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
         <div class="settings-actions">
           <button id="s-bind" class="btn">绑定设备</button>
         </div>
@@ -1426,7 +1418,6 @@ function openSettingsModal() {
       }
 
       body.querySelector("#s-bind")?.addEventListener("click", async () => {
-        const ca = (body.querySelector("#s-ca") as HTMLInputElement).value.trim();
         const code = (body.querySelector("#s-code") as HTMLInputElement).value.trim();
         if (!code) { bindResult.className = "msg"; bindResult.textContent = "请输入设备授权码"; return; }
         if (bindBtn) {
@@ -1435,8 +1426,8 @@ function openSettingsModal() {
         }
         bindResult.className = "msg"; bindResult.textContent = "正在链接服务器，请稍候…";
         try {
-          await backend.bind({ server: FIXED_SERVER, ca, code });
-          saveSettings({ ...loadSettings(), server: FIXED_SERVER, ca });
+          await backend.bind({ server: FIXED_SERVER, code });
+          saveSettings({ ...loadSettings(), server: FIXED_SERVER });
           bindResult.className = "msg ok"; bindResult.textContent = "已绑定设备授权";
           toast("已绑定设备授权");
           skipOnboarding = true;
@@ -1511,8 +1502,6 @@ function renderOnboarding() {
   const ov = $("#onboarding");
   if (!ov) return;
   const s = loadSettings();
-  const caInput = $("#onb-ca") as HTMLInputElement;
-  if (caInput) caInput.value = s.ca;
   const daemonSection = $("#onb-daemon");
   if (daemonSection) daemonSection.hidden = !!status;
 
@@ -1542,13 +1531,12 @@ function renderOnboarding() {
 
   const bindResult = $("#onb-bind-result") as HTMLElement;
   ($("#onb-bind") as HTMLButtonElement).onclick = async () => {
-    const ca = ($("#onb-ca") as HTMLInputElement).value.trim();
     const code = ($("#onb-code") as HTMLInputElement).value.trim();
     if (!code) { bindResult.className = "msg"; bindResult.textContent = "请输入设备授权码"; return; }
     bindResult.className = "msg"; bindResult.textContent = "正在绑定…";
     try {
-      await backend.bind({ server: FIXED_SERVER, ca, code });
-      saveSettings({ ...loadSettings(), server: FIXED_SERVER, ca });
+      await backend.bind({ server: FIXED_SERVER, code });
+      saveSettings({ ...loadSettings(), server: FIXED_SERVER });
       bindResult.className = "msg ok"; bindResult.textContent = "已绑定设备授权";
       toast("已绑定设备授权");
       await finishOnboarding();

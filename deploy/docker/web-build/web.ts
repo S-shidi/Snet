@@ -92,10 +92,10 @@ const backend: Backend = {
     try { return await api("/status"); } catch { return null; }
   },
 
-  async create(params: { server: string; port: number; ca: string; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp> {
+  async create(params: { server: string; port: number; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp> {
     const r = await api("/create", jsonPost("/create", {
       name: params.name, subnet: params.subnet, port: params.port,
-      ca: params.ca, approvalRequired: params.approvalRequired,
+      approvalRequired: params.approvalRequired,
       description: params.description ?? "", tags: params.tags ?? [], visibility: params.visibility ?? "",
     }));
     const link = `snet://join?nid=${encodeURIComponent(r.networkId)}&code=${encodeURIComponent(r.pairingCode)}` +
@@ -103,14 +103,14 @@ const backend: Backend = {
     return { ...r, link };
   },
 
-  async join(params: { server: string; port: number; ca: string; link: string }): Promise<JoinResp> {
+  async join(params: { server: string; port: number; link: string }): Promise<JoinResp> {
     return api("/join", jsonPost("/join", {
-      link: params.link, port: params.port, ca: params.ca,
+      link: params.link, port: params.port,
     }));
   },
 
-  async bind(params: { server: string; ca: string; code: string }): Promise<void> {
-    await api("/bind", jsonPost("/bind", { server: params.server, ca: params.ca, code: params.code }));
+  async bind(params: { server: string; code: string }): Promise<void> {
+    await api("/bind", jsonPost("/bind", { server: params.server, code: params.code }));
   },
 
   async rejoin(nid: string): Promise<void> { await api("/rejoin", jsonPost("/rejoin", { nid })); },
@@ -235,7 +235,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!code) { result.className = "msg"; result.textContent = "请输入授权码"; return; }
     result.className = "msg"; result.textContent = "正在绑定…";
     try {
-      await backend.bind({ server: FIXED_SERVER, ca: "", code });
+      await backend.bind({ server: FIXED_SERVER, code });
       result.className = "msg ok"; result.textContent = "已绑定设备授权";
       startApp();
     } catch (e) { result.className = "msg"; result.textContent = "绑定失败: " + e; }

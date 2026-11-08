@@ -37,7 +37,6 @@ type PathManager struct {
 	nodeID     string
 	token      string
 	serverAddr string
-	serverCA   string
 	wgAddr     *net.UDPAddr
 
 	mu         sync.RWMutex
@@ -110,14 +109,13 @@ type directPeer struct {
 
 // NewPathManager builds a relay-first path manager for one network. Run must
 // be started before traffic is expected.
-func NewPathManager(ctx context.Context, nid string, nc *NetworkCfg, serverAddr, serverCA string) *PathManager {
+func NewPathManager(ctx context.Context, nid string, nc *NetworkCfg, serverAddr string) *PathManager {
 	pm := &PathManager{
 		ctx:         ctx,
 		nid:         nid,
 		nodeID:      nc.NodeID,
 		token:       nc.Token,
 		serverAddr:  serverAddr,
-		serverCA:    serverCA,
 		wgAddr:      &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: nc.Port},
 		ownKey:      protocol.RelayNodeKey(nc.NodeID),
 		shims:       make(map[string]*peerShim),
@@ -408,7 +406,7 @@ func (pm *PathManager) Status() map[string]any {
 }
 
 func (pm *PathManager) refreshRelay() {
-	api := newAPIClient(pm.serverAddr, pm.serverCA, pm.ctx)
+	api := newAPIClient(pm.serverAddr, pm.ctx)
 	ticket, err := api.RelayTicket(pm.nid, pm.token)
 	if err != nil {
 		log.Printf("path %s: relay ticket: %v", pm.nid, err)

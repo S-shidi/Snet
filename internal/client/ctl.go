@@ -42,7 +42,6 @@ type CtlReq struct {
 	Link   string `json:"link"`
 	Nid    string `json:"nid"`
 	Code   string `json:"code"`
-	CA     string `json:"ca"`
 	Name   string `json:"name"`
 	Subnet string `json:"subnet"`
 	NodeID string `json:"nodeId"`
@@ -97,10 +96,6 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			writeCtlErr(w, 400, err)
 			return
 		}
-		d.mu.Lock()
-		prevCA := d.cfg.ServerCAPath
-		d.cfg.ServerCAPath = req.CA
-		d.mu.Unlock()
 		approval := false
 		if req.ApprovalRequired != nil {
 			approval = *req.ApprovalRequired
@@ -117,9 +112,6 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		resp, err := d.Create(server, req.Port, req.Name, req.Subnet, approval,
 			ShareOpt(req.Description, tags, req.Visibility))
 		if err != nil {
-			d.mu.Lock()
-			d.cfg.ServerCAPath = prevCA
-			d.mu.Unlock()
 			writeCtlErr(w, 500, err)
 			return
 		}
@@ -157,15 +149,8 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 				return
 			}
 		}
-		d.mu.Lock()
-		prevCA := d.cfg.ServerCAPath
-		d.cfg.ServerCAPath = req.CA
-		d.mu.Unlock()
 		resp, err := d.Join(server, req.Port, nid, code)
 		if err != nil {
-			d.mu.Lock()
-			d.cfg.ServerCAPath = prevCA
-			d.mu.Unlock()
 			writeCtlErr(w, 500, err)
 			return
 		}
@@ -199,7 +184,7 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			writeCtlErr(w, 400, err)
 			return
 		}
-		if err := d.Bind(server, req.CA, req.Code); err != nil {
+		if err := d.Bind(server, req.Code); err != nil {
 			writeCtlErr(w, 500, err)
 			return
 		}

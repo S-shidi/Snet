@@ -71,9 +71,9 @@ func TestPathManagerRelayLoopbackShims(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pmA := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: wgA.LocalAddr().(*net.UDPAddr).Port}, api.URL, "")
+	pmA := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: wgA.LocalAddr().(*net.UDPAddr).Port}, api.URL)
 	defer pmA.Close()
-	pmB := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-b", Token: "tok-b", Port: wgB.LocalAddr().(*net.UDPAddr).Port}, api.URL, "")
+	pmB := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-b", Token: "tok-b", Port: wgB.LocalAddr().(*net.UDPAddr).Port}, api.URL)
 	defer pmB.Close()
 
 	peerA := protocol.Node{ID: "node-a", PublicKey: "a"}
@@ -173,9 +173,9 @@ func TestPathManagerPrefersLANWithoutRelay(t *testing.T) {
 	defer wgA.Close()
 	wgB := mustUDPListener(t)
 	defer wgB.Close()
-	pmA := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: wgA.LocalAddr().(*net.UDPAddr).Port}, "127.0.0.1:9", "")
+	pmA := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: wgA.LocalAddr().(*net.UDPAddr).Port}, "127.0.0.1:9")
 	defer pmA.Close()
-	pmB := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-b", Token: "tok-b", Port: wgB.LocalAddr().(*net.UDPAddr).Port}, "127.0.0.1:9", "")
+	pmB := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-b", Token: "tok-b", Port: wgB.LocalAddr().(*net.UDPAddr).Port}, "127.0.0.1:9")
 	defer pmB.Close()
 
 	connA := pmA.ensureDirectConn(false)
@@ -228,7 +228,7 @@ func TestPathManagerPrefersLANWithoutRelay(t *testing.T) {
 func TestPathManagerNATClassification(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	pm.mu.Lock()
 	pm.selfPublicIP = net.ParseIP("203.0.113.5")
 	pm.mu.Unlock()
@@ -295,7 +295,7 @@ func mustUDPListener(t *testing.T) *net.UDPConn {
 func TestPathManagerSelectsFirstReadyRelayLink(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	down := mustUDPListener(t)
 	ready := mustUDPListener(t)
@@ -350,7 +350,7 @@ func TestPathManagerSelectsFirstReadyRelayLink(t *testing.T) {
 func TestPathManagerRegistersDirectOnEveryReadyRelay(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	direct := mustUDPListener(t)
 	relayA := mustUDPListener(t)
@@ -393,7 +393,7 @@ func TestPathManagerRegistersDirectOnEveryReadyRelay(t *testing.T) {
 func TestPathManagerReconnectsSilentRelayLink(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	conn := mustUDPListener(t)
 	defer conn.Close()
@@ -430,7 +430,7 @@ func mustPathAddr(t *testing.T, raw string) *net.UDPAddr {
 func TestPathManagerRejectsWrongLANPort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	key := protocol.RelayNodeKey("node-b")
 	dp := &directPeer{lanAddr: mustPathAddr(t, "192.168.1.10:51820")}
 	pm.mu.Lock()
@@ -450,7 +450,7 @@ func TestPathManagerRejectsWrongLANPort(t *testing.T) {
 func TestPathManagerRejectsUnknownPublicSource(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	key := protocol.RelayNodeKey("node-b")
 	dp := &directPeer{relayAddr: mustPathAddr(t, "203.0.113.5:51820")}
 	pm.mu.Lock()
@@ -470,7 +470,7 @@ func TestPathManagerRejectsUnknownPublicSource(t *testing.T) {
 func TestPathManagerAllowsPublicPortRebinding(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	key := protocol.RelayNodeKey("node-b")
 	dp := &directPeer{relayAddr: mustPathAddr(t, "203.0.113.5:51820")}
 	pm.mu.Lock()
@@ -491,7 +491,7 @@ func TestPathManagerAllowsPublicPortRebinding(t *testing.T) {
 func TestPathManagerRejectsDirectFrameWhenNoCandidate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	key := protocol.RelayNodeKey("node-b")
 	dp := &directPeer{}
 	pm.mu.Lock()
@@ -511,7 +511,7 @@ func TestPathManagerRejectsDirectFrameWhenNoCandidate(t *testing.T) {
 func TestPathManagerCandidatePriority(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	dp := &directPeer{
 		lanAddr:   mustPathAddr(t, "192.168.1.10:51820"),
 		v6Addr:    mustPathAddr(t, "[2001:db8::1]:51820"),
@@ -534,7 +534,7 @@ func TestPathManagerCandidatePriority(t *testing.T) {
 func TestPathManagerLowPriorityAckDoesNotOverrideHighPriority(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	key := protocol.RelayNodeKey("node-b")
 	lan := mustPathAddr(t, "192.168.1.10:51820")
 	dp := &directPeer{
@@ -565,7 +565,7 @@ func TestPathManagerLowPriorityAckDoesNotOverrideHighPriority(t *testing.T) {
 func TestPathManagerAcceptsDataFromLowerPrioritySourceWhenHigherReady(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	key := protocol.RelayNodeKey("node-b")
 	lan := mustPathAddr(t, "192.168.1.10:51820")
@@ -615,7 +615,7 @@ func TestPathManagerAcceptsDataFromLowerPrioritySourceWhenHigherReady(t *testing
 func TestPathManagerSymmetricNATStaysRelay(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	key := protocol.RelayNodeKey("node-b")
 	directConn := mustUDPListener(t)
@@ -690,7 +690,7 @@ func TestPathManagerSymmetricNATStaysRelay(t *testing.T) {
 func TestPathManagerDirectSendFailureFallsBack(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	key := protocol.RelayNodeKey("node-b")
 	lan := mustPathAddr(t, "192.168.1.10:51820")
@@ -751,7 +751,7 @@ func TestPathManagerDirectSendFailureFallsBack(t *testing.T) {
 func TestPathManagerUpgradesToHigherPriorityCandidate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	key := protocol.RelayNodeKey("node-b")
 	directConn := mustUDPListener(t)
@@ -810,7 +810,7 @@ func TestPathManagerUpgradesToHigherPriorityCandidate(t *testing.T) {
 func TestPathManagerDoesNotUpgradeBeforeInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	key := protocol.RelayNodeKey("node-b")
 	directConn := mustUDPListener(t)
@@ -854,7 +854,7 @@ func TestPathManagerDoesNotUpgradeBeforeInterval(t *testing.T) {
 func TestPathManagerHelloTimeoutReconnects(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	relay := mustUDPListener(t)
 	defer relay.Close()
@@ -916,7 +916,7 @@ func TestPathManagerHelloTimeoutReconnects(t *testing.T) {
 func TestPathManagerDoesNotReconnectBeforeHelloTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	relay := mustUDPListener(t)
 	defer relay.Close()
@@ -953,7 +953,7 @@ func TestPathManagerDoesNotReconnectBeforeHelloTimeout(t *testing.T) {
 func TestPathManagerSilentLinkReconnectAfter30s(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	relay := mustUDPListener(t)
 	defer relay.Close()
@@ -1016,7 +1016,7 @@ func TestPathManagerSilentLinkReconnectAfter30s(t *testing.T) {
 func TestPathManagerKeepsLinkBefore30sSilence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	relay := mustUDPListener(t)
 	defer relay.Close()
@@ -1055,7 +1055,7 @@ func TestPathManagerKeepsLinkBefore30sSilence(t *testing.T) {
 func TestPathManagerReconnectsOnlySilentRelayLink(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	relayA := mustUDPListener(t)
 	defer relayA.Close()
@@ -1154,7 +1154,7 @@ func TestPathManagerReconnectsOnlySilentRelayLink(t *testing.T) {
 func TestPathManagerDirectPingCadence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	key := protocol.RelayNodeKey("node-b")
 	directConn := mustUDPListener(t)
@@ -1201,7 +1201,7 @@ func TestPathManagerDirectPingCadence(t *testing.T) {
 func TestPathManagerDoesNotPingBeforeInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	key := protocol.RelayNodeKey("node-b")
 	directConn := mustUDPListener(t)
@@ -1244,7 +1244,7 @@ func TestPathManagerDoesNotPingBeforeInterval(t *testing.T) {
 func TestPathManagerStatusPeerDirectFields(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9", "")
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
 	defer pm.Close()
 	key := protocol.RelayNodeKey("node-b")
 	lan := mustPathAddr(t, "192.168.1.10:51820")

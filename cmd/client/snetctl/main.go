@@ -120,10 +120,9 @@ func main() {
 		name := fs.String("name", "", "network display name")
 		subnet := fs.String("subnet", "", "network subnet (default: server auto-assigns)")
 		approval := fs.Bool("approval", false, "require owner approval for new members")
-		ca := fs.String("ca-path", "", "path to pinned server TLS certificate (PEM)")
 		fs.Parse(args[1:])
 		var out map[string]any
-		if err := c.do(http.MethodPost, "/ctl/create", map[string]any{"port": *port, "name": *name, "subnet": *subnet, "approvalRequired": *approval, "ca": *ca}, &out); err != nil {
+		if err := c.do(http.MethodPost, "/ctl/create", map[string]any{"port": *port, "name": *name, "subnet": *subnet, "approvalRequired": *approval}, &out); err != nil {
 			fatal(err)
 		}
 		printJSON(out)
@@ -134,10 +133,9 @@ func main() {
 		link := fs.String("link", "", "snet:// join link")
 		nid := fs.String("nid", "", "network id")
 		code := fs.String("code", "", "pairing code")
-		ca := fs.String("ca-path", "", "path to pinned server TLS certificate (PEM)")
 		fs.Parse(args[1:])
 		var out map[string]any
-		if err := c.do(http.MethodPost, "/ctl/join", map[string]any{"port": *port, "link": *link, "nid": *nid, "code": *code, "ca": *ca}, &out); err != nil {
+		if err := c.do(http.MethodPost, "/ctl/join", map[string]any{"port": *port, "link": *link, "nid": *nid, "code": *code}, &out); err != nil {
 			fatal(err)
 		}
 		printJSON(out)
@@ -353,14 +351,13 @@ func main() {
 	case "bind":
 		fs := flag.NewFlagSet("bind", flag.ExitOnError)
 		code := fs.String("code", "", "device authorization code (required)")
-		ca := fs.String("ca-path", "", "path to pinned server TLS certificate (PEM)")
 		fs.Parse(args[1:])
 		if *code == "" {
-			fmt.Fprintln(os.Stderr, "usage: snetctl bind --code CODE [--ca-path PATH]")
+			fmt.Fprintln(os.Stderr, "usage: snetctl bind --code CODE")
 			os.Exit(2)
 		}
 		var out map[string]any
-		if err := c.do(http.MethodPost, "/ctl/bind", map[string]any{"code": *code, "ca": *ca}, &out); err != nil {
+		if err := c.do(http.MethodPost, "/ctl/bind", map[string]any{"code": *code}, &out); err != nil {
 			fatal(err)
 		}
 		printJSON(out)
@@ -398,7 +395,7 @@ commands:
   netinfo    --nid NID
   device-id  [--set ID]
   claim      --nid NID
-  bind       --code CODE [--ca-path PATH]`)
+  bind       --code CODE`)
 	os.Exit(2)
 }
 

@@ -120,17 +120,13 @@ shared/web/types.ts: FIXED_SERVER = "https://snet.uizhi.eu.org:8090"
 
 ### 客户端 TLS 校验
 
-`internal/client/control.go`：
-
-- 有 `serverCaPath` → 用该 PEM 构建 `RootCAs`。
-- 无 CA 且 `SNET_INSECURE_SKIP_VERIFY=1` → `InsecureSkipVerify`（仅应急，不推荐）。
-- 否则使用系统信任库。
+`internal/client/control.go` 使用系统信任库，不读取用户配置的 CA 路径，也没有跳过校验的开关。
 
 当前 VPS 是 Let's Encrypt 公共证书，客户端默认系统信任即可。全新部署建议：
 
 1. 复用现有 Let's Encrypt 证书（最小改动，需 SSH 确认路径）；
 2. 或重新用 certbot 签发同名证书；
-3. 自签仅作为隔离测试，需 `serverCaPath` 或 `SNET_INSECURE_SKIP_VERIFY=1`，不用于生产。
+3. 自签证书不应作为生产方案；客户端不会跳过校验。
 
 ## 5. Relay v2 启用方案
 

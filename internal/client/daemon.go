@@ -268,7 +268,6 @@ type Daemon struct {
 	// Rebuilt whenever the server address or pinned CA path changes.
 	api       *apiClient
 	apiServer string
-	apiCA     string
 	// ctx/cancel scope the Daemon's lifetime; cancelling ctx aborts all
 	// in-flight HTTP requests made through api.
 	ctx    context.Context
@@ -454,12 +453,11 @@ func (d *Daemon) Config() *Config {
 }
 
 func (d *Daemon) apiLocked() *apiClient {
-	if d.api != nil && d.apiServer == d.cfg.ServerAddr && d.apiCA == d.cfg.ServerCAPath {
+	if d.api != nil && d.apiServer == d.cfg.ServerAddr {
 		return d.api
 	}
-	d.api = newAPIClient(d.cfg.ServerAddr, d.cfg.ServerCAPath, d.ctx)
+	d.api = newAPIClient(d.cfg.ServerAddr, d.ctx)
 	d.apiServer = d.cfg.ServerAddr
-	d.apiCA = d.cfg.ServerCAPath
 	return d.api
 }
 
@@ -595,7 +593,6 @@ func (d *Daemon) RotateKeys() error {
 	}
 	d.keyRotating = true
 	serverAddr := d.cfg.ServerAddr
-	serverCA := d.cfg.ServerCAPath
 	type target struct {
 		nid, nodeID, token, name string
 	}
@@ -620,7 +617,7 @@ func (d *Daemon) RotateKeys() error {
 	}
 	newPrivHex := b64ToHex(priv)
 
-	api := newAPIClient(serverAddr, serverCA, d.ctx)
+	api := newAPIClient(serverAddr, d.ctx)
 	for _, t := range targets {
 		if err := api.UpdateNodePublicKeyByToken(t.nid, t.nodeID, t.token, pub); err != nil {
 			return fmt.Errorf("rotate %s (%s): %w", t.nid, t.name, err)
@@ -675,13 +672,11 @@ func NormalizeServer(s string) string { return normalizeServer(s) }
 type serverSwitch struct {
 	changed  bool
 	prevAddr string
-	prevCA   string
 }
 
 func (d *Daemon) beginSwitchLocked(target string) serverSwitch {
 	return serverSwitch{
 		prevAddr: d.cfg.ServerAddr,
-		prevCA:   d.cfg.ServerCAPath,
 		changed:  normalizeServer(target) != normalizeServer(d.cfg.ServerAddr),
 	}
 }
@@ -717,7 +712,6 @@ func (d *Daemon) commitSwitchLocked(sw serverSwitch) {
 // Nothing was torn down, so the previous server's networks stay fully intact.
 func (d *Daemon) rollbackSwitchLocked(sw serverSwitch) {
 	d.cfg.ServerAddr = sw.prevAddr
-	d.cfg.ServerCAPath = sw.prevCA
 	_ = d.save()
 }
 
@@ -976,7 +970,7 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 // different server clears the previous server's networks on success; a failed
 // bind leaves them untouched. After a successful bind, the device's historical
 // networks are synced from the server (reinstall recovery).
-func (d *Daemon) Bind(serverAddr, caPath, code string) error {
+func (d *Daemon) Bind(serverAddr, code string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	sw := d.beginSwitchLocked(serverAddr)
@@ -984,7 +978,6 @@ func (d *Daemon) Bind(serverAddr, caPath, code string) error {
 		d.rollbackSwitchLocked(sw)
 		return err
 	}
-	d.cfg.ServerCAPath = caPath
 	api := d.apiLocked()
 	resp, err := api.BindDevice(d.cfg.DeviceID, d.publicKeyLocked(), code, d.hostnameLocked())
 	if err != nil {
@@ -2245,7 +2238,7 @@ func (d *Daemon) pollLoop(nid string) {
 		}
 		if st.RelayV2 != nil && st.RelayV2.Enabled {
 			if rt.path == nil {
-				rt.path = NewPathManager(d.ctx, nid, nc, d.cfg.ServerAddr, d.cfg.ServerCAPath)
+				rt.path = NewPathManager(d.ctx, nid, nc, d.cfg.ServerAddr)
 				go rt.path.Run()
 			}
 			subnets := d.DetectLocalSubnets()
@@ -2362,7 +2355,6 @@ func (d *Daemon) probeLoop(nid string) {
 			return
 		}
 		serverAddr := d.cfg.ServerAddr
-		serverCA := d.cfg.ServerCAPath
 		relayAddr := d.relayEP[nid]
 		port := nc.Port
 		d.mu.Unlock()
@@ -2409,7 +2401,7 @@ func (d *Daemon) probeLoop(nid string) {
 		lastLocal = localEP
 		lastV6 = epV6
 		lastMapped = mappedEP
-		api := newAPIClient(serverAddr, serverCA, d.ctx)
+		api := newAPIClient(serverAddr, d.ctx)
 		if ip != "" {
 			ep := net.JoinHostPort(ip, fmt.Sprint(port))
 			if mappedEP != "" {

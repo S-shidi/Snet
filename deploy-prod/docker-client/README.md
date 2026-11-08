@@ -147,7 +147,6 @@ chmod 0600 /volume1/docker/snet/etc/config.json
 
 - `serverAddr`: `https://snet.uizhi.eu.org:8090`
 - `wireguardPort`: A 用 `52100`，B 用 `52101`
-- `serverCaPath`: 空 = 系统信任（Let's Encrypt）
 - `networks`: 首次为空
 - `natMapping`: `true`
 

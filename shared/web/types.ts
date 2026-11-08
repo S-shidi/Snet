@@ -76,11 +76,11 @@ export interface Backend {
   /** Get daemon status (returns null on failure) */
   status(): Promise<DaemonStatus | null>;
   /** Create a network */
-  create(params: { server: string; port: number; ca: string; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp>;
+  create(params: { server: string; port: number; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp>;
   /** Join a network */
-  join(params: { server: string; port: number; ca: string; link: string }): Promise<JoinResp>;
+  join(params: { server: string; port: number; link: string }): Promise<JoinResp>;
   /** Bind device to server */
-  bind(params: { server: string; ca: string; code: string }): Promise<void>;
+  bind(params: { server: string; code: string }): Promise<void>;
   /** Rejoin (connect) a network */
   rejoin(nid: string): Promise<void>;
   /** Leave (disconnect) a network */

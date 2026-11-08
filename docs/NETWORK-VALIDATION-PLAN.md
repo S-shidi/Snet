@@ -85,7 +85,7 @@ Host
 - 两个节点不能共用 `/dev/net/tun` 对应的同一 netns；Docker 下应使用独立 netns（bridge 或独立容器），不要简单用两个 host-network 容器共享同一 host netns。
 - 旧 relay 池 51820-52075 与 snetd WG 52100+ 不冲突；Relay v2 8092 也不冲突。
 - **不要连生产 VPS**：会污染生产网络。应本地起 server + relay。
-- 但客户端固定服务器地址是硬约束：本地 server 需要 `/etc/hosts` 将 `snet.uizhi.eu.org` 指向 127.0.0.1，并给本地 server 配置该 hostname 的 TLS 证书（客户端 `--ca-path` 指向自签 CA），或由上游放宽 `enforceServer`。这是当前单机方案的关键 workaround，未验证。
+- 但客户端固定服务器地址是硬约束：本地 server 需要 `/etc/hosts` 将 `snet.uizhi.eu.org` 指向 127.0.0.1，并给本地 server 配置该 hostname 的**系统信任** TLS 证书（或把本地 CA 装入系统信任库），或由上游放宽 `enforceServer`；客户端已不再支持 `--ca-path`。这是当前单机方案的关键 workaround，未验证。
 
 ### 2.2 3 节点
 

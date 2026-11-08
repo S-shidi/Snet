@@ -3,14 +3,11 @@ package client
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,13 +36,10 @@ type apiClient struct {
 	warned bool
 }
 
-// newAPIClient builds an HTTP client for the coordination server. For https
-// servers, caPath pins the server's TLS certificate (PEM) as the only trust
-// root. Without a pinned CA the client verifies against the system trust store
-// (so public certificates such as Let's Encrypt work out of the box); set
-// SNET_INSECURE_SKIP_VERIFY=1 to explicitly skip verification for self-signed
-// deployments that have not pinned their CA.
-func newAPIClient(server, caPath string, ctx context.Context) *apiClient {
+// newAPIClient builds an HTTP client for the coordination server. TLS uses
+// the system trust store; there is no per-server CA pinning or skip-verify
+// escape hatch.
+func newAPIClient(server string, ctx context.Context) *apiClient {
 	if !strings.HasPrefix(server, "http") {
 		server = "http://" + server
 	}
@@ -58,26 +52,6 @@ func newAPIClient(server, caPath string, ctx context.Context) *apiClient {
 		MaxIdleConnsPerHost: 4,
 		IdleConnTimeout:     90 * time.Second,
 		ForceAttemptHTTP2:   false, // disabled to avoid HTTP/2 stream errors
-	}
-	if strings.HasPrefix(server, "https://") {
-		if caPath != "" {
-			pem, err := os.ReadFile(caPath)
-			if err != nil {
-				log.Printf("ca: read %s: %v", caPath, err)
-			} else if pool := x509.NewCertPool(); pool.AppendCertsFromPEM(pem) {
-				transport.TLSClientConfig = &tls.Config{RootCAs: pool}
-			} else {
-				log.Printf("ca: no valid certificates in %s", caPath)
-			}
-		}
-		if transport.TLSClientConfig == nil {
-			if os.Getenv("SNET_INSECURE_SKIP_VERIFY") == "1" {
-				log.Printf("warn: SNET_INSECURE_SKIP_VERIFY=1 set, skipping TLS verification for %s", server)
-				transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-			} else {
-				transport.TLSClientConfig = &tls.Config{} // system trust store
-			}
-		}
 	}
 	httpClient := &http.Client{Transport: transport, Timeout: 30 * time.Second}
 	return &apiClient{server: strings.TrimRight(server, "/"), http: httpClient, ctx: ctx}
