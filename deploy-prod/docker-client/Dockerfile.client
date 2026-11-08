@@ -1,7 +1,31 @@
-# Prebuilt binary image: no Go toolchain on the client host.
+# Stage 1: build shared/web using the Docker adapter.
+# shared/web has no package.json; deploy/docker/web-build is the build entry.
+FROM node:20-alpine AS webbuild
+WORKDIR /app
+
+COPY deploy/docker/web-build/package.json deploy/docker/web-build/package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY shared/web ./shared/web
+COPY deploy/docker/web-build/web.ts ./deploy/docker/web-build/web.ts
+
+RUN npx --yes esbuild@0.25.12 deploy/docker/web-build/web.ts \
+      --bundle --format=iife --target=es2022 --minify \
+      --outfile=dist/app.js \
+ && cp shared/web/index.html shared/web/styles.css dist/
+
+# Stage 2: runtime with snetd + nginx + supervisor.
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates nginx supervisor
+
 ARG BIN_ARCH=amd64
 COPY dist-deploy/linux-${BIN_ARCH}/snetd /usr/local/bin/snetd
-EXPOSE 19432/tcp 52100/udp
-ENTRYPOINT ["/usr/local/bin/snetd"]
+COPY --from=webbuild /app/dist /usr/share/nginx/html
+COPY deploy-prod/docker-client/nginx.conf /etc/nginx/snet.conf.template
+COPY deploy-prod/docker-client/nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
+COPY deploy-prod/docker-client/supervisord.conf /etc/supervisord.conf
+
+RUN chmod +x /usr/local/bin/snetd /usr/local/bin/nginx-entrypoint.sh
+
+EXPOSE 8080
+CMD ["supervisord", "-c", "/etc/supervisord.conf"]

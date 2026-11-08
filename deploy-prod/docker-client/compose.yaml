@@ -1,7 +1,6 @@
 services:
   snetd:
-    # Registry image (HTTP + basic auth). Run docker login 66.187.6.46:5000 -u snet first.
-    # Requires insecure-registries for 66.187.6.46:5000; offline tar fallback in README.
+    # Combined image: snetd + nginx + shared/web, supervised by supervisord.
     image: 66.187.6.46:5000/snet-client:latest
     container_name: snetd
     restart: unless-stopped
@@ -12,25 +11,3 @@ services:
       - /dev/net/tun:/dev/net/tun
     volumes:
       - /etc/snet:/etc/snet
-    command:
-      - "-config"
-      - "/etc/snet/config.json"
-      # Bind on all interfaces so the bridge web container can reach it via
-      # host.docker.internal. Restrict 19432/tcp with the host firewall.
-      - "-ctl"
-      - "0.0.0.0:19432"
-      - "-device-id-file"
-      - "/etc/snet/device.id"
-
-  web:
-    image: snet-web:latest
-    container_name: snet-web
-    restart: unless-stopped
-    ports:
-      - "8080:80"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - /etc/snet:/etc/snet:ro
-    depends_on:
-      - snetd
