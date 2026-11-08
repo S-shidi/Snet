@@ -7,11 +7,11 @@
 ## 0. 新鲜度与真相源
 
 ```text
-last_verified:        2026-11-07
-verified_code_commit: c379790（快照导入基线 3fb8b97 起算，上游 c379790 未比对）
+last_verified:        2026-11-08
+verified_code_commit: 8b50a64（代码/测试基线；docs 收口提交后 HEAD 前移）
 verified_worktree:     快照收缩版，git status --porcelain 空
-state:                服务端 + snetd + Web 快照版；Android/Docker 部署/CI/产物已移出；VERSION 缺失，版本锚点不可验证；Go 工具链缺失，go build/test/vet 标待验证
-verified_with:        2026-11-07 收缩后：git log 干净；Go build/vet/test 待工具链；Web 类型检查借外部 tsc v5.9.3 通过
+state:                快照收缩版 + relay/NAT/pathmanager/server 四条线闭环；#11 真机待验证；永久缺口见 WORKSPACE-SNAPSHOT-MAP
+verified_with:        2026-11-08：go test ./... -count=1（389 PASS/0 FAIL，WALL 14.732s）；go test -race ./...（client 4.537s/server 47.357s）；go vet ./... exit 0
 
 `verified_code_commit` 是最后一次跑完整验证的**代码**提交，不要求等于 HEAD；
 只改文档/atlas 的提交不会让它失效。若代码路径有变化，必须重新验证并更新该字段。
@@ -289,3 +289,4 @@ Go 工具链可用后再引入脚本化审计。
 | 2026-10-25 | relay 共享出口最终修复：共享 host 的 pinned flow 不再归因单节点，歧义时 fan-out 全部 sibling node port；`OnRelayFlow` 拒绝为共享 host 写 pin；新增 `SNET_LOCAL_IP` 覆盖容器自报 LAN 端点、同出口 sibling 不再走公共 IP hairpin 直连；SDserver 上报 `10.7.86.222:52100`；禁用同公网出口 sibling 的公共 IP hairpin direct；验证 phone→sdserver 持续 60 包 0% loss，四方互通 | `go test ./...`、`go vet ./...`、VPS 部署、SDserver 重建、Android APK 重建安装、phone→{sdserver,nas,vps} 0% loss、sdserver→{phone,nas,vps} 0% loss |
 | 2026-10-24 | relay 共享出口修复：流归属按 `host:port` 独立节流、共享 host 不猜节点、歧义时从所有 sibling node port fan-out；客户端 direct 单通检测（3×10s TX≥512B/RX=0）回退 relay，并隔离失败候选直到 endpoint 变化；VPS 与 SDserver 客户端均已升级 | `go test ./...`、`go vet ./...`、`./scripts/project-audit.sh`；VPS↔SDserver 双向 0% loss、HTTP 20/20；SDserver→NAS `:8080` 20/20 |
 | 2026-11-07 | 收缩为 server+snetd+web；删除 Android/Docker 部署/CI/产物/过期文档；PROJECT-STRUCTURE.md 删除；tsc 借外部验证通过。 | 外部 tsc v5.9.3 `--noEmit` exit 0；Go build/test/vet 待验证 |
+| 2026-11-08 | 四条线闭环收口：relay T12、NAT P0/P1、pathmanager #1-#10、server 鉴权/路由矩阵/probe；测试 389 PASS/0 FAIL；建立 DECISION-LOG；#11 真机与永久缺口保留 | `go test ./... -count=1`、`go test -race ./...`、`go vet ./...` |
