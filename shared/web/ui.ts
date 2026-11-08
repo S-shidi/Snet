@@ -3,7 +3,7 @@
  * Platform adapters (Desktop/Web/Android) provide a Backend implementation
  * and call init() to wire everything up.
  */
-import { FIXED_SERVER, type Backend, type DaemonStatus, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp } from "./types.js";
+import { FIXED_SERVER, type Backend, type DaemonStatus, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode } from "./types.js";
 import { $, esc, SPIN, fmtBytes, onlineCount, toast, copyText, renderQR, loadQR, openModal, closeModal, confirmDialog, initTabs } from "./utils.js";
 import { subnetCheck, subnetWidgetHTML, subnetWidgetInit } from "./subnet.js";
 
@@ -84,6 +84,9 @@ async function refreshOwnerInfo(force = false) {
 
 /* ── Peer advertised subnets (any member) ─────────────────────── */
 const peerAllowed: Record<string, string[]> = {};
+// Full peer snapshots are kept for the path monitor so it can show names,
+// virtual IPs and direct-path details without issuing another request.
+const peerDetails: Record<string, PeersResp> = {};
 // Member online counts come from the coordination server's LastSeen window
 // (the same source the Android client uses). WireGuard handshake age only
 // proves recent data-plane traffic, so an idle-but-connected member would
@@ -99,6 +102,7 @@ async function refreshPeerSubnets(force = false) {
     (status.networks ?? []).map(async (n) => {
       try {
         const r = await backend.peers(n.networkId);
+        peerDetails[n.networkId] = r;
         const list = r.peers ?? [];
         const selfOnline = r.self ? !!r.self.online : false;
         peerSummary[n.networkId] = {
@@ -112,6 +116,7 @@ async function refreshPeerSubnets(force = false) {
       } catch {
         delete peerAllowed[n.networkId];
         delete peerSummary[n.networkId];
+        delete peerDetails[n.networkId];
       }
     }),
   );
@@ -1572,12 +1577,155 @@ async function finishOnboarding() {
 }
 
 /* ── Status tab ───────────────────────────────────────────────── */
+/* ── Path monitor ─────────────────────────────────────────────── */
+function fmtAgo(sec?: number): string {
+  if (typeof sec !== "number" || sec < 0) return "未知";
+  if (sec < 2) return "刚刚";
+  if (sec < 60) return `${sec} 秒前`;
+  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`;
+  return `${Math.floor(sec / 3600)} 小时前`;
+}
+
+function directKindLabel(pd?: PeerDirect): string {
+  const kind = (pd?.kind || "").toLowerCase();
+  if (kind === "lan") return "LAN";
+  if (kind === "ipv6") return "IPv6";
+  if (kind === "public") return "Public";
+  const addr = pd?.addr || pd?.lan || pd?.ipv6 || pd?.public || "";
+  if (addr.includes(":")) return "IPv6";
+  if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(addr)) return "LAN";
+  return addr ? "Public" : "";
+}
+
+function pathBadge(pd?: PeerDirect): string {
+  const path = pd?.path || "relay";
+  if (path === "direct") {
+    const kind = directKindLabel(pd);
+    return `<span class="path-badge direct">直连${kind ? ` · ${esc(kind)}` : ""}</span>`;
+  }
+  if (path === "probing") return `<span class="path-badge probing">打洞中</span>`;
+  if (path === "discovering") return `<span class="path-badge discovering">发现中</span>`;
+  if (path === "relay") return `<span class="path-badge relay">中继</span>`;
+  return `<span class="path-badge unknown">未知</span>`;
+}
+
+function pathAddr(pd?: PeerDirect): string {
+  return pd?.addr || pd?.public || pd?.ipv6 || pd?.lan || "-";
+}
+
+function pathPeerRow(p: NetNode, pd?: PeerDirect): string {
+  const last = typeof pd?.lastRecvSec === "number"
+    ? `最后活跃 ${fmtAgo(pd.lastRecvSec)}`
+    : "暂无活跃记录";
+  return `<div class="path-peer">
+    <div class="path-peer-main">
+      <div class="path-peer-name">${deviceLabel(p)}</div>
+      <div class="path-peer-meta">
+        <span>虚拟 IP <code>${esc(p.ip || "-")}</code></span>
+        <span>ID <code>${esc(p.id.slice(0, 8))}</code></span>
+      </div>
+    </div>
+    <div class="path-peer-side">
+      ${pathBadge(pd)}
+      <code class="path-peer-addr">${esc(pathAddr(pd))}</code>
+      <span class="path-peer-last">${esc(last)}</span>
+    </div>
+  </div>`;
+}
+
+function pathMonitorHTML(n: NetInfo, r?: PeersResp): { html: string; direct: number; relay: number; probing: number } {
+  const self = r?.self;
+  const selfIp = n.ip || self?.ip || "-";
+  const nat = n.relayPath?.natType || self?.natType || "unknown";
+  const subnets = (n.allowedSubnets?.length ? n.allowedSubnets : self?.allowedSubnets) ?? [];
+  const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
+  const peers = r?.peers ?? [];
+  let direct = 0;
+  let relay = 0;
+  let probing = 0;
+  for (const p of peers) {
+    const path = directMap[p.id]?.path || "relay";
+    if (path === "direct") direct++;
+    else if (path === "relay") relay++;
+    else probing++;
+  }
+  const subnetHTML = subnets.length
+    ? subnets.map((s) => `<span class="path-subnet">${esc(s)}</span>`).join("")
+    : `<span class="muted">未宣告子网</span>`;
+  const p2p = direct > 0
+    ? `<div class="path-p2p-banner"><span class="path-p2p-icon">↯</span><div><b>当前已建立 P2P 直连</b><span>${direct} 个节点正在通过直连传输，延迟更低。</span></div></div>`
+    : "";
+  const peerHTML = !r
+    ? `<div class="path-empty">正在获取成员信息…</div>`
+    : peers.length
+      ? peers.map((p) => pathPeerRow(p, directMap[p.id])).join("")
+      : `<div class="path-empty">当前网络暂无其他节点。分享邀请链接或授权码即可组网。</div>`;
+  return {
+    html: `<div class="path-net">
+      <div class="path-net-head">
+        <div>
+          <div class="path-net-name">${esc(n.name || n.networkId)}</div>
+          <div class="path-net-id">${esc(n.networkId)}</div>
+        </div>
+        ${direct > 0 ? `<span class="path-p2p-pill">P2P ${direct}</span>` : ""}
+      </div>
+      <div class="path-self">
+        <div class="path-self-row">
+          <span class="path-label">本机 TUN IP</span>
+          <code class="path-ip">${esc(selfIp)}</code>
+          <span class="path-nat">NAT 类型 <b>${esc(nat)}</b></span>
+        </div>
+        <div class="path-subnets"><span class="path-label">宣告子网</span>${subnetHTML}</div>
+      </div>
+      ${p2p}
+      <div class="path-peers">${peerHTML}</div>
+    </div>`,
+    direct,
+    relay,
+    probing,
+  };
+}
+
+function renderPathMonitor() {
+  const box = $("#path-monitor");
+  if (!box) return;
+  const summary = $("#path-monitor-summary");
+  const nets = status?.networks ?? [];
+  if (!status) {
+    box.innerHTML = `<p class="muted">后台服务未运行，无法读取路径状态</p>`;
+    if (summary) summary.textContent = "";
+    return;
+  }
+  if (!nets.length) {
+    box.innerHTML = `<p class="muted">未加入任何网络</p>`;
+    if (summary) summary.textContent = "";
+    return;
+  }
+  let direct = 0;
+  let relay = 0;
+  let probing = 0;
+  const parts = nets.map((n) => {
+    const r = pathMonitorHTML(n, peerDetails[n.networkId]);
+    direct += r.direct;
+    relay += r.relay;
+    probing += r.probing;
+    return r.html;
+  });
+  box.innerHTML = parts.join("");
+  if (summary) {
+    const bits = [`${direct} 直连`, `${relay} 中继`];
+    if (probing) bits.push(`${probing} 打洞中`);
+    summary.textContent = bits.join(" · ");
+  }
+}
+
 function renderStatus() {
   const deviceId = $("#device-id");
   const svcWgport = $("#svc-wgport");
   const tunnelDetail = $("#tunnel-detail");
   const statusJson = $("#status-json");
   renderAuthCard();
+  renderPathMonitor();
   if (!status) {
     if (deviceId) deviceId.textContent = "-";
     if (svcWgport) svcWgport.textContent = "-";

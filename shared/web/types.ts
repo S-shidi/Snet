@@ -4,6 +4,26 @@
 export const FIXED_SERVER = "https://snet.uizhi.eu.org:8090";
 
 export type PeerStats = { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number };
+export type PeerDirect = {
+  path?: string;
+  kind?: string;
+  addr?: string;
+  lan?: string;
+  ipv6?: string;
+  public?: string;
+  lastRecvSec?: number;
+};
+export type RelayPath = {
+  mode?: string;
+  relay?: string;
+  ready?: boolean;
+  natType?: string;
+  directReady?: number;
+  directPeers?: number;
+  relayReady?: number;
+  relayCandidates?: number;
+  peerDirect?: Record<string, PeerDirect>;
+};
 export type NetInfo = {
   networkId: string;
   name?: string;
@@ -22,6 +42,7 @@ export type NetInfo = {
   visibility?: string;
   role?: string;
   serverState?: string;
+  relayPath?: RelayPath;
 };
 export type PendingJoin = {
   pendingId: string;
@@ -65,7 +86,7 @@ export type NetInfoDetail = {
   pending?: Array<{ id: string; publicKey: string; deviceId?: string; createdAt?: string; deviceName?: string }>;
   nodes?: Array<{ id: string; ip: string; deviceId?: string; online?: boolean; allowedSubnets?: string[]; role?: string; publicKey?: string }>;
 };
-export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; online?: boolean; allowedSubnets?: string[]; role?: string };
+export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; deviceName?: string; online?: boolean; allowedSubnets?: string[]; role?: string; natType?: string };
 export type PeersResp = { peers?: NetNode[]; self?: NetNode; subnet?: string; approvalRequired?: boolean };
 export type CreateResp = { networkId: string; ip: string; pairingCode: string; link: string };  
 export type JoinResp = { ip?: string; networkId?: string; status?: string; pendingId?: string };

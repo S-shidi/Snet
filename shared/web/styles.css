@@ -324,6 +324,77 @@ header {
   overflow-x: auto; white-space: pre-wrap; word-break: break-all; user-select: text;
 }
 
+/* ── path monitor ───────────────────────── */
+.path-net + .path-net {
+  margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border);
+}
+.path-net-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+}
+.path-net-name { font-size: 14px; font-weight: 600; }
+.path-net-id { margin-top: 3px; font-size: 11px; color: var(--dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.path-p2p-pill {
+  display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px;
+  background: var(--ok-soft); color: var(--ok); font-size: 11.5px; font-weight: 600; white-space: nowrap;
+}
+.path-self {
+  margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border);
+  border-radius: var(--radius-s); background: var(--bg2);
+}
+.path-self-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.path-label { color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: .2px; }
+.path-ip { font-size: 14px; font-weight: 600; }
+.path-nat { color: var(--dim); font-size: 12px; }
+.path-nat b { color: var(--text); }
+.path-subnets { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.path-subnet {
+  padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg); color: var(--text); font-size: 11.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.path-p2p-banner {
+  display: flex; align-items: flex-start; gap: 10px; margin: 12px 0;
+  padding: 10px 12px; border: 1px solid rgba(52,199,123,.35);
+  border-radius: var(--radius-s); background: var(--ok-soft);
+}
+.path-p2p-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex: 0 0 22px; border-radius: 50%;
+  background: var(--ok); color: #fff; font-size: 15px; font-weight: 700;
+}
+.path-p2p-banner b { display: block; color: var(--ok); font-size: 12.5px; }
+.path-p2p-banner span { display: block; margin-top: 2px; color: var(--dim); font-size: 11.5px; }
+.path-peers { display: grid; gap: 8px; margin-top: 12px; }
+.path-peer {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-s);
+  background: var(--card);
+}
+.path-peer-main { min-width: 0; }
+.path-peer-name { font-size: 13px; font-weight: 600; }
+.path-peer-meta {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px;
+  color: var(--dim); font-size: 11.5px;
+}
+.path-peer-meta code { padding: 1px 5px; border-radius: 4px; background: var(--bg2); font-size: 11px; }
+.path-peer-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; max-width: 46%; }
+.path-peer-addr { color: var(--dim); font-size: 11px; word-break: break-all; text-align: right; }
+.path-peer-last { color: var(--dim); font-size: 11px; }
+.path-badge {
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px;
+  border-radius: 999px; font-size: 11.5px; font-weight: 600; line-height: 18px; white-space: nowrap;
+}
+.path-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.path-badge.direct { background: var(--ok-soft); color: var(--ok); }
+.path-badge.relay { background: var(--warn-soft); color: var(--warn); }
+.path-badge.probing { background: var(--accent-soft); color: var(--accent2); }
+.path-badge.discovering { background: rgba(154,163,178,.12); color: var(--dim); }
+.path-badge.unknown { background: rgba(154,163,178,.12); color: var(--dim); }
+.path-empty {
+  padding: 14px; border: 1px dashed var(--border2); border-radius: var(--radius-s);
+  color: var(--dim); font-size: 12px; text-align: center;
+}
+
 /* ── modal ──────────────────────────────── */
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(4,6,12,.6); backdrop-filter: blur(3px);
@@ -699,6 +770,11 @@ pre.code { user-select: all; }
 
   /* ── stats grid: 2-col ────────────────── */
   .stats { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+
+  /* ── path monitor: stack peer details ─── */
+  .path-peer { flex-direction: column; }
+  .path-peer-side { align-items: flex-start; max-width: none; }
+  .path-peer-addr { text-align: left; }
 }
 @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
