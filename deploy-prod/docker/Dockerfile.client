@@ -1,23 +1,7 @@
-# syntax=docker/dockerfile:1
-FROM golang:1.26-alpine AS build
-
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-
-COPY cmd/client/snetd ./cmd/client/snetd
-COPY cmd/client/snetctl ./cmd/client/snetctl
-COPY internal ./internal
-
-ARG CGO_ENABLED=0
-ARG GOOS=linux
-RUN CGO_ENABLED=${CGO_ENABLED} GOOS=${GOOS} \
-    go build -trimpath -ldflags="-s -w" -o /out/snetd ./cmd/client/snetd && \
-    CGO_ENABLED=${CGO_ENABLED} GOOS=${GOOS} \
-    go build -trimpath -ldflags="-s -w" -o /out/snetctl ./cmd/client/snetctl
-
+# Prebuilt binary image: no Go toolchain on the client host.
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
-COPY --from=build /out/snetd /usr/local/bin/snetd
-COPY --from=build /out/snetctl /usr/local/bin/snetctl
+ARG BIN_ARCH=amd64
+COPY dist-deploy/linux-${BIN_ARCH}/snetd /usr/local/bin/snetd
+EXPOSE 19432/tcp 52100/udp
 ENTRYPOINT ["/usr/local/bin/snetd"]
