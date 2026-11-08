@@ -467,12 +467,12 @@ Server 路由鉴权矩阵（2026-11-07）：
 - owner 语义：`ownerNID` 对未知/跨网络 token 统一返回 404（隐藏网络存在性）；本网络 member token 通过 `ownerNID` 后被 `requireOwnerLocked` 拒绝，pending approve/deny 返回 401。
 - Admin 实际矩阵（无 token / garbage / static token / session token）：4 条路由均为 401 / 401 / 2xx / 2xx；`GET /admin/networks/{nid}` 200，`PATCH authcodes/{id}/renew` 204，`DELETE devices/{id}` 204，`PATCH devices/{id}` 204。admin 未配置时 4 条均 404。
 - 测试命令：`go test ./internal/server -run 'TestNodeTokenRoutesAuthMatrix|TestAdminRoutesAuthMatrix|TestAdminDisabledReturns404' -v` 全绿；`-race -count=10` 全绿；`go test ./internal/server` 与 `-race` 全包全绿。commits `abbfe59`、`5a1903c`。
-- server #8/#9/#11 已闭环（#9 状态码差异待决策），见下节。
+- server #8/#9/#11 已闭环，见下节。
 
 Server 鉴权剩余项与 probe.go 盘点（2026-11-07）：
 
 - #8 admin session 过期：`TestAdminSessionExpiry` 登录后把 `handler.sessions[hashToken(token)]` 的 `expires` 改为过去时间，请求 `GET /admin/stats` → 401；`sessionValid` 同时删除该过期 map 项，测试断言已删除。
-- #9 pending poll：`TestPendingPollOneShotConsume` 先 `OwnerApprove`，第一次 `GET /api/v1/pending/{id}` → 200 + approved + token；第二次 → **200 `{"status":"gone"}` 且无 token**。任务期望 404，实际是 200/gone；一次性消费（不重复返回凭据）成立，但状态码与期望不符，**当前行为待决策**。`TestPendingPollRateLimited` 使用 `pendingPolls` 10/min/IP：前 10 次 200，第 11 次 429。
+- #9 pending poll：`PendingClaim` 对“从未存在”和“已消费”都返回 `{Status:"gone"}, false, nil`；handler 对两者都写 **200 + `{"status":"gone"}`**，因此两者不可区分，无枚举信号。这是幂等轮询语义（pending/approved/denied/gone 均为 200 + status 字段），不是 404。`TestPendingPollOneShotConsume` 验证第一次 approved+token、第二次 gone 且无 token；`TestPendingPollRateLimited` 使用 `pendingPolls` 10/min/IP：前 10 次 200，第 11 次 429。
 - #11 static-token logout：`TestAdminLogoutStaticTokenNoop` 用 `AdminToken` 请求 `POST /admin/logout` → 204；随后 `GET /admin/stats` 同 token → 200，确认 static token 分支是 no-op，不清 session。
-- probe.go：`ProbeServer` 是独立 UDP echo，默认 `[::]:8091`（`cmd/server/main.go -probe-addr`），对任意 UDP 包回复 `{"endpoint":"observed ip:port"}`；无 Store 访问、无鉴权、无 payload 解析，`n` 被丢弃。调用方是 `cmd/server/main.go:129`；客户端 `internal/client/daemon.go` 的 `probePublicIP` 发送含 networkId/nodeId/token 的 JSON，但 server 不读取 payload、不记录 token。无专项测试（`relay_test.go` 的 probe 只是注释）。建议可选补 `TestProbeServerEchoesSourceEndpoint`（127.0.0.1:0 启动，UDP 发送后读 JSON，直接可测）和 `TestProbeServerClose`；属低优先，未执行。
-- 测试命令：session `-race -count=20` 全绿；pending `-race -count=10` 全绿；static logout 全绿；`go test ./internal/server` / `-race` / `go test ./...` / `go vet ./...` 全绿。commits `3a6b535`、`8e872de`、`270ceb3`。
+- probe.go：`ProbeServer` 是独立 UDP echo，默认 `[::]:8091`（`cmd/server/main.go -probe-addr`），对任意 UDP 包回复 `{"endpoint":"observed ip:port"}`；无 Store 访问、无鉴权、无 payload 解析，`n` 被丢弃。调用方是 `cmd/server/main.go:129`；客户端 `internal/client/daemon.go` 的 `probePublicIP` 发送含 networkId/nodeId/token 的 JSON，但 server 不读取 payload、不记录 token。已补 `TestProbeServerEchoesSourceEndpoint`（127.0.0.1:0，UDP 发送后读 JSON，断言 endpoint 等于客户端 LocalAddr）和 `TestProbeServerClose`（Close 后重新 ListenUDP 成功，验证端口释放）；`-race -count=20` 全绿。
+- 测试命令：session `-race -count=20` 全绿；pending `-race -count=10` 全绿；static logout 全绿；probe `-race -count=20` 全绿；`go test ./internal/server` / `-race` / `go test ./...` / `go vet ./...` 全绿。commits `3a6b535`、`8e872de`、`270ceb3`、`c85d9c8`。
