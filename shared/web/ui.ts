@@ -645,18 +645,27 @@ async function openSubnetRouteModal(nid: string) {
 
   const renderTags = (tags: string[]) =>
     tags.length
-      ? tags.map((s) => `<span class="chip">${esc(s)}<button data-del="${esc(s)}" class="chip-del" title="移除">&times;</button></span>`).join("")
-      : `<span class="muted">未宣告任何子网</span>`;
+      ? tags.map((s) => `<span class="chip chip-active">${esc(s)}<button data-del="${esc(s)}" class="chip-del" title="移除">&times;</button></span>`).join("")
+      : `<span class="muted">暂无生效子网</span>`;
 
   openModal({
     title: `子网路由 · ${nid}`,
     body: `
       <p class="hint">宣告本设备的局域网子网，其他成员可通过 VPN 访问。</p>
-      <div id="sr-suggest" class="subnet-tags" style="margin-bottom:2px"></div>
-      <div id="sr-tags" class="subnet-tags">${renderTags(curSubnets)}</div>
-      <div class="subnet-add-row">
-        <input type="text" id="sr-input" placeholder="如 192.168.3.0/24" />
-        <button id="sr-add" class="btn ghost sm">添加</button>
+      <div class="subnet-section subnet-section-active">
+        <div class="subnet-section-title">当前生效的子网</div>
+        <div id="sr-tags" class="subnet-tags subnet-tags-active">${renderTags(curSubnets)}</div>
+      </div>
+      <div class="subnet-section subnet-section-detected">
+        <div class="subnet-section-title">检测到的本地子网</div>
+        <div id="sr-suggest" class="subnet-tags subnet-tags-detected"><span class="muted">正在检测…</span></div>
+      </div>
+      <div class="subnet-section subnet-section-manual">
+        <div class="subnet-section-title">手动添加</div>
+        <div class="subnet-add-row">
+          <input type="text" id="sr-input" placeholder="如 192.168.3.0/24" />
+          <button id="sr-add" class="btn ghost sm">添加</button>
+        </div>
       </div>
       <p class="msg" style="margin-top:8px">IP 转发将由后台服务自动开启，无需手动配置。</p>
       <p class="msg" id="sr-result"></p>`,
@@ -672,16 +681,19 @@ async function openSubnetRouteModal(nid: string) {
 
       const refreshSuggest = (localSubnets: string[]) => {
         const suggestions = localSubnets.filter((s) => !tags.includes(s));
-        if (!suggestions.length) { suggestEl.innerHTML = ""; return; }
-        suggestEl.innerHTML =
-          `<span class="muted" style="width:100%;margin-bottom:2px">检测到的本地子网</span>` +
-          suggestions.map((s) => `<span class="chip" data-add="${esc(s)}" style="cursor:pointer">${esc(s)} <span style="opacity:0.5">+</span></span>`).join("");
+        if (!suggestions.length) {
+          suggestEl.innerHTML = `<span class="muted">未发现其他可用的本地子网</span>`;
+          return;
+        }
+        suggestEl.innerHTML = suggestions
+          .map((s) => `<span class="chip chip-candidate" data-add="${esc(s)}" title="添加 ${esc(s)}">${esc(s)} <span class="chip-add">+</span></span>`)
+          .join("");
       };
 
       let localSubnets: string[] = [];
       backend.detectLocalSubnets()
         .then((arr) => { localSubnets = arr; refreshSuggest(arr); })
-        .catch(() => {});
+        .catch(() => { refreshSuggest([]); });
 
       suggestEl.addEventListener("click", (e) => {
         const chip = (e.target as HTMLElement).closest<HTMLElement>("[data-add]");

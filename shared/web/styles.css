@@ -390,6 +390,35 @@ input[type=number] { width: 120px; }
 .subnet-status.err { color: var(--err); }
 
 /* ── subnet route tags ──────────────────── */
+.subnet-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  padding: 12px 14px;
+  margin: 10px 0;
+  background: var(--bg2);
+}
+.subnet-section + .subnet-section { margin-top: 10px; }
+.subnet-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+  margin-bottom: 8px;
+  letter-spacing: .2px;
+}
+.subnet-section-active {
+  background: var(--accent-soft);
+  border-color: rgba(79,140,255,.35);
+}
+.subnet-section-active .subnet-section-title { color: var(--accent2); }
+.subnet-section-detected {
+  border-style: dashed;
+  border-color: var(--border2);
+  background: transparent;
+}
+.subnet-section-manual { background: var(--bg2); }
+.subnet-section .subnet-tags { margin: 0; }
+.subnet-section .subnet-add-row { margin: 0; }
+.subnet-tags .muted { width: 100%; }
 .subnet-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .subnet-tags .chip {
   display: inline-flex; align-items: center; gap: 4px;
@@ -399,6 +428,25 @@ input[type=number] { width: 120px; }
 }
 .subnet-tags .chip-del { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 0 0 2px; }
 .subnet-tags .chip-del:hover { color: var(--err); }
+.subnet-tags-active .chip {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.subnet-tags-active .chip-del { color: rgba(255,255,255,.8); }
+.subnet-tags-active .chip-del:hover { color: #fff; }
+.subnet-tags-detected .chip {
+  background: transparent;
+  border: 1px dashed var(--border2);
+  color: var(--dim);
+  cursor: pointer;
+}
+.subnet-tags-detected .chip:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent2);
+}
+.chip-add { color: var(--accent2); font-weight: 700; }
 .subnet-add-row { display: flex; gap: 8px; align-items: stretch; }
 .subnet-add-row input { flex: 1; }
 
