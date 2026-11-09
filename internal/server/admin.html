@@ -63,6 +63,7 @@
    .brand .logo svg { width:24px; height:24px; }
   .brand h1 { font-size:16px; font-weight:700; }
   .brand .sub { font-size:11px; color:var(--faint); }
+  .ver-pill { display:inline-block; margin-left:6px; padding:0 6px; border-radius:999px; background:rgba(154,163,178,.14); color:var(--faint); font-size:10px; font-weight:600; letter-spacing:.2px; vertical-align:1px; }
   .spacer { flex:1; }
   .live-dot { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); margin-right:4px; }
   .live-dot::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 3px var(--ok-soft); }
@@ -470,7 +471,7 @@
       </span>
       <span>
         <h1>Snet控制台</h1>
-        <span class="sub">虚拟组网 · 服务端管理</span>
+        <span class="sub">虚拟组网 · 服务端管理 <span class="ver-pill" id="server-version" hidden></span></span>
       </span>
     </div>
     <span class="spacer"></span>
@@ -5005,6 +5006,16 @@ $('modal').addEventListener('keydown', e => {
 });
 
 /* ── init ── */
+(async function loadServerVersion() {
+  try {
+    const r = await fetch('/healthz', { cache: 'no-store' });
+    if (!r.ok) return;
+    const j = await r.json();
+    const el = $('server-version');
+    if (el && j.serverVersion) { el.textContent = 'v' + j.serverVersion; el.hidden = false; }
+  } catch (_) {}
+})();
+
 (async function init() {
   if (tok) { startApp(); return; }
   // First-run: show the setup wizard when the server has no admin account yet.

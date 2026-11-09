@@ -68,6 +68,7 @@ export type DaemonStatus = {
   authExpired?: boolean;
   authExpiresAt?: string;
   wgPort?: number;
+  version?: string;
   networks?: NetInfo[];
   pendingJoins?: PendingJoin[];
   natMapping?: NatStatus;

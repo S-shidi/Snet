@@ -126,6 +126,16 @@ async function refreshPeerSubnets(force = false) {
 /* ── Header ───────────────────────────────────────────────────── */
 function renderHeader() {
   const dot = $("#daemon-state") as HTMLElement;
+  const ver = $("#app-version") as HTMLElement | null;
+  if (ver) {
+    const v = status?.version;
+    if (v) {
+      ver.textContent = "v" + v;
+      ver.hidden = false;
+    } else {
+      ver.hidden = true;
+    }
+  }
   if (!dot) return;
   if (backend.hasDaemonControl) {
     if (status) {
