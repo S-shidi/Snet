@@ -101,8 +101,8 @@ docker login 66.187.6.46:5000 -u snet
 拉取并启动：
 
 ```bash
-cd /volume1/docker/snet/deploy-prod/docker-client   # NAS
-# 或 cd /opt/snet-deploy/deploy-prod/docker-client  # 标准 Linux
+cd /volume1/docker/snet   # NAS
+# 或 cd /opt/stacks/snet  # 标准 Linux
 docker compose pull
 docker compose up -d
 ```
@@ -119,7 +119,7 @@ docker compose pull && docker compose up -d
 scp root@66.187.6.46:/tmp/snet-client-linux-amd64.tgz .
 docker load -i snet-client-linux-amd64.tgz
 docker tag snet-client:latest 66.187.6.46:5000/snet-client:latest
-cd /volume1/docker/snet/deploy-prod/docker-client
+cd /volume1/docker/snet
 docker compose up -d
 ```
 
@@ -174,7 +174,7 @@ ctl-token 在实际宿主机挂载源目录下。
 ## 6. 启动
 
 ```bash
-cd /volume1/docker/snet/deploy-prod/docker-client
+cd /volume1/docker/snet
 docker compose up -d
 ```
 
@@ -264,7 +264,7 @@ snetctl -ctl http://127.0.0.1:19432 join --nid <nid> --code <code>
 
 | 项 | 客户端 A（标准 Linux） | 客户端 B（NAS/远程） |
 |---|---|---|
-| 目录 | `/opt/snet-deploy/deploy-prod/docker-client` | `/volume1/docker/snet/deploy-prod/docker-client` |
+| 目录 | `/opt/stacks/snet` | `/volume1/docker/snet` |
 | 配置 | `/etc/snet` | `/volume1/docker/snet/etc` 或 ContainerManager 重定向路径 |
 | 镜像 | registry pull 或离线 tar | registry pull 或离线 tar |
 | WG 端口 | 52100 | 52101 |

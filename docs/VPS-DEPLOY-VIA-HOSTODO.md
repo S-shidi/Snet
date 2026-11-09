@@ -301,7 +301,7 @@ snet-runtime-http.service  inactive
 
 ### 上传与部署
 
-- 上传到 `/opt/snet-deploy/`：
+- 上传到 `/opt/stacks/snet/`：
   - `Dockerfile.server`
   - `Dockerfile.relay`
   - `compose.yaml`（为平铺目录改为 `context: .` / `dockerfile: Dockerfile.*`）
@@ -310,7 +310,7 @@ snet-runtime-http.service  inactive
 - 远程 sha256 与本地一致：
   - server `5791c664e436120b89a0e56accbdf4072a2406dae3b1fcda65493b0e16753c54`
   - relay `ab6e4bb08deee32b3aec0f90bae9499ea909cb4cf8f118e3fd6d78b444cf8f96`
-- `/opt/snet-deploy/relay.secret` 与 `.env` 已生成，均为 0600；未打印 secret。
+- `/opt/stacks/snet/relay.secret` 与 `.env` 已生成，均为 0600；未打印 secret。
 - `docker compose --env-file .env up -d --build` 异步执行成功：
   - duration 40s
   - exit_code 0
@@ -374,7 +374,7 @@ snet-relay  6.758MiB / 967.9MiB
 ### 回滚命令（未使用）
 
 ```bash
-cd /opt/snet-deploy
+cd /opt/stacks/snet
 docker compose --env-file .env down
 cp /root/snet-backup-20261108_084059/snet.db /var/lib/snet/snet.db
 cp /root/snet-backup-20261108_084059/snet-server.env /etc/snet-server.env
