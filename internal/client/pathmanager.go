@@ -105,6 +105,10 @@ type directPeer struct {
 	lastProbe    time.Time
 	lastLookup   time.Time
 	lastPing     time.Time
+	// pathSince is when the peer entered its current non-direct state. It
+	// lets Status report a relay fallback once hole punching has timed out
+	// instead of showing "discovering" forever.
+	pathSince time.Time
 }
 
 // NewPathManager builds a relay-first path manager for one network. Run must
@@ -185,7 +189,9 @@ func (pm *PathManager) UpdatePeersWithContext(peers []protocol.Node, localSubnet
 		nextKeys[key] = p.ID
 		dp := pm.directPeers[key]
 		if dp == nil {
-			dp = &directPeer{}
+			dp = &directPeer{pathSince: time.Now()}
+		} else if dp.pathSince.IsZero() {
+			dp.pathSince = time.Now()
 		}
 		dp.lanAddr = peerLANAddr(p.DirectEndpoint, nets)
 		dp.v6Addr = peerV6Addr(p.DirectEndpointV6)
@@ -194,10 +200,12 @@ func (pm *PathManager) UpdatePeersWithContext(peers []protocol.Node, localSubnet
 			case "lan":
 				if dp.lanAddr == nil || !sameUDPAddr(dp.addr, dp.lanAddr) {
 					dp.ready, dp.addr, dp.lastProbe = false, nil, time.Time{}
+					dp.pathSince = time.Now()
 				}
 			case "ipv6":
 				if dp.v6Addr == nil || !sameUDPAddr(dp.addr, dp.v6Addr) {
 					dp.ready, dp.addr, dp.lastProbe = false, nil, time.Time{}
+					dp.pathSince = time.Now()
 				}
 			}
 		}
@@ -355,14 +363,23 @@ func (pm *PathManager) Status() map[string]any {
 		if id == "" {
 			continue
 		}
-		state := map[string]any{"path": "discovering"}
+		path := "discovering"
 		switch {
 		case dp.ready && dp.addr != nil:
 			directReady++
-			state["path"] = "direct"
-			state["kind"] = dp.kind
+			path = "direct"
 		case dp.addr != nil:
-			state["path"] = "probing"
+			path = "probing"
+		}
+		// If hole punching has been stuck for the direct dead timeout and a
+		// relay is ready, report the path actually carrying traffic instead of
+		// leaving the UI on "discovering"/"probing" forever.
+		if path != "direct" && relayReady > 0 && !dp.pathSince.IsZero() && now.Sub(dp.pathSince) >= directDeadAfter {
+			path = "relay"
+		}
+		state := map[string]any{"path": path}
+		if path == "direct" {
+			state["kind"] = dp.kind
 		}
 		if dp.addr != nil {
 			state["addr"] = dp.addr.String()
@@ -792,6 +809,7 @@ func (pm *PathManager) markDirectFailed(key uint64) {
 	if dp := pm.directPeers[key]; dp != nil {
 		dp.ready = false
 		dp.lastProbe = time.Time{}
+		dp.pathSince = time.Now()
 	}
 	pm.mu.Unlock()
 }
@@ -870,6 +888,7 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 				dp.ready = false
 				dp.addr = nil
 				dp.lastProbe = time.Time{}
+				dp.pathSince = now
 				continue
 			}
 			if dp.lastPing.IsZero() || now.Sub(dp.lastPing) >= directPingInterval {
@@ -1127,6 +1146,7 @@ func (pm *PathManager) noteDirectPeer(key uint64, addr *net.UDPAddr, now time.Ti
 		if markReady && !dp.ready {
 			dp.ready = true
 			dp.lastPing = now
+			dp.pathSince = now
 		}
 		return true
 	}
@@ -1144,6 +1164,7 @@ func (pm *PathManager) noteDirectPeer(key uint64, addr *net.UDPAddr, now time.Ti
 	dp.ready = true
 	dp.lastRecv = now
 	dp.lastPing = now
+	dp.pathSince = now
 	return true
 }
 
@@ -1262,6 +1283,7 @@ func (pm *PathManager) handleDirectPeer(f protocol.RelayFrame) {
 		dp.hintIP = nil
 		dp.lastProbe = time.Time{}
 		dp.lastRecv = time.Time{}
+		dp.pathSince = time.Now()
 	}
 }
 

@@ -1607,8 +1607,19 @@ function directKindLabel(pd?: PeerDirect): string {
   return addr ? "Public" : "";
 }
 
-function pathBadge(pd?: PeerDirect): string {
+function effectivePath(pd: PeerDirect | undefined, relayReady: boolean): string {
   const path = pd?.path || "relay";
+  if ((path === "discovering" || path === "probing") && relayReady) {
+    const last = pd?.lastRecvSec;
+    // A direct probe that has produced no peer traffic for the same 15s
+    // window used by the daemon is stale; relay is the path actually in use.
+    if (typeof last === "number" && last > 15) return "relay";
+  }
+  return path;
+}
+
+function pathBadge(pd: PeerDirect | undefined, relayReady: boolean): string {
+  const path = effectivePath(pd, relayReady);
   if (path === "direct") {
     const kind = directKindLabel(pd);
     return `<span class="path-badge direct">直连${kind ? ` · ${esc(kind)}` : ""}</span>`;
@@ -1623,7 +1634,7 @@ function pathAddr(pd?: PeerDirect): string {
   return pd?.addr || pd?.public || pd?.ipv6 || pd?.lan || "-";
 }
 
-function pathPeerRow(p: NetNode, pd?: PeerDirect): string {
+function pathPeerRow(p: NetNode, pd: PeerDirect | undefined, relayReady: boolean): string {
   const last = typeof pd?.lastRecvSec === "number"
     ? `最后活跃 ${fmtAgo(pd.lastRecvSec)}`
     : "暂无活跃记录";
@@ -1636,7 +1647,7 @@ function pathPeerRow(p: NetNode, pd?: PeerDirect): string {
       </div>
     </div>
     <div class="path-peer-side">
-      ${pathBadge(pd)}
+      ${pathBadge(pd, relayReady)}
       <code class="path-peer-addr">${esc(pathAddr(pd))}</code>
       <span class="path-peer-last">${esc(last)}</span>
     </div>
@@ -1649,12 +1660,13 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
   const nat = n.relayPath?.natType || self?.natType || "unknown";
   const subnets = (n.allowedSubnets?.length ? n.allowedSubnets : self?.allowedSubnets) ?? [];
   const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
+  const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
   const peers = r?.peers ?? [];
   let direct = 0;
   let relay = 0;
   let probing = 0;
   for (const p of peers) {
-    const path = directMap[p.id]?.path || "relay";
+    const path = effectivePath(directMap[p.id], relayReady);
     if (path === "direct") direct++;
     else if (path === "relay") relay++;
     else probing++;
@@ -1668,7 +1680,7 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
   const peerHTML = !r
     ? `<div class="path-empty">正在获取成员信息…</div>`
     : peers.length
-      ? peers.map((p) => pathPeerRow(p, directMap[p.id])).join("")
+      ? peers.map((p) => pathPeerRow(p, directMap[p.id], relayReady)).join("")
       : `<div class="path-empty">当前网络暂无其他节点。分享邀请链接或授权码即可组网。</div>`;
   const headHTML = includeHead
     ? `<div class="path-net-head">
