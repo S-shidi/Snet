@@ -583,10 +583,10 @@ async function openNetworkSettings(nid: string) {
       <div class="row"><label>网络名称</label><input id="s-name" type="text" value="${esc(curName)}" placeholder="留空保持不变" /></div>
       <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "s-subnet", value: curSubnet, placeholder: "留空保持不变", emptyHint: "留空保持不变" })}</div>
       <div class="row"><label class="inline"><input id="s-approval" type="checkbox" ${detail.approvalRequired ? "checked" : ""} /> 新成员加入需创建者批准</label></div>
-      <div class="row"><label>描述</label><textarea id="s-desc" rows="2" placeholder="简短说明这个网络的用途（分享时展示）">${esc(detail.description || "")}</textarea></div>
+      <div class="row"><label>描述</label><textarea id="s-desc" class="form-control" rows="2" placeholder="简短说明这个网络的用途（分享时展示）">${esc(detail.description || "")}</textarea></div>
       <div class="row"><label>标签</label><input id="s-tags" type="text" value="${esc((detail.tags ?? []).join(", "))}" placeholder="逗号分隔，如 家庭, NAS, 异地" /></div>
       <div class="row"><label>公开范围</label>
-        <select id="s-visibility">
+        <select id="s-visibility" class="form-control">
           <option value="">私密（不公开）</option>
           <option value="shareable" ${detail.visibility === "shareable" ? "selected" : ""}>可被社区发现（shareable）</option>
         </select>
@@ -1078,7 +1078,7 @@ function openCreateModal() {
     body: `${hint}
       <div class="row"><label>网络名称</label><input id="m-name" type="text" placeholder="例如：家庭网络" /></div>
       <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "m-subnet", placeholder: "留空自动分配（如 10.88.0.0/24）", emptyHint: "留空自动分配，通常为 10.88.N.0/24" })}</div>
-      <div class="row"><label>描述（可选）</label><textarea id="m-desc" rows="2" placeholder="简短说明这个网络的用途"></textarea></div>
+      <div class="row"><label>描述（可选）</label><textarea id="m-desc" class="form-control" rows="2" placeholder="简短说明这个网络的用途"></textarea></div>
       <div class="row"><label>标签（可选）</label><input id="m-tags" type="text" placeholder="逗号分隔，如 家庭, NAS" /></div>
       ${serverHint}
       <p class="msg" id="m-result"></p>`,
