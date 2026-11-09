@@ -42,6 +42,10 @@ func TestNewDeviceIDFormat(t *testing.T) {
 }
 
 func TestNewDeviceIDDeterministic(t *testing.T) {
+	orig := hardwareIDFn
+	hardwareIDFn = func() (string, error) { return "fixed-hardware-uuid", nil }
+	defer func() { hardwareIDFn = orig }()
+
 	a, err := newDeviceID()
 	if err != nil {
 		t.Fatalf("newDeviceID: %v", err)
@@ -52,6 +56,24 @@ func TestNewDeviceIDDeterministic(t *testing.T) {
 	}
 	if a != b {
 		t.Fatalf("hardware-derived device ID not stable: %q vs %q", a, b)
+	}
+}
+
+func TestNewDeviceIDRandomWithoutHardware(t *testing.T) {
+	orig := hardwareIDFn
+	hardwareIDFn = func() (string, error) { return "", nil }
+	defer func() { hardwareIDFn = orig }()
+
+	a, err := newDeviceID()
+	if err != nil {
+		t.Fatalf("newDeviceID: %v", err)
+	}
+	b, err := newDeviceID()
+	if err != nil {
+		t.Fatalf("newDeviceID: %v", err)
+	}
+	if a == b {
+		t.Fatalf("IDs without a hardware source must be random, got identical %q", a)
 	}
 }
 
@@ -79,6 +101,26 @@ func TestLoadOrCreateDeviceIDGeneratesAndPersists(t *testing.T) {
 	}
 	if len(id) != 16 {
 		t.Fatalf("generated id length = %d, want 16", len(id))
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(b)) != id {
+		t.Fatalf("persisted id = %q, want %q", strings.TrimSpace(string(b)), id)
+	}
+}
+
+func TestLoadOrCreateDeviceIDEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "device.id")
+	t.Setenv("SNET_DEVICE_ID", "deadbeefcafebabe")
+	id, err := LoadOrCreateDeviceID(file, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "deadbeefcafebabe" {
+		t.Fatalf("env override = %q, want deadbeefcafebabe", id)
 	}
 	b, err := os.ReadFile(file)
 	if err != nil {

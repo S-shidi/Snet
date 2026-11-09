@@ -14,12 +14,17 @@ import (
 // path is OS-dependent; platform files may override it (see device_windows.go).
 var DefaultDeviceIDFile = "/usr/local/snet/device.id"
 
+// hardwareIDFn is the hardware identifier source used by newDeviceID. Tests
+// override it to exercise the deterministic path regardless of the host.
+var hardwareIDFn = hardwareID
+
 // newDeviceID returns a deterministic 16-hex device identity derived from the
 // machine's hardware identifier when available, so it survives both an app
 // and an OS reinstall. It falls back to a random 8-byte ID (still 16 hex)
-// when no hardware identifier can be read (e.g. virtual machines).
+// when no hardware identifier can be read (virtual machines, and containers,
+// where the host identifier is shared and must not become a device identity).
 func newDeviceID() (string, error) {
-	if hw, err := hardwareID(); err == nil && hw != "" {
+	if hw, err := hardwareIDFn(); err == nil && hw != "" {
 		sum := sha256.Sum256([]byte(hw))
 		return hex.EncodeToString(sum[:8]), nil
 	}
@@ -52,9 +57,16 @@ func LoadOrCreateDeviceID(deviceIDFile, existing string) (string, error) {
 	if existing != "" {
 		return existing, nil
 	}
-	id, err := deviceIDGen()
-	if err != nil {
-		return "", err
+	// An explicit SNET_DEVICE_ID wins over hardware derivation. It lets an
+	// operator pin a stable identity when no persisted file is available yet
+	// (for example, a fresh container without its data volume).
+	id := strings.TrimSpace(os.Getenv("SNET_DEVICE_ID"))
+	if id == "" {
+		var err error
+		id, err = deviceIDGen()
+		if err != nil {
+			return "", err
+		}
 	}
 	if deviceIDFile != "" {
 		if err := os.WriteFile(deviceIDFile, []byte(id+"\n"), 0o600); err != nil {

@@ -923,8 +923,9 @@ async function showPending(nid: string) {
 
 /* ── Members modal ────────────────────────────────────────────── */
 function roleLabel(role: string): string {
-  if (role === "owner") return "创建者";
-  if (role === "admin") return "管理员";
+  const r = String(role || "").trim().toLowerCase();
+  if (r === "owner") return "创建者";
+  if (r === "admin") return "管理员";
   return "成员";
 }
 
@@ -953,7 +954,7 @@ async function showMembers(nid: string) {
       const online = nd.online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>';
       const isSelf = nd.ip === myIp || nd.deviceId === (status?.deviceId ?? "");
       const kick = nd.ip === myIp ? `<span class="muted">自己</span>` : `<button data-node="${esc(nd.id)}" class="btn danger ghost sm">踢出</button>`;
-      const role = nd.role || "member";
+      const role = String(nd.role || (isSelf && mine?.owner ? "owner" : "member")).trim().toLowerCase();
       const roleCtl = isSelf || role === "owner"
         ? `<span class="pill role-${esc(role)}">${roleLabel(role)}</span>`
         : `<select data-role="${esc(nd.id)}" data-cur="${esc(role)}" class="role-select">
@@ -1700,8 +1701,12 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
 
 /* ── Network detail view ──────────────────────────────────────── */
 function networkRole(n: NetInfo): string {
+  // The status card's owner flag is authoritative. The peer snapshot can be
+  // stale (or omit the self role), and must not downgrade the owner to member.
+  if (n.owner) return "owner";
   const self = peerDetails[n.networkId]?.self;
-  return self?.role || n.role || (n.owner ? "owner" : "member");
+  const role = String(self?.role || n.role || "member").trim().toLowerCase();
+  return role === "owner" || role === "admin" ? role : "member";
 }
 
 function canManageNetwork(n: NetInfo): boolean {
@@ -1716,7 +1721,7 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
   if (!list.length) return `<p class="hint">暂无成员信息</p>`;
   const rows = list.map((nd) => {
     const isSelf = nd.ip === n.ip || (!!self && nd.id === self.id);
-    const role = isSelf ? selfRole : (nd.role || "member");
+    const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
     const online = nd.online
       ? '<span class="pill ok">在线</span>'
       : '<span class="pill off">离线</span>';
