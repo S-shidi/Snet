@@ -121,10 +121,9 @@ const backend: Backend = {
   async netinfo(nid: string): Promise<NetInfoDetail> { return api("/netinfo?nid=" + encodeURIComponent(nid)); },
   async peers(nid: string): Promise<PeersResp> { return api("/peers?nid=" + encodeURIComponent(nid)); },
 
-  async updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null; description?: string; tags?: string[]; visibility?: string }): Promise<void> {
+  async updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null }): Promise<void> {
     await api("/settings", jsonPost("/settings", {
       nid: params.nid, name: params.name, subnet: params.subnet, approvalRequired: params.approvalRequired,
-      description: params.description ?? "", tags: params.tags ?? [], visibility: params.visibility ?? "",
     }));
   },
 

@@ -300,6 +300,20 @@ func (pm *PathManager) EndpointFor(nodeID string) string {
 	return ""
 }
 
+// SetToken updates the node token used for relay tickets. The coordination
+// server rotates the node token on every DeviceNetworks call, so a long-lived
+// PathManager created before the sync must be told about the new token or
+// every relay-ticket request keeps returning 401.
+func (pm *PathManager) SetToken(token string) {
+	if token == "" {
+		return
+	}
+	pm.mu.Lock()
+	pm.token = token
+	pm.nextFetch = time.Time{} // force a ticket refresh on the next tick
+	pm.mu.Unlock()
+}
+
 // Close tears down every shim and the relay socket.
 func (pm *PathManager) Close() {
 	pm.closeOnce.Do(func() {
@@ -424,8 +438,11 @@ func (pm *PathManager) Status() map[string]any {
 }
 
 func (pm *PathManager) refreshRelay() {
+	pm.mu.RLock()
+	token := pm.token
+	pm.mu.RUnlock()
 	api := newAPIClient(pm.serverAddr, pm.ctx)
-	ticket, err := api.RelayTicket(pm.nid, pm.token)
+	ticket, err := api.RelayTicket(pm.nid, token)
 	if err != nil {
 		log.Printf("path %s: relay ticket: %v", pm.nid, err)
 		pm.mu.Lock()

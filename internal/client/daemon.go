@@ -1259,6 +1259,12 @@ func (d *Daemon) SyncNetworks(deviceToken string) error {
 				if d.serverState != nil {
 					delete(d.serverState, nid)
 				}
+				// The relay PathManager copies the token at construction; a
+				// long-lived one created before this sync must be updated or
+				// its relay-ticket calls keep returning 401.
+				if rt := d.nets[nid]; rt != nil && rt.path != nil {
+					rt.path.SetToken(existing.Token)
+				}
 			}
 			continue
 		}

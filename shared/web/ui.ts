@@ -584,14 +584,6 @@ async function openNetworkSettings(nid: string) {
       <div class="row"><label>网络名称</label><input id="s-name" type="text" value="${esc(curName)}" placeholder="留空保持不变" /></div>
       <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "s-subnet", value: curSubnet, placeholder: "留空保持不变", emptyHint: "留空保持不变" })}</div>
       <div class="row"><label class="inline"><input id="s-approval" type="checkbox" ${detail.approvalRequired ? "checked" : ""} /> 新成员加入需创建者批准</label></div>
-      <div class="row"><label>描述</label><textarea id="s-desc" class="form-control" rows="2" placeholder="简短说明这个网络的用途（分享时展示）">${esc(detail.description || "")}</textarea></div>
-      <div class="row"><label>标签</label><input id="s-tags" type="text" value="${esc((detail.tags ?? []).join(", "))}" placeholder="逗号分隔，如 家庭, NAS, 异地" /></div>
-      <div class="row"><label>公开范围</label>
-        <select id="s-visibility" class="form-control">
-          <option value="">私密（不公开）</option>
-          <option value="shareable" ${detail.visibility === "shareable" ? "selected" : ""}>可被社区发现（shareable）</option>
-        </select>
-      </div>
       <p class="msg" id="s-warn" hidden>修改网段会重新分配所有成员 IP，已加入的 SNET 客户端会自动重连；但手机等外部 WireGuard 设备需手动重新导入新配置。</p>
       <p class="msg" id="s-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn">保存</button>`,
@@ -612,10 +604,6 @@ async function openNetworkSettings(nid: string) {
         }
         const subnet = chk.value;
         const approval = (body.querySelector("#s-approval") as HTMLInputElement).checked;
-        const desc = (body.querySelector("#s-desc") as HTMLTextAreaElement).value.trim();
-        const tags = (body.querySelector("#s-tags") as HTMLInputElement).value
-          .split(",").map((s) => s.trim()).filter(Boolean).slice(0, 8);
-        const visibility = (body.querySelector("#s-visibility") as HTMLSelectElement).value;
         const result = body.querySelector<HTMLElement>("#s-result")!;
         const submit = body.querySelector<HTMLButtonElement>("#m-submit")!;
         const origText = submit.textContent;
@@ -629,9 +617,6 @@ async function openNetworkSettings(nid: string) {
               name,
               subnet: subnet !== curSubnet ? subnet : "",
               approvalRequired: approval !== !!detail!.approvalRequired ? approval : null,
-              description: desc,
-              tags,
-              visibility,
             });
             return true;
           });
@@ -1860,8 +1845,7 @@ function networkDetailHTML(n: NetInfo): string {
     ? `<section class="card detail-section detail-danger">
         <div class="detail-section-head"><h3>网络设置</h3><span class="hint">仅创建者/管理员</span></div>
         <div class="detail-actions">
-          <button type="button" class="btn ghost sm" data-detail-act="settings">修改描述</button>
-          <button type="button" class="btn ghost sm" data-detail-act="approval">入网审批</button>
+          <button type="button" class="btn ghost sm" data-detail-act="settings">网络设置</button>
           <button type="button" class="btn ghost sm" data-detail-act="subnets">子网路由管理</button>
           <button type="button" class="btn danger sm" data-detail-act="delete">删除网络</button>
         </div>
@@ -1986,8 +1970,7 @@ function bindNetworkDetailEvents() {
       case "back": closeNetworkDetail(); break;
       case "copy-invite": await copyInviteLink(nid, el as HTMLButtonElement); break;
       case "copy-code": await copyPairingCode(nid, el as HTMLButtonElement); break;
-      case "settings":
-      case "approval": await openNetworkSettings(nid); break;
+      case "settings": await openNetworkSettings(nid); break;
       case "subnets": await openSubnetRouteModal(nid); break;
       case "delete": await deleteNetworkFromDetail(nid, el as HTMLButtonElement); break;
     }
