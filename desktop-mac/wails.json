@@ -4,9 +4,9 @@
   "outputfilename": "SnetMac",
   "assetdir": "frontend",
   "frontend:dir": "frontend",
-  "frontend:install": "",
+  "frontend:install": "true",
   "frontend:build": "./build-frontend.sh",
-  "frontend:dev:install": "",
+  "frontend:dev:install": "true",
   "frontend:dev:build": "./build-frontend.sh",
   "wailsjsdir": "./frontend/wailsjs",
   "info": {
