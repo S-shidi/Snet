@@ -4,7 +4,9 @@ package client
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -27,7 +29,7 @@ func configureInterface(iface, ip string, mtu int) error {
 
 // addHostRoute installs a /32 host route to a peer through the TUN interface.
 func addHostRoute(iface, ip string) error {
-	return runCmd("route", "add", "-host", ip, "-interface", iface)
+	return ensureDarwinRoute(iface, ip, true)
 }
 
 // removeHostRoute removes a /32 host route.
@@ -37,7 +39,49 @@ func removeHostRoute(iface, ip string) error {
 
 // addSubnetRoute installs a subnet route through the TUN interface.
 func addSubnetRoute(iface, cidr string) error {
-	return runCmd("route", "add", "-net", cidr, "-interface", iface)
+	return ensureDarwinRoute(iface, cidr, false)
+}
+
+// ensureDarwinRoute is idempotent: an exact route already pointing at iface is
+// success, an exact route on another interface is a conflict, otherwise the
+// route is added.
+func ensureDarwinRoute(iface, target string, host bool) error {
+	if dev, ok := darwinRouteDevice(target, host); ok {
+		if dev == iface {
+			return nil
+		}
+		return fmt.Errorf("route %s already exists on %s", target, dev)
+	}
+	if host {
+		return runCmd("route", "add", "-host", target, "-interface", iface)
+	}
+	return runCmd("route", "add", "-net", target, "-interface", iface)
+}
+
+// darwinRouteDevice looks up the interface for an exact route in netstat.
+func darwinRouteDevice(target string, host bool) (string, bool) {
+	want := target
+	if host {
+		want = target + "/32"
+	} else if _, n, err := net.ParseCIDR(target); err == nil {
+		want = n.String()
+	} else {
+		return "", false
+	}
+	out, err := exec.Command("netstat", "-rn", "-f", "inet").CombinedOutput()
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		if normalizeDarwinDest(f[0]) == want {
+			return f[3], true
+		}
+	}
+	return "", false
 }
 
 // removeSubnetRoute removes a subnet route.

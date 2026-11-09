@@ -26,13 +26,16 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("not found")
-	ErrCodeInvalid     = errors.New("invalid or expired pairing code")
-	ErrCodeLocked      = errors.New("pairing code temporarily locked")
-	ErrNetworkFull     = errors.New("network is full")
-	ErrUnauthorized    = errors.New("unauthorized")
-	ErrManagedNetwork  = errors.New("服务端管理的网络不可认领")
-	ErrRelayV2Disabled = errors.New("relay v2 is not configured")
+	ErrNotFound    = errors.New("not found")
+	ErrCodeInvalid = errors.New("invalid or expired pairing code")
+	ErrCodeLocked  = errors.New("pairing code temporarily locked")
+	ErrNetworkFull = errors.New("network is full")
+	// ErrSubnetPoolExhausted is returned when the automatic /24 allocation pool
+	// has no subnet free of overlap with existing networks.
+	ErrSubnetPoolExhausted = errors.New("subnet allocation pool exhausted")
+	ErrUnauthorized        = errors.New("unauthorized")
+	ErrManagedNetwork      = errors.New("服务端管理的网络不可认领")
+	ErrRelayV2Disabled     = errors.New("relay v2 is not configured")
 	// ErrAuthCodeInvalid is returned when a presented device authorization
 	// code does not match any generated code. Unlike pairing codes there is no
 	// retry lockout: codes carry ≈80 bits of entropy and the bind endpoint is
@@ -217,9 +220,10 @@ type networkRecord struct {
 // existing, an empty slice clears). Passing it as a variadic keeps the common
 // signed params stable for existing callers.
 type networkShareOpts struct {
-	description *string
-	tags        []string
-	visibility  *string
+	description  *string
+	tags         []string
+	visibility   *string
+	allowOverlap bool
 }
 
 type deviceRecord struct {
@@ -863,25 +867,34 @@ func subnetsOverlap(a, b string) bool {
 	return an.Contains(bn.IP) || bn.Contains(an.IP)
 }
 
-// autoSubnetLocked picks a free 10.88.N.0/24 subnet not exactly used by any
-// existing network. Networks are independent on the server; overlap is only
-// checked at exact CIDR match to avoid giving the same subnet to two networks
-// automatically. Users may still explicitly choose overlapping subnets.
-func (s *Store) autoSubnetLocked() string {
-	for n := 0; n < 256; n++ {
-		cidr := fmt.Sprintf("10.88.%d.0/24", n)
+// The automatic pool is the aligned /12 10.80.0.0/12, i.e. 16 /16s = 4096 /24
+// networks. Allocation starts at the historical 10.88.0.0/24 and wraps around
+// the pool, so existing deployments keep their familiar first subnet. Unlike
+// the old exact-string check, every candidate is tested for CIDR overlap, so a
+// previously created 10.88.0.0/16 or 10.80.0.0/12 blocks the /24s it covers.
+const (
+	autoSubnetPoolThird = 80       // 10.80.0.0/12
+	autoSubnetPoolSize  = 16 * 256 // 4096 /24s
+	autoSubnetStart     = 88       // historical first third octet
+)
+
+func (s *Store) autoSubnetLocked() (string, error) {
+	start := (autoSubnetStart - autoSubnetPoolThird) * 256
+	for i := 0; i < autoSubnetPoolSize; i++ {
+		k := (start + i) % autoSubnetPoolSize
+		cidr := fmt.Sprintf("10.%d.%d.0/24", autoSubnetPoolThird+k/256, k%256)
 		taken := false
 		for _, other := range s.networks {
-			if other.n.Subnet == cidr {
+			if subnetsOverlap(cidr, other.n.Subnet) {
 				taken = true
 				break
 			}
 		}
 		if !taken {
-			return cidr
+			return cidr, nil
 		}
 	}
-	return "10.89.0.0/24"
+	return "", ErrSubnetPoolExhausted
 }
 
 func addIPOffset(ip net.IP, n int) net.IP {
@@ -2310,13 +2323,24 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 	}
 	sub := subnet
 	if sub == "" {
-		sub = s.autoSubnetLocked()
+		var err error
+		sub, err = s.autoSubnetLocked()
+		if err != nil {
+			return protocol.CreateNetworkResp{}, err
+		}
 	} else {
 		norm, err := validateSubnet(sub)
 		if err != nil {
 			return protocol.CreateNetworkResp{}, err
 		}
 		sub = norm
+		if !so.allowOverlap {
+			for _, other := range s.networks {
+				if subnetsOverlap(sub, other.n.Subnet) {
+					return protocol.CreateNetworkResp{}, fmt.Errorf("网段 %s 与现有网络 %s（%s）重叠", sub, other.n.ID, other.n.Subnet)
+				}
+			}
+		}
 	}
 	base, err := subnetBase(sub)
 	if err != nil {
@@ -3302,6 +3326,11 @@ func (s *Store) reassignIPsLocked(ns *networkState, subnet string) error {
 	if err != nil {
 		return err
 	}
+	for _, other := range s.networks {
+		if other.n.ID != ns.n.ID && subnetsOverlap(norm, other.n.Subnet) {
+			return fmt.Errorf("网段 %s 与现有网络 %s（%s）重叠", norm, other.n.ID, other.n.Subnet)
+		}
+	}
 	base, err := subnetBase(norm)
 	if err != nil {
 		return err
@@ -3891,13 +3920,24 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, s
 	}
 	sub := subnet
 	if sub == "" {
-		sub = s.autoSubnetLocked()
+		var err error
+		sub, err = s.autoSubnetLocked()
+		if err != nil {
+			return protocol.AdminCreateNetworkResp{}, err
+		}
 	} else {
 		norm, err := validateSubnet(sub)
 		if err != nil {
 			return protocol.AdminCreateNetworkResp{}, err
 		}
 		sub = norm
+		if !so.allowOverlap {
+			for _, other := range s.networks {
+				if subnetsOverlap(sub, other.n.Subnet) {
+					return protocol.AdminCreateNetworkResp{}, fmt.Errorf("网段 %s 与现有网络 %s（%s）重叠", sub, other.n.ID, other.n.Subnet)
+				}
+			}
+		}
 	}
 	base, err := subnetBase(sub)
 	if err != nil {

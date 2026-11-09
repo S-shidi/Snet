@@ -132,3 +132,12 @@ go test ./...
 - 不要提交 `.env`、`device.id`、`ctl-token`、registry 密码、私钥或手机 WireGuard 配置。
 - 服务端 `.env` 与 registry 密码只保存在部署主机，权限保持 `0600`。
 - 发布前运行 `git status` 和安全扫描，确认工作区干净且没有真实凭据。
+
+## 网段冲突防护（v1.0.1）
+
+- 客户端加入网络前会检查本机物理局域网与目标 CIDR 是否重叠，冲突直接拒绝；
+  高级用户可用 `SNET_IGNORE_LAN_CONFLICT=1` 绕过。
+- 路由安装失败不再静默：网络状态变为 `error`，Web UI 显示红色警告。
+- 服务端自动网段池扩展到 `10.80.0.0/12`（4096 个 `/24`），按 CIDR 包含关系查重；
+  显式重叠网段默认拒绝，可用 `allowOverlap: true` 放行。
+- 详见 [客户端 Docker 说明](deploy-prod/docker-client/README.md#13-网段冲突防护v101)。

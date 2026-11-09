@@ -33,6 +33,7 @@ export type NetInfo = {
   active?: boolean;
   owner?: boolean;
   error?: string;
+  state?: string;
   interface?: string;
   peerStats?: Record<string, PeerStats>;
   allowedSubnets?: string[];

@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os/exec"
@@ -17,6 +18,15 @@ import (
 
 	"snet/internal/protocol"
 )
+
+// ErrRouteConflict reports that an OS route could not be installed because a
+// conflicting route already exists (typically a physical LAN with the same
+// CIDR). Callers surface this as a user-facing network error.
+var ErrRouteConflict = errors.New("route conflict")
+
+// addSubnetRouteFn is the route installer used by ApplyPeers. Tests override
+// it to exercise the failure path without touching the host routing table.
+var addSubnetRouteFn = addSubnetRoute
 
 // Tunnel owns the utun interface and the WireGuard device.
 type Tunnel struct {
@@ -137,22 +147,34 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet, relayEP string) error
 			removePeerRoutes(t.iface, old)
 		}
 	}
-	// OS route diff: add/change routes for current peers.
+	// OS route diff: add/change routes for current peers. The first failure is
+	// kept and returned so the daemon can mark the network as errored instead
+	// of silently blackholing traffic.
+	var routeErr error
 	for id, p := range next {
 		old, existed := t.peers[id]
 		if !existed {
-			addPeerRoutes(t.iface, p)
+			if err := addPeerRoutes(t.iface, p); err != nil && routeErr == nil {
+				routeErr = err
+			}
 		} else if subnetsChanged(old.AllowedSubnets, p.AllowedSubnets) || old.IP != p.IP {
 			removePeerRoutes(t.iface, old)
-			addPeerRoutes(t.iface, p)
+			if err := addPeerRoutes(t.iface, p); err != nil && routeErr == nil {
+				routeErr = err
+			}
 		}
 	}
 	// Ensure the tunnel subnet is routed through the interface so that
 	// packets to any peer's tunnel IP reach the WireGuard device.
 	if subnet != "" {
-		_ = addSubnetRoute(t.iface, subnet)
+		if err := addSubnetRouteFn(t.iface, subnet); err != nil && routeErr == nil {
+			routeErr = err
+		}
 	}
 	t.peers = next
+	if routeErr != nil {
+		return fmt.Errorf("%w: %v", ErrRouteConflict, routeErr)
+	}
 	return nil
 }
 
@@ -190,14 +212,16 @@ func (t *Tunnel) RemoveAllPeers() {
 }
 
 // addPeerRoutes installs OS routes for a peer's IP and any advertised subnets.
-func addPeerRoutes(iface string, p protocol.Node) {
+func addPeerRoutes(iface string, p protocol.Node) error {
 	if len(p.AllowedSubnets) > 0 {
 		for _, sub := range p.AllowedSubnets {
-			addSubnetRoute(iface, sub)
+			if err := addSubnetRouteFn(iface, sub); err != nil {
+				return err
+			}
 		}
-	} else {
-		addHostRoute(iface, p.IP)
+		return nil
 	}
+	return addHostRoute(iface, p.IP)
 }
 
 // removePeerRoutes removes OS routes for a peer's IP and any advertised subnets.

@@ -163,7 +163,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		resp, err := s.CreateNetwork(req.PublicKey, req.DeviceID, req.Name, req.Subnet, req.ApprovalRequired,
-			networkShareOpts{description: &req.Description, tags: req.Tags, visibility: &req.Visibility})
+			networkShareOpts{description: &req.Description, tags: req.Tags, visibility: &req.Visibility, allowOverlap: req.AllowOverlap})
 		if err != nil {
 			if writeEnrollmentErr(w, err) {
 				return
@@ -644,7 +644,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		resp, err := s.AdminCreateNetwork(req.Name, req.Subnet, req.ApprovalRequired,
-			networkShareOpts{description: &req.Description, tags: req.Tags, visibility: &req.Visibility})
+			networkShareOpts{description: &req.Description, tags: req.Tags, visibility: &req.Visibility, allowOverlap: req.AllowOverlap})
 		if err != nil {
 			handleStoreErr(w, err)
 			return

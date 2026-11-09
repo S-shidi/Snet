@@ -66,15 +66,22 @@ var netGoneErr = errors.New("该网络在服务端已不存在")
 // visibility) for network create/settings operations. description and
 // visibility are pointers so "nil = leave unchanged" works for updates.
 type shareOpt struct {
-	description *string
-	tags        []string
-	visibility  *string
+	description  *string
+	tags         []string
+	visibility   *string
+	allowOverlap bool
 }
 
 // ShareOpt builds a shareOpt for Create/UpdateSettings. Nil description or
 // visibility means "leave unchanged"; an empty-string pointer clears the value.
 func ShareOpt(description *string, tags []string, visibility *string) shareOpt {
 	return shareOpt{description: description, tags: tags, visibility: visibility}
+}
+
+// AllowOverlapOpt lets a create request opt into a subnet that overlaps an
+// existing network. Combine it with ShareOpt; Create merges all options.
+func AllowOverlapOpt(allow bool) shareOpt {
+	return shareOpt{allowOverlap: allow}
 }
 
 // wrapNetGone converts a server 404 error into netGoneErr so callers can
@@ -875,8 +882,19 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	defer d.mu.Unlock()
 
 	var so shareOpt
-	if len(opts) > 0 {
-		so = opts[0]
+	for _, o := range opts {
+		if o.description != nil {
+			so.description = o.description
+		}
+		if o.tags != nil {
+			so.tags = o.tags
+		}
+		if o.visibility != nil {
+			so.visibility = o.visibility
+		}
+		if o.allowOverlap {
+			so.allowOverlap = true
+		}
 	}
 
 	if serverAddr == "" {
@@ -902,6 +920,15 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 		d.rollbackSwitchLocked(sw)
 		return protocol.CreateNetworkResp{}, err
 	}
+	// Reject an explicitly chosen subnet that collides with this machine's real
+	// LAN before creating the network on the server (avoids an orphan network
+	// that attach would refuse to bring up).
+	if subnet != "" {
+		if err := checkLANConflict(subnet); err != nil {
+			d.rollbackSwitchLocked(sw)
+			return protocol.CreateNetworkResp{}, err
+		}
+	}
 	api := d.apiLocked()
 	desc, vis := "", ""
 	if so.description != nil {
@@ -910,7 +937,7 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	if so.visibility != nil {
 		vis = *so.visibility
 	}
-	resp, err := api.CreateNetwork(d.publicKeyLocked(), d.cfg.DeviceID, name, subnet, approvalRequired, desc, so.tags, vis)
+	resp, err := api.CreateNetwork(d.publicKeyLocked(), d.cfg.DeviceID, name, subnet, approvalRequired, desc, so.tags, vis, so.allowOverlap)
 	if err != nil {
 		d.handleUnboundOpErrLocked(serverAddr, err)
 		d.rollbackSwitchLocked(sw)
@@ -1126,6 +1153,9 @@ func (d *Daemon) CancelPending(pendingID string) error {
 func (d *Daemon) attach(nid, name, nodeID, ip, token, pairingCode, subnet string, owner bool) error {
 	if subnet == "" {
 		subnet = defaultSubnet
+	}
+	if err := checkLANConflict(subnet); err != nil {
+		return err
 	}
 	for other, oc := range d.cfg.Networks {
 		if other != nid && subnetsOverlap(subnet, oc.Subnet) {
@@ -1570,6 +1600,21 @@ func (d *Daemon) bringUp(nid string) error {
 	go d.qualityLoop(nid)
 	d.nat.claim(nc.Port)
 	return nil
+}
+
+// noteApplyErrLocked records the result of applying peers/routes for a network.
+// A route conflict is surfaced as a stable, user-facing error instead of the
+// raw "File exists" text. Caller must hold d.mu.
+func (d *Daemon) noteApplyErrLocked(nid string, err error) {
+	if err == nil {
+		delete(d.netErrs, nid)
+		return
+	}
+	if errors.Is(err, ErrRouteConflict) {
+		d.netErrs[nid] = "路由安装失败，可能与本机其他网络冲突"
+		return
+	}
+	d.netErrs[nid] = err.Error()
 }
 
 // scheduleRetryLocked marks a network for background re-bring-up after its
@@ -2251,6 +2296,9 @@ func (d *Daemon) pollLoop(nid string) {
 			peers := rt.path.PreparePeers(st.Peers)
 			if err := rt.tun.ApplyPeers(peers, nc.Subnet, ""); err != nil {
 				log.Printf("apply relay-v2 peers %s: %v", nid, err)
+				d.noteApplyErrLocked(nid, err)
+			} else {
+				d.noteApplyErrLocked(nid, nil)
 			}
 			pm := rt.path
 			nodeID := nc.NodeID
@@ -2289,6 +2337,9 @@ func (d *Daemon) pollLoop(nid string) {
 		}
 		if err := rt.tun.ApplyPeers(peers, nc.Subnet, st.RelayEndpoint); err != nil {
 			log.Printf("apply peers %s: %v", nid, err)
+			d.noteApplyErrLocked(nid, err)
+		} else {
+			d.noteApplyErrLocked(nid, nil)
 		}
 		d.mu.Unlock()
 	}
@@ -3515,6 +3566,18 @@ func (d *Daemon) Status() (map[string]any, error) {
 		if statePtr != nil && *statePtr == "gone" {
 			active = false
 		}
+		errMsg := ""
+		if statePtr != nil && *statePtr == "gone" {
+			errMsg = netGoneErr.Error()
+		} else if e, ok := d.netErrs[nid]; ok {
+			errMsg = e
+		}
+		state := "inactive"
+		if errMsg != "" {
+			state = "error"
+		} else if active {
+			state = "active"
+		}
 		entry := map[string]any{
 			"networkId":      nid,
 			"name":           nc.Name,
@@ -3524,7 +3587,8 @@ func (d *Daemon) Status() (map[string]any, error) {
 			"active":         active,
 			"owner":          nc.Owner,
 			"serverState":    statePtr,
-			"error":          "",
+			"error":          errMsg,
+			"state":          state,
 			"interface":      "",
 			"peerStats":      map[string]PeerStats{},
 			"allowedSubnets": nc.AllowedSubnets,
@@ -3543,11 +3607,6 @@ func (d *Daemon) Status() (map[string]any, error) {
 			if rt.path != nil {
 				entry["relayPath"] = rt.path.Status()
 			}
-		}
-		if statePtr != nil && *statePtr == "gone" {
-			entry["error"] = netGoneErr.Error()
-		} else if e, ok := d.netErrs[nid]; ok {
-			entry["error"] = e
 		}
 		nets = append(nets, entry)
 	}

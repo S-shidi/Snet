@@ -277,3 +277,44 @@ snetctl -ctl http://127.0.0.1:19432 join --nid <nid> --code <code>
 - 客户端需 `insecure-registries`（registry 是 HTTP）。
 - 合并镜像内 nginx 只代理 `127.0.0.1:19432`；ctl 不暴露公网。
 - 不提交 `ctl-token`、`device.id`、config、registry 密码或镜像 tar。
+
+## 13. 网段冲突防护（v1.0.1）
+
+v1.0.1 起，客户端与服务端都会主动拦截网段冲突，避免"加入成功但流量静默黑洞"。
+
+### 客户端：物理局域网预检（P0-1）
+
+- `attach` 在写入网络前会读取本机真实路由表（Linux `ip -4 route show`，macOS `netstat -rn -f inet`），
+  排除 `tun*/wg*/docker*/br-*/veth*` 等虚拟接口，并用 CIDR 包含关系与目标网段比较。
+- 冲突时**直接拒绝加入**，返回：`网段 X 与本机物理局域网冲突，无法加入`。
+- 高级用户可显式绕过（不推荐）：
+
+  ```bash
+  # docker compose 环境：在 compose.yaml 的 snetd.environment 中加入
+  SNET_IGNORE_LAN_CONFLICT: "1"
+  ```
+
+### 客户端：路由失败上报（P0-2）
+
+- 虚拟网段/对端子网路由使用 `ip route add`（macOS `route add`），并区分三种情况：
+  - 路由已在本 TUN 上：幂等成功（避免每次轮询误报）；
+  - 路由已存在但在其他接口（通常是物理 LAN）：返回冲突；
+  - 其他失败：原样返回。
+- 路由失败会把该网络标记为 `state=error`，`error` 字段写入
+  `路由安装失败，可能与本机其他网络冲突`；Web UI 状态页显示红色“异常”标签与红色错误信息。
+- 修复后下一次成功应用 peer 会自动清除该错误。
+
+### 服务端：自动网段分配（P0-3）
+
+- 自动分配池从 `10.88.0.0/24` 起扩展到对齐的 `/12`（`10.80.0.0/12`，4096 个 `/24`），
+  并**按 CIDR 包含关系**查重；已存在的 `/16`、`/12` 会阻止其覆盖的所有 `/24`。
+- 池耗尽时返回 `subnet allocation pool exhausted`，不再回落到固定 `10.89.0.0/24`。
+- 显式指定与现有网络重叠的网段时**默认拒绝**；确需重叠时在创建请求中提交
+  `"allowOverlap": true`（客户端 `/ctl/create` 与 admin `/admin/networks` 均支持）。
+
+### 相关环境变量/参数
+
+| 名称 | 作用 |
+|---|---|
+| `SNET_IGNORE_LAN_CONFLICT=1` | 客户端跳过物理 LAN 冲突预检 |
+| `allowOverlap: true` | 服务端允许显式重叠网段（默认 false） |

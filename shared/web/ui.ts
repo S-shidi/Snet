@@ -153,11 +153,12 @@ function renderHeader() {
 }
 
 /* ── Network cards ────────────────────────────────────────────── */
-function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; allowedSubnets?: string[]; visibility?: string; description?: string; tags?: string[]; role?: string }): string {
+function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; state?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; allowedSubnets?: string[]; visibility?: string; description?: string; tags?: string[]; role?: string }): string {
   const gone = n.serverState === "gone";
   const linked = !!n.interface;
-  const state = gone ? "已删除" : linked ? "已链接" : n.active ? "未就绪" : "未链接";
-  const cls = gone ? "gone" : linked ? "ok" : n.active ? "warn" : "off";
+  const hasErr = !!n.error && !gone;
+  const state = gone ? "已删除" : hasErr ? "异常" : linked ? "已链接" : n.active ? "未就绪" : "未链接";
+  const cls = gone ? "gone" : hasErr ? "err" : linked ? "ok" : n.active ? "warn" : "off";
   const peers = n.peerStats ?? {};
   const total = Object.keys(peers).length;
   const detail = n.owner ? ownerInfo[n.networkId] : undefined;

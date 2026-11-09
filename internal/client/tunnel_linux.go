@@ -5,6 +5,7 @@ package client
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -30,7 +31,7 @@ func configureInterface(iface, ip string, mtu int) error {
 
 // addHostRoute installs a /32 host route to a peer through the TUN interface.
 func addHostRoute(iface, ip string) error {
-	return runCmd("ip", "route", "add", ip+"/32", "dev", iface)
+	return ensureRoute(iface, ip+"/32")
 }
 
 // removeHostRoute removes a /32 host route.
@@ -40,7 +41,42 @@ func removeHostRoute(iface, ip string) error {
 
 // addSubnetRoute installs a subnet route through the TUN interface.
 func addSubnetRoute(iface, cidr string) error {
-	return runCmd("ip", "route", "add", cidr, "dev", iface)
+	return ensureRoute(iface, cidr)
+}
+
+// ensureRoute is idempotent: it succeeds when the exact prefix is already
+// routed via iface, returns a conflict error when the exact prefix is routed
+// via another interface (e.g. the physical LAN), and otherwise adds the route.
+// Without the "already via our iface" branch every poll would re-add the
+// tunnel subnet and report a spurious "File exists".
+func ensureRoute(iface, prefix string) error {
+	if dev, ok := routeDevice(prefix); ok {
+		if dev == iface {
+			return nil
+		}
+		return fmt.Errorf("route %s already exists on %s", prefix, dev)
+	}
+	return runCmd("ip", "route", "add", prefix, "dev", iface)
+}
+
+// routeDevice returns the device of the exact-prefix route, if one exists.
+func routeDevice(prefix string) (string, bool) {
+	out, err := exec.Command("ip", "route", "show", prefix).CombinedOutput()
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 || f[0] != prefix {
+			continue
+		}
+		for i := 0; i+1 < len(f); i++ {
+			if f[i] == "dev" {
+				return f[i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 // removeSubnetRoute removes a subnet route.

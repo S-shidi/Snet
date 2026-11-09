@@ -117,11 +117,12 @@ func (c *apiClient) noteServerVersion(v string) {
 }
 
 func (c *apiClient) CreateNetwork(publicKey, deviceID, name, subnet string, approvalRequired bool,
-	description string, tags []string, visibility string) (protocol.CreateNetworkResp, error) {
+	description string, tags []string, visibility string, allowOverlap bool) (protocol.CreateNetworkResp, error) {
 	var out protocol.CreateNetworkResp
 	err := c.do(http.MethodPost, "/api/v1/networks", "",
 		protocol.CreateNetworkReq{PublicKey: publicKey, DeviceID: deviceID, Name: name, Subnet: subnet,
-			ApprovalRequired: approvalRequired, Description: description, Tags: tags, Visibility: visibility}, &out)
+			ApprovalRequired: approvalRequired, Description: description, Tags: tags, Visibility: visibility,
+			AllowOverlap: allowOverlap}, &out)
 	return out, err
 }
 

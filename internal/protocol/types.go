@@ -143,6 +143,9 @@ type CreateNetworkReq struct {
 	Description      string   `json:"description,omitempty"`
 	Tags             []string `json:"tags,omitempty"`
 	Visibility       string   `json:"visibility,omitempty"`
+	// AllowOverlap permits an explicitly chosen subnet that overlaps an
+	// existing network. Default false: overlapping networks are rejected.
+	AllowOverlap bool `json:"allowOverlap,omitempty"`
 }
 
 type CreateNetworkResp struct {
@@ -361,6 +364,7 @@ type AdminCreateNetworkReq struct {
 	Description      string   `json:"description,omitempty"`
 	Tags             []string `json:"tags,omitempty"`
 	Visibility       string   `json:"visibility,omitempty"`
+	AllowOverlap     bool     `json:"allowOverlap,omitempty"`
 }
 
 type AdminCreateNetworkResp struct {

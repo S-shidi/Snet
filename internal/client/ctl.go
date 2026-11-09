@@ -47,6 +47,7 @@ type CtlReq struct {
 	NodeID string `json:"nodeId"`
 
 	ApprovalRequired *bool    `json:"approvalRequired"`
+	AllowOverlap     *bool    `json:"allowOverlap"`
 	PendingID        string   `json:"pendingId"`
 	Subnets          []string `json:"subnets"`
 	Enabled          *bool    `json:"enabled"`
@@ -110,7 +111,8 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			tags = *req.Tags
 		}
 		resp, err := d.Create(server, req.Port, req.Name, req.Subnet, approval,
-			ShareOpt(req.Description, tags, req.Visibility))
+			ShareOpt(req.Description, tags, req.Visibility),
+			AllowOverlapOpt(req.AllowOverlap != nil && *req.AllowOverlap))
 		if err != nil {
 			writeCtlErr(w, 500, err)
 			return

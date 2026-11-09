@@ -77,11 +77,14 @@ func TestSubnetAutoAssignAndOverlap(t *testing.T) {
 	if a.Subnet != "10.88.0.0/24" {
 		t.Fatalf("auto subnet 1 = %q", a.Subnet)
 	}
-	// overlapping subnet is now allowed (networks are independent)
-	if _, err := s.CreateNetwork(testKey(25), "device-b", "", "10.88.0.0/24", false); err != nil {
-		t.Fatalf("overlapping subnet should be allowed: %v", err)
+	// overlapping subnet is rejected by default (P0-3); allowOverlap opts in.
+	if _, err := s.CreateNetwork(testKey(25), "device-b", "", "10.88.0.0/24", false); err == nil {
+		t.Fatal("overlapping subnet should be rejected by default")
 	}
-	// next auto subnet skips exact match
+	if _, err := s.CreateNetwork(testKey(25), "device-b", "", "10.88.0.0/24", false, networkShareOpts{allowOverlap: true}); err != nil {
+		t.Fatalf("allowOverlap should permit the overlap: %v", err)
+	}
+	// next auto subnet skips the used subnet
 	b, err := s.CreateNetwork(testKey(26), "device-c", "", "", false)
 	if err != nil {
 		t.Fatal(err)
