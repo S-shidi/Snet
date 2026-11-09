@@ -17,7 +17,7 @@ func TestPathManagerStatusRelayFallbackAfterTimeout(t *testing.T) {
 	pm.relayLinks = []*relayLink{{endpoint: "relay.example:8092", ready: true}}
 	pm.directPeers[key] = &directPeer{
 		v6Addr:    mustPathAddr(t, "[2001:db8::1]:51820"),
-		pathSince: time.Now().Add(-16 * time.Second),
+		pathSince: time.Now().Add(-31 * time.Second),
 	}
 	pm.mu.Unlock()
 
@@ -35,7 +35,7 @@ func TestPathManagerStatusRelayFallbackRequiresReadyRelay(t *testing.T) {
 	pm.peerKeys[key] = "node-b"
 	pm.directPeers[key] = &directPeer{
 		v6Addr:    mustPathAddr(t, "[2001:db8::1]:51820"),
-		pathSince: time.Now().Add(-16 * time.Second),
+		pathSince: time.Now().Add(-31 * time.Second),
 	}
 	pm.mu.Unlock()
 

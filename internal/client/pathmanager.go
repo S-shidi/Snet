@@ -23,6 +23,7 @@ const (
 	directUpgradeInterval  = 10 * time.Second
 	directPingInterval     = 5 * time.Second
 	directDeadAfter        = 15 * time.Second
+	relayFallbackAfter     = 30 * time.Second
 )
 
 // PathManager owns the relay-first data plane for one network. It presents a
@@ -374,7 +375,7 @@ func (pm *PathManager) Status() map[string]any {
 		// If hole punching has been stuck for the direct dead timeout and a
 		// relay is ready, report the path actually carrying traffic instead of
 		// leaving the UI on "discovering"/"probing" forever.
-		if path != "direct" && relayReady > 0 && !dp.pathSince.IsZero() && now.Sub(dp.pathSince) >= directDeadAfter {
+		if path != "direct" && relayReady > 0 && !dp.pathSince.IsZero() && now.Sub(dp.pathSince) >= relayFallbackAfter {
 			path = "relay"
 		}
 		state := map[string]any{"path": path}

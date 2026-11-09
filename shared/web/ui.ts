@@ -1611,9 +1611,9 @@ function effectivePath(pd: PeerDirect | undefined, relayReady: boolean): string 
   const path = pd?.path || "relay";
   if ((path === "discovering" || path === "probing") && relayReady) {
     const last = pd?.lastRecvSec;
-    // A direct probe that has produced no peer traffic for the same 15s
-    // window used by the daemon is stale; relay is the path actually in use.
-    if (typeof last === "number" && last > 15) return "relay";
+    // A direct probe that has produced no peer traffic for the daemon's
+    // 30s fallback window is stale; relay is the path actually in use.
+    if (typeof last === "number" && last > 30) return "relay";
   }
   return path;
 }
@@ -1654,6 +1654,15 @@ function pathPeerRow(p: NetNode, pd: PeerDirect | undefined, relayReady: boolean
   </div>`;
 }
 
+function isPrivateIPv4(ip: string): boolean {
+  const s = String(ip || "").trim().replace(/^::ffff:/i, "");
+  return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(s);
+}
+
+function hasCGNAT(): boolean {
+  return (status?.natMapping?.mappings ?? []).some((m) => isPrivateIPv4(m.externalIp));
+}
+
 function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html: string; direct: number; relay: number; probing: number } {
   const self = r?.self;
   const selfIp = n.ip || self?.ip || "-";
@@ -1691,9 +1700,13 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
         ${direct > 0 ? `<span class="path-p2p-pill">P2P ${direct}</span>` : ""}
       </div>`
     : "";
+  const cgnatHTML = hasCGNAT()
+    ? `<div class="path-cgnat-banner"><span class="path-cgnat-icon">!</span><div><b>检测到您的网络处于运营商多层 NAT（CGNAT）下</b><span>P2P 直连受限，已自动为您分配中继节点保证连通性。</span></div></div>`
+    : "";
   return {
     html: `<div class="path-net">
       ${headHTML}
+      ${cgnatHTML}
       <div class="path-self">
         <div class="path-self-row">
           <span class="path-label">本机 TUN IP</span>
@@ -1983,16 +1996,23 @@ function bindNetworkDetailEvents() {
 function renderStatus() {
   const deviceId = $("#device-id");
   const svcWgport = $("#svc-wgport");
+  const svcNat = $("#svc-nat");
   const statusJson = $("#status-json");
   renderAuthCard();
   if (!status) {
     if (deviceId) deviceId.textContent = "-";
     if (svcWgport) svcWgport.textContent = "-";
+    if (svcNat) svcNat.textContent = "-";
     if (statusJson) statusJson.textContent = "(未连接后台服务)";
     return;
   }
   if (deviceId) deviceId.textContent = status.deviceId || "-";
   if (svcWgport) svcWgport.textContent = String(status.wgPort ?? "-");
+  const nets = status.networks ?? [];
+  if (svcNat) {
+    const types = [...new Set(nets.map((n) => n.relayPath?.natType).filter(Boolean))];
+    svcNat.textContent = types.length ? types.join(" / ") : "未知";
+  }
   if (statusJson) statusJson.textContent = JSON.stringify(status, null, 2);
 }
 
