@@ -1318,6 +1318,8 @@ func handleStoreErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusUnauthorized, err)
 	case errors.Is(err, ErrNotFound):
 		writeErr(w, http.StatusNotFound, err)
+	case errors.Is(err, ErrInvalidRole):
+		writeErr(w, http.StatusBadRequest, err)
 	case errors.Is(err, ErrManagedNetwork):
 		writeErr(w, http.StatusForbidden, err)
 	case errors.Is(err, ErrAuthCodeInvalid):

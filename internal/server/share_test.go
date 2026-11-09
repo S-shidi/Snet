@@ -108,11 +108,11 @@ func TestSetNodeRole(t *testing.T) {
 		t.Fatal("changing owner role should be rejected")
 	}
 	// unknown node
-	if err := s.SetNodeRole(created.Token, "no-such-node", "admin"); err == nil {
+	if err := s.SetNodeRole(created.Token, "no-such-node", "member"); err == nil {
 		t.Fatal("unknown node should be rejected")
 	}
 	// non-owner cannot set roles
-	if err := s.SetNodeRole(joiner.Token, created.NodeID, "admin"); err == nil {
+	if err := s.SetNodeRole(joiner.Token, created.NodeID, "member"); err == nil {
 		t.Fatal("non-owner role change should be rejected")
 	}
 	// non-owner cannot promote another peer either
@@ -120,12 +120,16 @@ func TestSetNodeRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetNodeRole(joiner.Token, third.NodeID, "admin"); err == nil {
+	if err := s.SetNodeRole(joiner.Token, third.NodeID, "owner"); err == nil {
 		t.Fatal("non-owner promoting a peer should be rejected")
 	}
 
-	// owner promotes the joiner to admin
-	if err := s.SetNodeRole(created.Token, joiner.NodeID, "admin"); err != nil {
+	// the legacy admin role is rejected
+	if err := s.SetNodeRole(created.Token, joiner.NodeID, "admin"); err == nil {
+		t.Fatal("admin role should be rejected")
+	}
+	// owner sets the joiner to member
+	if err := s.SetNodeRole(created.Token, joiner.NodeID, "member"); err != nil {
 		t.Fatal(err)
 	}
 	info, err := s.NetworkInfo(created.Token)
@@ -138,22 +142,34 @@ func TestSetNodeRole(t *testing.T) {
 			got = n.Role
 		}
 	}
-	if got != "admin" {
-		t.Fatalf("joiner role = %q, want admin", got)
+	if got != "member" {
+		t.Fatalf("joiner role = %q, want member", got)
 	}
 
-	// demote back to member
-	if err := s.SetNodeRole(created.Token, joiner.NodeID, "member"); err != nil {
+	// owner transfers ownership to the joiner; the old owner becomes a member
+	if err := s.SetNodeRole(created.Token, joiner.NodeID, "owner"); err != nil {
 		t.Fatal(err)
 	}
-	info, err = s.NetworkInfo(created.Token)
+	info, err = s.NetworkInfo(joiner.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if info.OwnerNodeID != joiner.NodeID || info.OwnerDeviceID != "dev-joiner" {
+		t.Fatalf("ownership not transferred: node=%s device=%s", info.OwnerNodeID, info.OwnerDeviceID)
+	}
+	roles := map[string]string{}
 	for _, n := range info.Nodes {
-		if n.ID == joiner.NodeID && n.Role != "member" {
-			t.Fatalf("joiner role after demote = %q", n.Role)
-		}
+		roles[n.ID] = n.Role
+	}
+	if roles[created.NodeID] != "member" || roles[joiner.NodeID] != "owner" {
+		t.Fatalf("roles after transfer = %+v", roles)
+	}
+	// the old owner loses role-management privileges; the new owner keeps them
+	if err := s.SetNodeRole(created.Token, third.NodeID, "member"); err == nil {
+		t.Fatal("old owner should lose role-management privileges")
+	}
+	if err := s.SetNodeRole(joiner.Token, third.NodeID, "member"); err != nil {
+		t.Fatalf("new owner should manage roles: %v", err)
 	}
 }
 
@@ -178,14 +194,21 @@ func TestSetNodeRoleHTTP(t *testing.T) {
 
 	// owner sets role -> 204
 	resp = doJSON(t, http.MethodPut, ts.URL+"/api/v1/networks/"+created.NetworkID+"/nodes/"+joined.NodeID+"/role",
-		created.Token, protocol.SetNodeRoleReq{Role: "admin"}, nil)
+		created.Token, protocol.SetNodeRoleReq{Role: "member"}, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("owner set-role status = %d", resp.StatusCode)
 	}
 
+	// the legacy admin role is rejected -> 400
+	resp = doJSON(t, http.MethodPut, ts.URL+"/api/v1/networks/"+created.NetworkID+"/nodes/"+joined.NodeID+"/role",
+		created.Token, protocol.SetNodeRoleReq{Role: "admin"}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("admin role status = %d, want 400", resp.StatusCode)
+	}
+
 	// non-owner is unauthorized (owner-gated, same as other owner ops)
 	resp = doJSON(t, http.MethodPut, ts.URL+"/api/v1/networks/"+created.NetworkID+"/nodes/"+joined.NodeID+"/role",
-		joined.Token, protocol.SetNodeRoleReq{Role: "admin"}, nil)
+		joined.Token, protocol.SetNodeRoleReq{Role: "member"}, nil)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("non-owner set-role status = %d, want 401", resp.StatusCode)
 	}
@@ -193,8 +216,8 @@ func TestSetNodeRoleHTTP(t *testing.T) {
 
 // TestListPeersRoleScoping verifies members see peer device/online info and
 // advertised subnets (needed for routing) but never peer role (publicKey is
-// kept so members can build WireGuard tunnels), while owners and admins see
-// full peer details.
+// kept so members can build WireGuard tunnels), while the owner sees full
+// peer details.
 func TestListPeersRoleScoping(t *testing.T) {
 	s := NewStore()
 	created, err := s.CreateNetwork(testKey(1), "dev-owner", "office", "192.168.63.0/24", false)
@@ -205,10 +228,7 @@ func TestListPeersRoleScoping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// promote joiner to admin, then add a plain member
-	if err := s.SetNodeRole(created.Token, joiner.NodeID, "admin"); err != nil {
-		t.Fatal(err)
-	}
+	// add a plain member; ownership is transferred later
 	member, err := s.Join(created.NetworkID, created.PairingCode, testKey(3), "dev-member")
 	if err != nil {
 		t.Fatal(err)
@@ -259,7 +279,10 @@ func TestListPeersRoleScoping(t *testing.T) {
 		t.Fatalf("member self should be online (LastSeen refreshed on poll): %+v", peers.Self)
 	}
 
-	// admin view shows full details
+	// transfer ownership to the joiner; the new owner sees full details
+	if err := s.SetNodeRole(created.Token, joiner.NodeID, "owner"); err != nil {
+		t.Fatal(err)
+	}
 	peers, err = s.ListPeers(joiner.Token)
 	if err != nil {
 		t.Fatal(err)
@@ -271,17 +294,17 @@ func TestListPeersRoleScoping(t *testing.T) {
 		}
 	}
 	if !full {
-		t.Fatalf("admin should see full peer details: %+v", peers.Peers)
+		t.Fatalf("owner should see full peer details: %+v", peers.Peers)
 	}
 
-	// owner view shows full details too
+	// the previous owner (now a member) sees scrubbed roles
 	peers, err = s.ListPeers(created.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range peers.Peers {
-		if p.DeviceID == "" || p.PublicKey == "" {
-			t.Fatalf("owner peer missing deviceId/publicKey: %+v", p)
+		if p.Role != "" {
+			t.Fatalf("former owner peer leaked role: %+v", p)
 		}
 	}
 }

@@ -21,7 +21,7 @@ func TestAdminNodeRoleAndSubnetsHTTP(t *testing.T) {
 	nodeID := joined["nodeId"].(string)
 
 	resp = doJSON(t, http.MethodPatch, ts.URL+"/admin/networks/"+nid+"/nodes/"+nodeID+"/role", "secret",
-		map[string]any{"role": "admin"}, nil)
+		map[string]any{"role": "member"}, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("set role = %d", resp.StatusCode)
 	}
@@ -34,13 +34,20 @@ func TestAdminNodeRoleAndSubnetsHTTP(t *testing.T) {
 	for _, n := range nodes {
 		if n["id"] == nodeID {
 			found = true
-			if n["role"] != "admin" {
+			if n["role"] != "member" {
 				t.Fatalf("role = %v", n["role"])
 			}
 		}
 	}
 	if !found {
 		t.Fatalf("node %s not found", nodeID)
+	}
+
+	// the legacy admin role is rejected
+	resp = doJSON(t, http.MethodPatch, ts.URL+"/admin/networks/"+nid+"/nodes/"+nodeID+"/role", "secret",
+		map[string]any{"role": "admin"}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("admin role = %d, want 400", resp.StatusCode)
 	}
 
 	resp = doJSON(t, http.MethodPatch, ts.URL+"/admin/networks/"+nid+"/nodes/"+nodeID+"/subnets", "secret",

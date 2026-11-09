@@ -3612,7 +3612,6 @@ function netCard(n) {
 
 function adminRoleLabel(role) {
   if (role === 'owner') return 'Owner';
-  if (role === 'admin') return 'Admin';
   return 'Member';
 }
 
@@ -3687,7 +3686,6 @@ function renderNetDetail() {
       ? '<span class="pill managed">Owner</span>'
       : `<select class="role-select" data-detail-role data-nid="${esc(info.id)}" data-node="${esc(nd.id)}" data-cur="${esc(role)}">
           <option value="owner" ${nd.deviceId ? '' : 'disabled'}>Owner</option>
-          <option value="admin" ${role === 'admin' ? 'selected' : ''}>Admin</option>
           <option value="member" ${role === 'member' ? 'selected' : ''}>Member</option>
         </select>`;
     memberRows += `<tr>
@@ -3900,7 +3898,7 @@ async function setNodeRole(nid, nodeID, role, select) {
   const ok = await confirmDlg({
     title: '调整角色',
     message: role === 'owner'
-      ? `将网络 Owner 转移给 <b>${esc(name)}</b>？\n原 Owner 将保留为 Admin，网络归属和审批权限随之转移。`
+      ? `将网络 Owner 转移给 <b>${esc(name)}</b>？\n原 Owner 将变为 Member，网络归属和审批权限随之转移。`
       : `将 <b>${esc(name)}</b> 的角色调整为 <b>${adminRoleLabel(role)}</b>？`,
     confirmText: '确认', danger: role === 'owner',
   });

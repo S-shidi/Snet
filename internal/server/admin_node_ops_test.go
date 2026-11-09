@@ -12,10 +12,13 @@ func TestAdminSetNodeRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AdminSetNodeRole(created.NetworkID, joined.NodeID, "admin"); err != nil {
+	if err := st.AdminSetNodeRole(created.NetworkID, joined.NodeID, "admin"); err == nil {
+		t.Fatal("admin role should be rejected")
+	}
+	if err := st.AdminSetNodeRole(created.NetworkID, joined.NodeID, "member"); err != nil {
 		t.Fatal(err)
 	}
-	assertNodeRole(t, st, created.NetworkID, joined.NodeID, "admin")
+	assertNodeRole(t, st, created.NetworkID, joined.NodeID, "member")
 
 	if err := st.AdminSetNodeRole(created.NetworkID, joined.NodeID, "owner"); err != nil {
 		t.Fatal(err)
@@ -27,7 +30,7 @@ func TestAdminSetNodeRole(t *testing.T) {
 	if info.OwnerNodeID != joined.NodeID || info.OwnerDeviceID != "dev-joiner" {
 		t.Fatalf("owner not transferred: node=%s device=%s", info.OwnerNodeID, info.OwnerDeviceID)
 	}
-	assertNodeRole(t, st, created.NetworkID, created.NodeID, "admin")
+	assertNodeRole(t, st, created.NetworkID, created.NodeID, "member")
 	assertNodeRole(t, st, created.NetworkID, joined.NodeID, "owner")
 
 	if err := st.AdminSetNodeRole(created.NetworkID, joined.NodeID, "member"); err == nil {

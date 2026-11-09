@@ -33,6 +33,7 @@ var (
 	// ErrSubnetPoolExhausted is returned when the automatic /24 allocation pool
 	// has no subnet free of overlap with existing networks.
 	ErrSubnetPoolExhausted = errors.New("subnet allocation pool exhausted")
+	ErrInvalidRole         = errors.New("invalid role (must be owner or member)")
 	ErrUnauthorized        = errors.New("unauthorized")
 	ErrManagedNetwork      = errors.New("服务端管理的网络不可认领")
 	ErrRelayV2Disabled     = errors.New("relay v2 is not configured")
@@ -450,6 +451,11 @@ func (s *Store) load() error {
 				var n protocol.Node
 				if err := json.Unmarshal(v, &n); err != nil {
 					return err
+				}
+				// Smooth downgrade: the legacy "admin" role no longer exists.
+				// Treat historical admins as ordinary members on load.
+				if n.Role == "admin" {
+					n.Role = "member"
 				}
 				netID := string(k[:strings.IndexByte(string(k), '/')])
 				if ns := s.networks[netID]; ns != nil {
@@ -2941,7 +2947,7 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 	now := time.Now().Unix()
 	peers := make([]protocol.Node, 0, len(ns.nodes)-1)
 	me := ns.nodes[te.NodeID]
-	isOwnerAdmin := me != nil && (me.Role == "owner" || me.Role == "admin")
+	isOwner := me != nil && me.Role == "owner"
 	fillNodeView := func(n2 *protocol.Node) {
 		// Live online status: online within the same TTL the owner view uses.
 		n2.Online = now-n2.LastSeen < int64(lastSeenTTL/time.Second)
@@ -2971,7 +2977,7 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 			// 隧道，隐藏它会让成员端无法配置任何 peer。AllowedSubnets 同样必须
 			// 保留：成员需要它来安装 WireGuard AllowedIPs 和系统路由，否则
 			// ownerless/managed 网络中的子网共享永远不可达。
-			if !isOwnerAdmin {
+			if !isOwner {
 				n2.Role = ""
 			}
 			fillNodeView(&n2)
@@ -3350,9 +3356,10 @@ func (s *Store) reassignIPsLocked(ns *networkState, subnet string) error {
 	return nil
 }
 
-// SetNodeRole sets a peer node's role within a network. Only the owner device
-// may change roles, and only between "admin" and "member" (the owner keeps
-// its own role; the target must never be the owner node).
+// SetNodeRole sets a peer node's role within a network. Only the current owner
+// may change roles. Valid targets are "member" and "owner": setting "owner"
+// transfers network ownership to the target device and demotes the previous
+// owner to "member". The legacy "admin" role is rejected.
 func (s *Store) SetNodeRole(token, targetNodeID, role string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3363,23 +3370,48 @@ func (s *Store) SetNodeRole(token, targetNodeID, role string) error {
 	if err := s.requireOwnerLocked(ns, meID); err != nil {
 		return err
 	}
-	if role != "admin" && role != "member" {
-		return errors.New("invalid role (must be admin or member)")
+	role = strings.ToLower(strings.TrimSpace(role))
+	switch role {
+	case "member", "owner":
+	default:
+		return ErrInvalidRole
 	}
-	if targetNodeID == "" || targetNodeID == ns.n.OwnerNodeID {
-		return errors.New("cannot change the owner's role")
+	if targetNodeID == "" {
+		return ErrNotFound
 	}
 	target := ns.nodes[targetNodeID]
 	if target == nil {
 		return ErrNotFound
 	}
-	if target.DeviceID == ns.n.OwnerDeviceID {
-		return errors.New("cannot change the owner's role")
+	if role == "owner" {
+		if target.ID == ns.n.OwnerNodeID {
+			return nil
+		}
+		if target.DeviceID == "" {
+			return errors.New("external node cannot own a network")
+		}
+		if old := ns.nodes[ns.n.OwnerNodeID]; old != nil && old.ID != target.ID {
+			old.Role = "member"
+			if err := s.persistNode(ns.n.ID, old); err != nil {
+				return err
+			}
+		}
+		target.Role = "owner"
+		ns.n.OwnerNodeID = target.ID
+		ns.n.OwnerDeviceID = target.DeviceID
+		if err := s.persistNode(ns.n.ID, target); err != nil {
+			return err
+		}
+		return s.persistNetwork(ns)
 	}
-	if target.Role == role {
+	// member
+	if target.ID == ns.n.OwnerNodeID || target.DeviceID == ns.n.OwnerDeviceID {
+		return errors.New("cannot demote the owner; transfer ownership first")
+	}
+	if target.Role == "member" {
 		return nil
 	}
-	target.Role = role
+	target.Role = "member"
 	return s.persistNode(ns.n.ID, target)
 }
 
@@ -5386,13 +5418,13 @@ func (s *Store) AdminSetNodeAllowedSubnets(nid, nodeID string, subnets []string)
 
 // AdminSetNodeRole changes a node's role from the admin console. Setting a
 // node to owner transfers network ownership to that node's device; the old
-// owner is retained as an admin.
+// owner is demoted to member. The legacy "admin" role is rejected.
 func (s *Store) AdminSetNodeRole(nid, nodeID, role string) error {
 	role = strings.ToLower(strings.TrimSpace(role))
 	switch role {
-	case "owner", "admin", "member":
+	case "owner", "member":
 	default:
-		return errors.New("invalid role (must be owner, admin or member)")
+		return ErrInvalidRole
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -5412,7 +5444,7 @@ func (s *Store) AdminSetNodeRole(nid, nodeID, role string) error {
 			return errors.New("external node cannot own a network")
 		}
 		if old := ns.nodes[ns.n.OwnerNodeID]; old != nil && old.ID != target.ID {
-			old.Role = "admin"
+			old.Role = "member"
 			if err := s.persistNode(nid, old); err != nil {
 				return err
 			}

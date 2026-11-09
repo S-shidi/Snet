@@ -124,7 +124,7 @@ type Node struct {
 	// AllowedSubnets lists CIDR subnets this node advertises for routing.
 	// Other peers route traffic for these subnets through this node's tunnel.
 	AllowedSubnets []string `json:"allowedSubnets,omitempty"`
-	// Role 是节点在网络中的角色："owner" | "admin" | "member"。
+	// Role 是节点在网络中的角色："owner"（创建者）| "member"（普通成员）。
 	Role string `json:"role,omitempty"`
 	// PublicIPv4 is the node's public IPv4 address (without port), extracted
 	// from RelayFlow or Endpoint. Shown in the admin console for diagnostics.
@@ -493,7 +493,7 @@ type UpdateNodePublicKeyReq struct {
 }
 
 // SetNodeRoleReq sets a node's role within a network. Only the owner may
-// change roles; valid roles are "admin" and "member".
+// change roles; valid roles are "member" and "owner" (ownership transfer).
 type SetNodeRoleReq struct {
 	Role string `json:"role"`
 }

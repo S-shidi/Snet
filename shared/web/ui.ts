@@ -921,7 +921,6 @@ async function showPending(nid: string) {
 function roleLabel(role: string): string {
   const r = String(role || "").trim().toLowerCase();
   if (r === "owner") return "创建者";
-  if (r === "admin") return "管理员";
   return "成员";
 }
 
@@ -955,7 +954,7 @@ async function showMembers(nid: string) {
         ? `<span class="pill role-${esc(role)}">${roleLabel(role)}</span>`
         : `<select data-role="${esc(nd.id)}" data-cur="${esc(role)}" class="role-select">
              <option value="member" ${role === "member" ? "selected" : ""}>成员</option>
-             <option value="admin" ${role === "admin" ? "selected" : ""}>管理员</option>
+             <option value="owner" ${role === "owner" ? "selected" : ""}>创建者（转交所有权）</option>
            </select>`;
       const subnets = (nd.allowedSubnets?.length ?? 0) > 0
         ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
@@ -995,7 +994,11 @@ async function showMembers(nid: string) {
         );
         b.querySelectorAll<HTMLSelectElement>("[data-role]").forEach((sel) =>
           sel.addEventListener("change", async () => {
-            if (!(await confirmDialog("修改角色", `将该成员设为「${roleLabel(sel.value as string)}」？`, true))) {
+            const newRole = sel.value as string;
+            const msg = newRole === "owner"
+              ? "转交网络所有权给该成员？原创建者将变为普通成员。"
+              : `将该成员设为「${roleLabel(newRole)}」？`;
+            if (!(await confirmDialog("修改角色", msg, true))) {
               sel.value = sel.dataset.cur!;
               return;
             }
@@ -1727,12 +1730,11 @@ function networkRole(n: NetInfo): string {
   if (n.owner) return "owner";
   const self = peerDetails[n.networkId]?.self;
   const role = String(self?.role || n.role || "member").trim().toLowerCase();
-  return role === "owner" || role === "admin" ? role : "member";
+  return role === "owner" ? "owner" : "member";
 }
 
 function canManageNetwork(n: NetInfo): boolean {
-  const role = networkRole(n);
-  return role === "owner" || role === "admin" || !!n.owner;
+  return networkRole(n) === "owner" || !!n.owner;
 }
 
 function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string): string {
@@ -1749,7 +1751,7 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const subnets = (nd.allowedSubnets?.length ?? 0) > 0
       ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
       : '<span class="muted">-</span>';
-    const rolePill = role === "owner" || role === "admin"
+    const rolePill = role === "owner"
       ? `<span class="pill accent">${roleLabel(role)}</span>`
       : `<span class="pill off">${roleLabel(role)}</span>`;
     const op = canManage
@@ -1850,10 +1852,10 @@ function networkDetailHTML(n: NetInfo): string {
         <button type="button" class="btn ghost sm" data-detail-act="copy-invite">复制邀请链接</button>
         <button type="button" class="btn ghost sm" data-detail-act="copy-code">复制配对码</button>
       </div>`
-    : `<p class="hint">仅创建者/管理员可生成邀请链接和配对码。</p>`;
+    : `<p class="hint">仅创建者可生成邀请链接和配对码。</p>`;
   const settings = canManage
     ? `<section class="card detail-section detail-danger">
-        <div class="detail-section-head"><h3>网络设置</h3><span class="hint">仅创建者/管理员</span></div>
+        <div class="detail-section-head"><h3>网络设置</h3><span class="hint">仅创建者</span></div>
         <div class="detail-actions">
           <button type="button" class="btn ghost sm" data-detail-act="settings">网络设置</button>
           <button type="button" class="btn ghost sm" data-detail-act="subnets">子网路由管理</button>
