@@ -2877,7 +2877,7 @@ func globalIPv6(port int) string {
 		return ""
 	}
 	for _, ifc := range ifaces {
-		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || isVirtualInterfaceName(ifc.Name) {
 			continue
 		}
 		addrs, err := ifc.Addrs()

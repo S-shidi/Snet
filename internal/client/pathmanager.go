@@ -265,7 +265,7 @@ func peerV6Addr(raw string) *net.UDPAddr {
 	if err != nil || addr.Port == 0 || addr.IP == nil || addr.IP.To4() != nil {
 		return nil
 	}
-	if addr.IP.IsUnspecified() || addr.IP.IsLinkLocalUnicast() || addr.IP.IsMulticast() {
+	if !isPublicIPv6(addr.IP) {
 		return nil
 	}
 	return addr
@@ -1325,22 +1325,51 @@ func (pm *PathManager) DirectEndpoints() (string, string, string) {
 	return ep4, ep6, nat
 }
 
+func isVirtualInterfaceName(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	if n == "lo" || n == "docker0" {
+		return true
+	}
+	for _, prefix := range []string{"veth", "br-", "virbr", "cni", "flannel", "kube", "tun", "tap", "wg", "tailscale", "zt"} {
+		if strings.HasPrefix(n, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPublicIPv6 reports whether ip is a globally routable, non-ULA IPv6 address.
+func isPublicIPv6(ip net.IP) bool {
+	return ip != nil && ip.To4() == nil && ip.IsGlobalUnicast() &&
+		!ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() &&
+		!ip.IsMulticast() && !ip.IsUnspecified()
+}
+
 func firstGlobalIPv6() string {
-	addrs, err := net.InterfaceAddrs()
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return ""
 	}
-	for _, a := range addrs {
-		ipn, ok := a.(*net.IPNet)
-		if !ok {
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || isVirtualInterfaceName(ifc.Name) {
 			continue
 		}
-		ip := ipn.IP
-		if ip.To4() != nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
-			ip.IsMulticast() || ip.IsUnspecified() {
+		addrs, err := ifc.Addrs()
+		if err != nil {
 			continue
 		}
-		return ip.String()
+		for _, a := range addrs {
+			ipn, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if isPublicIPv6(ipn.IP) {
+				return ipn.IP.String()
+			}
+		}
 	}
 	return ""
 }
