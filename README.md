@@ -125,6 +125,7 @@ go test ./...
 - [项目总览](docs/PROJECT-ATLAS.md)
 - [网络架构评审](docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md)
 - [客户端 Docker 说明](deploy-prod/docker-client/README.md)
+- [macOS Wails 菜单栏客户端](desktop-mac/README.md)
 
 ## 安全
 
