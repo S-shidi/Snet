@@ -1,8 +1,8 @@
-# SnetMac — macOS 菜单栏客户端
+# SnetMac — macOS Wails 客户端
 
-基于 **Wails v2** 的 macOS 原生 GUI 骨架。前端复用仓库根目录的 `shared/web`，Go 后端负责启动/复用 `snetd`、代理 `/ctl/*`，并通过 `efeenesc/systray` 提供菜单栏入口。
+基于 **Wails v2** 的 macOS 原生 GUI。前端复用仓库根目录的 `shared/web`，Go 后端负责启动/复用 `snetd`，并代理 `/ctl/*`。
 
-> Wails v2 没有内置 system tray API，因此托盘使用 `github.com/efeenesc/systray`。如果遇到 Wails/托盘主线程冲突，见文末说明。
+> 重要：当前版本移除了 `getlantern/systray` / `efeenesc/systray`，以普通窗口模式启动。Wails v2 与第三方 systray 在较新 macOS 上存在主线程冲突，会导致启动即 SIGTRAP 崩溃。
 
 ## 环境要求
 
@@ -21,7 +21,7 @@ wails doctor
 
 ```text
 desktop-mac/
-├── main.go                 Wails 入口、托盘、窗口
+├── main.go                 Wails 入口
 ├── app.go                  snetd 启动/复用、ctl-token 代理
 ├── wails.json              Wails 配置
 ├── frontend/               WebView 资源
@@ -29,7 +29,6 @@ desktop-mac/
 │   ├── index.html
 │   ├── styles.css
 │   └── app.js
-├── assets/tray.png         菜单栏模板图标
 └── build/appicon.png       应用图标
 ```
 
@@ -54,7 +53,13 @@ WebView 内的相对 `/ctl/*` 请求由 `app.go` 的 `ctlProxy` 转发到：
 http://127.0.0.1:19432/ctl/*
 ```
 
-代理会读取 `~/Library/Application Support/virtual-net/ctl-token`，并注入 `X-Ctl-Token`，因此不需要在 Web UI 中暴露 token，也没有 CORS 问题。
+代理会读取：
+
+```text
+~/Library/Application Support/virtual-net/ctl-token
+```
+
+并注入 `X-Ctl-Token`，因此不需要在 Web UI 中暴露 token，也没有 CORS 问题。
 
 ## 启动 snetd
 
@@ -65,7 +70,7 @@ http://127.0.0.1:19432/ctl/*
 3. 使用 AppleScript：
 
 ```applescript
-do shell script "snetd ..." with administrator privileges
+do shell script "nohup snetd ..." with administrator privileges
 ```
 
 macOS 会弹出系统管理员授权框；`snetd` 以 root 启动，以便创建 `utun` 和配置路由。
@@ -120,18 +125,10 @@ codesign --force --deep --sign - build/bin/SnetMac.app
 open build/bin/SnetMac.app
 ```
 
-最终应用是一个菜单栏应用：
+应用以普通窗口启动；关闭窗口即退出应用。
 
-- 点击菜单栏图标打开菜单
-- `打开控制面板` 显示 WebView
-- `隐藏控制面板` 收回菜单栏
-- `退出 SNET` 退出应用
+## 注意
 
-窗口关闭按钮默认隐藏到菜单栏，不退出进程。
-
-## 注意事项
-
-- Wails v2 没有官方 system tray API；当前使用 `efeenesc/systray`。
-- 如果菜单栏图标不出现，先确认 `wails doctor` 正常，并尝试将 `main.go` 中的托盘启动方式改为在 `main` 运行托盘、Wails 放到 goroutine；不同 macOS/Wails 版本对主线程调度敏感。
+- 当前不使用系统托盘，避免 Wails v2 与 systray 的主线程冲突。
 - `snetd` 需要 root；不要在 WebView 内直接执行特权命令。
 - 不要提交 `ctl-token`、`device.id`、`config.json` 或私钥。
