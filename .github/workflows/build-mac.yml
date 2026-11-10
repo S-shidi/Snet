@@ -65,9 +65,27 @@ jobs:
           ZIP_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.zip"
           zip -r "$ZIP_NAME" SnetMac.app
 
+      - name: Create DMG
+        run: |
+          brew install create-dmg || true
+
+          cd desktop-mac/build/bin
+          create-dmg \
+            --volname "Snet Installer" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "SnetMac.app" 200 190 \
+            --hide-extension "SnetMac.app" \
+            --app-drop-link 600 185 \
+            "SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.dmg" \
+            "SnetMac.app"
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}
-          path: desktop-mac/build/bin/SnetMac-v*.zip
+          path: |
+            desktop-mac/build/bin/SnetMac-v*.zip
+            desktop-mac/build/bin/SnetMac-v*.dmg
           retention-days: 7

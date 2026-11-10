@@ -2,7 +2,7 @@
 
 SNET 是一个端到端加密的私有虚拟局域网：WireGuard 负责数据面，HTTPS 协调服务负责成员与网络状态，UDP Relay 负责在无法直连时保证连通性。
 
-当前版本：**v1.0.0**
+当前版本：**v1.0.4**
 
 ## 核心特性
 
@@ -64,7 +64,7 @@ docker compose --env-file .env up -d --build
 curl -fsS https://snet.uizhi.eu.org:8090/healthz
 ```
 
-预期返回 `serverVersion: "1.0.0"` 和 `status: "ok"`。
+预期返回 `serverVersion: "1.0.4"` 和 `status: "ok"`。
 
 ### 2. 客户端 Docker 镜像
 
@@ -98,6 +98,30 @@ http://<主机IP>:8081
 
 客户端容器使用 host network、`/dev/net/tun` 和 `/etc/snet` 数据卷；首次启动会在数据卷内生成稳定的 `device.id`。
 
+### 3. macOS Wails 客户端
+
+GitHub Actions 会构建并上传：
+
+```text
+SnetMac-v<VERSION>-<SHORT_SHA>.zip
+SnetMac-v<VERSION>-<SHORT_SHA>.dmg
+```
+
+下载后打开 `.dmg`，把 `SnetMac.app` 拖入 Applications。
+
+首次启动需要 macOS 管理员授权：客户端会通过 AppleScript 提权启动内置的 `snetd`，用于创建 `utun` 网卡、安装路由和写入：
+
+```text
+/usr/local/etc/snet/config.json
+/usr/local/etc/snet/device.id
+/usr/local/etc/snet/ctl-token
+/usr/local/etc/snet/snetd.log
+```
+
+App 只使用包内 `Contents/Resources/snetd`，不依赖 `/usr/local/snet` 或系统 `PATH`。
+
+本地构建见 [macOS Wails 客户端说明](desktop-mac/README.md)，开发排坑记录见 [MAC-DEV-NOTES](docs/MAC-DEV-NOTES.md)。
+
 ## 构建与发布
 
 ```bash
@@ -126,6 +150,7 @@ go test ./...
 - [网络架构评审](docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md)
 - [客户端 Docker 说明](deploy-prod/docker-client/README.md)
 - [macOS Wails 客户端](desktop-mac/README.md)
+- [macOS 开发排坑记录](docs/MAC-DEV-NOTES.md)
 
 ## 安全
 
