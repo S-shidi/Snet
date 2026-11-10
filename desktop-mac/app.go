@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,11 @@ func (a *App) startup(ctx context.Context) {
 		a.setError(err)
 		log.Printf("snetd: %v", err)
 		wruntime.WindowShow(ctx)
+		_, _ = wruntime.MessageDialog(ctx, wruntime.MessageDialogOptions{
+			Type:    wruntime.ErrorDialog,
+			Title:   "SNET 启动失败",
+			Message: err.Error(),
+		})
 	}
 }
 
@@ -84,9 +90,6 @@ func (a *App) setError(err error) {
 }
 
 func (a *App) ensureDaemon() error {
-	if daemonRunning() {
-		return nil
-	}
 	bin, err := findDaemonBinary()
 	if err != nil {
 		return err
@@ -101,6 +104,9 @@ func (a *App) ensureDaemon() error {
 	configPath := filepath.Join(dir, "config.json")
 	deviceIDFile := filepath.Join(dir, "device.id")
 	logPath := filepath.Join(dir, "snetd.log")
+	if daemonRunning(bin, configPath) {
+		return nil
+	}
 
 	cmdline := fmt.Sprintf("nohup %s -config %s -device-id-file %s -ctl %s >>%s 2>&1 &",
 		shellQuote(bin), shellQuote(configPath), shellQuote(deviceIDFile), ctlAddr, shellQuote(logPath))
@@ -118,42 +124,24 @@ func (a *App) ensureDaemon() error {
 	return errors.New("snetd 已启动，但 ctl-token 尚未生成")
 }
 
-func daemonRunning() bool {
-	for _, args := range [][]string{
-		{"-x", "snetd"},
-		{"-f", "snetd-darwin"},
-	} {
-		if err := exec.Command("pgrep", args...).Run(); err == nil {
-			return true
-		}
-	}
-	return false
+func daemonRunning(bin, configPath string) bool {
+	// Only reuse a daemon started from this exact app bundle and sandbox
+	// config. A system-wide snetd from /usr/local must never be adopted.
+	pattern := regexp.QuoteMeta(bin) + ".*" + regexp.QuoteMeta(configPath)
+	return exec.Command("pgrep", "-f", pattern).Run() == nil
 }
 
 func findDaemonBinary() (string, error) {
-	execPath, _ := os.Executable()
-	base := filepath.Dir(execPath)
-	candidates := []string{
-		os.Getenv("SNETD_BIN"),
-		filepath.Join(base, "snetd"),
-		filepath.Join(base, "snetd-darwin-arm64"),
-		filepath.Join(base, "..", "Resources", "snetd"),
-		filepath.Join(base, "..", "Resources", "snetd-darwin-arm64"),
-		filepath.Join(base, "..", "..", "..", "dist", "snetd-darwin-arm64"),
-		"/usr/local/snet/bin/snetd",
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", errors.New("应用包损坏，缺少 snetd 核心")
 	}
-	if p, err := exec.LookPath("snetd"); err == nil {
-		candidates = append(candidates, p)
+	resource := filepath.Clean(filepath.Join(filepath.Dir(execPath), "..", "Resources", "snetd"))
+	st, err := os.Stat(resource)
+	if err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
+		return "", errors.New("应用包损坏，缺少 snetd 核心")
 	}
-	for _, p := range candidates {
-		if p == "" {
-			continue
-		}
-		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
-			return p, nil
-		}
-	}
-	return "", errors.New("找不到 snetd；请设置 SNETD_BIN，或把 snetd-darwin-arm64 放到应用 Resources 目录")
+	return resource, nil
 }
 
 func configDir() (string, error) {
@@ -165,12 +153,11 @@ func configDir() (string, error) {
 }
 
 func ctlTokenPaths() []string {
-	var out []string
-	if dir, err := configDir(); err == nil {
-		out = append(out, filepath.Join(dir, "ctl-token"))
+	dir, err := configDir()
+	if err != nil {
+		return nil
 	}
-	out = append(out, "/usr/local/snet/ctl-token", "/etc/snet/ctl-token")
-	return out
+	return []string{filepath.Join(dir, "ctl-token")}
 }
 
 func readCtlToken() (string, error) {

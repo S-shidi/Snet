@@ -65,9 +65,10 @@ http://127.0.0.1:19432/ctl/*
 
 应用启动时：
 
-1. 通过 `pgrep` 检查是否已有 `snetd`。
-2. 如果没有，查找 `SNETD_BIN`、应用 `Contents/Resources/snetd`、`/usr/local/snet/bin/snetd` 或开发目录 `dist/snetd-darwin-arm64`。
-3. 使用 AppleScript：
+1. 只查找应用包内的 `Contents/Resources/snetd`。
+2. 找不到时直接报错：`应用包损坏，缺少 snetd 核心`。
+3. 不会搜索 `/usr/local/snet/bin/snetd`、系统 `PATH` 或开发目录。
+4. 使用 AppleScript：
 
 ```applescript
 do shell script "nohup snetd ..." with administrator privileges
@@ -75,7 +76,15 @@ do shell script "nohup snetd ..." with administrator privileges
 
 macOS 会弹出系统管理员授权框；`snetd` 以 root 启动，以便创建 `utun` 和配置路由。
 
-配置与身份文件使用当前用户配置目录：
+启动参数固定使用当前用户的沙盒配置：
+
+```text
+-config ~/Library/Application Support/virtual-net/config.json
+-device-id-file ~/Library/Application Support/virtual-net/device.id
+-ctl 127.0.0.1:19432
+```
+
+配置与身份文件：
 
 ```text
 ~/Library/Application Support/virtual-net/config.json
@@ -84,7 +93,7 @@ macOS 会弹出系统管理员授权框；`snetd` 以 root 启动，以便创建
 ~/Library/Application Support/virtual-net/snetd.log
 ```
 
-如果系统已有 launchd 管理的 `snetd`，应用会直接复用，不会重复启动。
+应用只会复用由同一 App 包、同一沙盒配置启动的 `snetd`，不会复用系统级 `/usr/local` 守护进程。
 
 ## 开发
 
@@ -96,17 +105,15 @@ GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
   go build -trimpath -o dist/snetd-darwin-arm64 ./cmd/client/snetd
 ```
 
-然后：
+应用只接受 App 包内二进制，因此开发验证建议直接构建：
 
 ```bash
 cd desktop-mac
-wails dev
-```
-
-开发模式默认会自动查找 `../dist/snetd-darwin-arm64`。也可以显式指定：
-
-```bash
-SNETD_BIN="$PWD/../dist/snetd-darwin-arm64" wails dev
+wails build -platform darwin/arm64
+cp ../dist/snetd-darwin-arm64 build/bin/SnetMac.app/Contents/Resources/snetd
+chmod +x build/bin/SnetMac.app/Contents/Resources/snetd
+codesign --force --deep --sign - build/bin/SnetMac.app
+open build/bin/SnetMac.app
 ```
 
 ## 构建
