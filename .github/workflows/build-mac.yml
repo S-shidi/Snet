@@ -47,6 +47,12 @@ jobs:
           ./frontend/build-frontend.sh
           wails build -platform darwin/arm64 -clean
 
+      - name: Get Version Info
+        id: vars
+        run: |
+          echo "VERSION=$(cat VERSION)" >> $GITHUB_OUTPUT
+          echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
       - name: Package App with Daemon
         run: |
           mkdir -p desktop-mac/build/bin/SnetMac.app/Contents/Resources/
@@ -56,11 +62,12 @@ jobs:
           codesign --force --deep --sign - desktop-mac/build/bin/SnetMac.app
 
           cd desktop-mac/build/bin
-          zip -r SnetMac-arm64.zip SnetMac.app
+          ZIP_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.zip"
+          zip -r "$ZIP_NAME" SnetMac.app
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SnetMac-arm64
-          path: desktop-mac/build/bin/SnetMac-arm64.zip
+          name: SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}
+          path: desktop-mac/build/bin/SnetMac-v*.zip
           retention-days: 7
