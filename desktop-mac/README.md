@@ -71,7 +71,7 @@ http://127.0.0.1:19432/ctl/*
 4. 使用 AppleScript：
 
 ```applescript
-do shell script "nohup snetd ..." with administrator privileges
+do shell script "pkill -f '[s]netd' || true && /Applications/SnetMac.app/Contents/Resources/snetd ... >> /usr/local/etc/snet/snetd.log 2>&1 &" with administrator privileges
 ```
 
 macOS 会弹出系统管理员授权框；`snetd` 以 root 启动，以便创建 `utun` 和配置路由。

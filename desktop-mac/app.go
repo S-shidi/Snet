@@ -127,7 +127,7 @@ set cleanupCmd to ""
 if legacyPath is not "" then
   set cleanupCmd to "rm -rf " & quoted form of legacyPath & " && "
 end if
-do shell script cleanupCmd & "mkdir -p " & quoted form of dataDir & " && chown root:wheel " & quoted form of dataDir & " && chmod 755 " & quoted form of dataDir & " && nohup " & quoted form of binPath & " -config " & quoted form of configPath & " -device-id-file " & quoted form of deviceIDPath & " -ctl " & quoted form of "%s" & " >> " & quoted form of logPath & " 2>&1 &" with administrator privileges`,
+do shell script cleanupCmd & "pkill -f '[s]netd' || true; sleep 1; mkdir -p " & quoted form of dataDir & " && chown root:wheel " & quoted form of dataDir & " && chmod 755 " & quoted form of dataDir & " && " & quoted form of binPath & " -config " & quoted form of configPath & " -device-id-file " & quoted form of deviceIDPath & " -ctl " & quoted form of "%s" & " >> " & quoted form of logPath & " 2>&1 &" with administrator privileges`,
 		appleScriptQuote(bin), appleScriptQuote(dir), appleScriptQuote(configPath), appleScriptQuote(deviceIDFile), appleScriptQuote(logPath), appleScriptQuote(legacyPath), ctlAddr)
 	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {
