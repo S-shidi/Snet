@@ -33,6 +33,7 @@ export type NetInfo = {
   active?: boolean;
   owner?: boolean;
   error?: string;
+  state?: string;
   interface?: string;
   peerStats?: Record<string, PeerStats>;
   allowedSubnets?: string[];
@@ -67,6 +68,7 @@ export type DaemonStatus = {
   authExpired?: boolean;
   authExpiresAt?: string;
   wgPort?: number;
+  version?: string;
   networks?: NetInfo[];
   pendingJoins?: PendingJoin[];
   natMapping?: NatStatus;
@@ -115,7 +117,7 @@ export interface Backend {
   /** Get peers for a network */
   peers(nid: string): Promise<PeersResp>;
   /** Update network settings (owner only) */
-  updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null; description?: string; tags?: string[]; visibility?: string }): Promise<void>;
+  updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null }): Promise<void>;
   /** Enable or disable automatic inbound NAT mapping for this device */
   setNATMapping(enabled: boolean): Promise<void>;
   /** Set a peer node's role (owner only) */

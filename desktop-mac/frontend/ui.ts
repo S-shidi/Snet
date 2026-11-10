@@ -88,12 +88,24 @@ const peerAllowed: Record<string, string[]> = {};
 // Full peer snapshots are kept for the path monitor so it can show names,
 // virtual IPs and direct-path details without issuing another request.
 const peerDetails: Record<string, PeersResp> = {};
+const peerErrors: Record<string, string> = {};
 // Member online counts come from the coordination server's LastSeen window
 // (the same source the Android client uses). WireGuard handshake age only
 // proves recent data-plane traffic, so an idle-but-connected member would
 // otherwise be miscounted as offline.
 const peerSummary: Record<string, { online: number; total: number }> = {};
 let lastPeerSubnetsFetch = 0;
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    p.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 async function refreshPeerSubnets(force = false) {
   const now = Date.now();
   if (!force && now - lastPeerSubnetsFetch < 10000) return;
@@ -102,8 +114,9 @@ async function refreshPeerSubnets(force = false) {
   await Promise.all(
     (status.networks ?? []).map(async (n) => {
       try {
-        const r = await backend.peers(n.networkId);
+        const r = await withTimeout(backend.peers(n.networkId), 5000, "成员信息加载超时");
         peerDetails[n.networkId] = r;
+        delete peerErrors[n.networkId];
         const list = r.peers ?? [];
         const selfOnline = r.self ? !!r.self.online : false;
         peerSummary[n.networkId] = {
@@ -114,10 +127,11 @@ async function refreshPeerSubnets(force = false) {
         for (const p of list) (p.allowedSubnets ?? []).forEach((s) => set.add(s));
         for (const s of n.allowedSubnets ?? []) set.add(s);
         peerAllowed[n.networkId] = [...set].sort();
-      } catch {
+      } catch (e) {
         delete peerAllowed[n.networkId];
         delete peerSummary[n.networkId];
         delete peerDetails[n.networkId];
+        peerErrors[n.networkId] = "该网络已失效或加载失败";
       }
     }),
   );
@@ -126,6 +140,16 @@ async function refreshPeerSubnets(force = false) {
 /* ── Header ───────────────────────────────────────────────────── */
 function renderHeader() {
   const dot = $("#daemon-state") as HTMLElement;
+  const ver = $("#app-version") as HTMLElement | null;
+  if (ver) {
+    const v = status?.version;
+    if (v) {
+      ver.textContent = "v" + v;
+      ver.hidden = false;
+    } else {
+      ver.hidden = true;
+    }
+  }
   if (!dot) return;
   if (backend.hasDaemonControl) {
     if (status) {
@@ -153,11 +177,12 @@ function renderHeader() {
 }
 
 /* ── Network cards ────────────────────────────────────────────── */
-function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; allowedSubnets?: string[]; visibility?: string; description?: string; tags?: string[]; role?: string }): string {
+function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; state?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; allowedSubnets?: string[]; visibility?: string; description?: string; tags?: string[]; role?: string }): string {
   const gone = n.serverState === "gone";
   const linked = !!n.interface;
-  const state = gone ? "已删除" : linked ? "已链接" : n.active ? "未就绪" : "未链接";
-  const cls = gone ? "gone" : linked ? "ok" : n.active ? "warn" : "off";
+  const hasErr = !!n.error && !gone;
+  const state = gone ? "已删除" : hasErr ? "异常" : linked ? "已链接" : n.active ? "未就绪" : "未链接";
+  const cls = gone ? "gone" : hasErr ? "err" : linked ? "ok" : n.active ? "warn" : "off";
   const peers = n.peerStats ?? {};
   const total = Object.keys(peers).length;
   const detail = n.owner ? ownerInfo[n.networkId] : undefined;
@@ -583,14 +608,6 @@ async function openNetworkSettings(nid: string) {
       <div class="row"><label>网络名称</label><input id="s-name" type="text" value="${esc(curName)}" placeholder="留空保持不变" /></div>
       <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "s-subnet", value: curSubnet, placeholder: "留空保持不变", emptyHint: "留空保持不变" })}</div>
       <div class="row"><label class="inline"><input id="s-approval" type="checkbox" ${detail.approvalRequired ? "checked" : ""} /> 新成员加入需创建者批准</label></div>
-      <div class="row"><label>描述</label><textarea id="s-desc" class="form-control" rows="2" placeholder="简短说明这个网络的用途（分享时展示）">${esc(detail.description || "")}</textarea></div>
-      <div class="row"><label>标签</label><input id="s-tags" type="text" value="${esc((detail.tags ?? []).join(", "))}" placeholder="逗号分隔，如 家庭, NAS, 异地" /></div>
-      <div class="row"><label>公开范围</label>
-        <select id="s-visibility" class="form-control">
-          <option value="">私密（不公开）</option>
-          <option value="shareable" ${detail.visibility === "shareable" ? "selected" : ""}>可被社区发现（shareable）</option>
-        </select>
-      </div>
       <p class="msg" id="s-warn" hidden>修改网段会重新分配所有成员 IP，已加入的 SNET 客户端会自动重连；但手机等外部 WireGuard 设备需手动重新导入新配置。</p>
       <p class="msg" id="s-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn">保存</button>`,
@@ -611,10 +628,6 @@ async function openNetworkSettings(nid: string) {
         }
         const subnet = chk.value;
         const approval = (body.querySelector("#s-approval") as HTMLInputElement).checked;
-        const desc = (body.querySelector("#s-desc") as HTMLTextAreaElement).value.trim();
-        const tags = (body.querySelector("#s-tags") as HTMLInputElement).value
-          .split(",").map((s) => s.trim()).filter(Boolean).slice(0, 8);
-        const visibility = (body.querySelector("#s-visibility") as HTMLSelectElement).value;
         const result = body.querySelector<HTMLElement>("#s-result")!;
         const submit = body.querySelector<HTMLButtonElement>("#m-submit")!;
         const origText = submit.textContent;
@@ -628,9 +641,6 @@ async function openNetworkSettings(nid: string) {
               name,
               subnet: subnet !== curSubnet ? subnet : "",
               approvalRequired: approval !== !!detail!.approvalRequired ? approval : null,
-              description: desc,
-              tags,
-              visibility,
             });
             return true;
           });
@@ -925,7 +935,6 @@ async function showPending(nid: string) {
 function roleLabel(role: string): string {
   const r = String(role || "").trim().toLowerCase();
   if (r === "owner") return "创建者";
-  if (r === "admin") return "管理员";
   return "成员";
 }
 
@@ -959,7 +968,7 @@ async function showMembers(nid: string) {
         ? `<span class="pill role-${esc(role)}">${roleLabel(role)}</span>`
         : `<select data-role="${esc(nd.id)}" data-cur="${esc(role)}" class="role-select">
              <option value="member" ${role === "member" ? "selected" : ""}>成员</option>
-             <option value="admin" ${role === "admin" ? "selected" : ""}>管理员</option>
+             <option value="owner" ${role === "owner" ? "selected" : ""}>创建者（转交所有权）</option>
            </select>`;
       const subnets = (nd.allowedSubnets?.length ?? 0) > 0
         ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
@@ -999,7 +1008,11 @@ async function showMembers(nid: string) {
         );
         b.querySelectorAll<HTMLSelectElement>("[data-role]").forEach((sel) =>
           sel.addEventListener("change", async () => {
-            if (!(await confirmDialog("修改角色", `将该成员设为「${roleLabel(sel.value as string)}」？`, true))) {
+            const newRole = sel.value as string;
+            const msg = newRole === "owner"
+              ? "转交网络所有权给该成员？原创建者将变为普通成员。"
+              : `将该成员设为「${roleLabel(newRole)}」？`;
+            if (!(await confirmDialog("修改角色", msg, true))) {
               sel.value = sel.dataset.cur!;
               return;
             }
@@ -1687,7 +1700,7 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
     ? `<div class="path-p2p-banner"><span class="path-p2p-icon">↯</span><div><b>当前已建立 P2P 直连</b><span>${direct} 个节点正在通过直连传输，延迟更低。</span></div></div>`
     : "";
   const peerHTML = !r
-    ? `<div class="path-empty">正在获取成员信息…</div>`
+    ? `<div class="path-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</div>`
     : peers.length
       ? peers.map((p) => pathPeerRow(p, directMap[p.id], relayReady)).join("")
       : `<div class="path-empty">当前网络暂无其他节点。分享邀请链接或授权码即可组网。</div>`;
@@ -1731,16 +1744,15 @@ function networkRole(n: NetInfo): string {
   if (n.owner) return "owner";
   const self = peerDetails[n.networkId]?.self;
   const role = String(self?.role || n.role || "member").trim().toLowerCase();
-  return role === "owner" || role === "admin" ? role : "member";
+  return role === "owner" ? "owner" : "member";
 }
 
 function canManageNetwork(n: NetInfo): boolean {
-  const role = networkRole(n);
-  return role === "owner" || role === "admin" || !!n.owner;
+  return networkRole(n) === "owner" || !!n.owner;
 }
 
 function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string): string {
-  if (!r) return `<p class="hint">正在获取成员信息…</p>`;
+  if (!r) return `<p class="hint">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
   const list: NetNode[] = self ? [self, ...(r.peers ?? [])] : (r.peers ?? []);
   if (!list.length) return `<p class="hint">暂无成员信息</p>`;
@@ -1753,7 +1765,7 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const subnets = (nd.allowedSubnets?.length ?? 0) > 0
       ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
       : '<span class="muted">-</span>';
-    const rolePill = role === "owner" || role === "admin"
+    const rolePill = role === "owner"
       ? `<span class="pill accent">${roleLabel(role)}</span>`
       : `<span class="pill off">${roleLabel(role)}</span>`;
     const op = canManage
@@ -1854,13 +1866,12 @@ function networkDetailHTML(n: NetInfo): string {
         <button type="button" class="btn ghost sm" data-detail-act="copy-invite">复制邀请链接</button>
         <button type="button" class="btn ghost sm" data-detail-act="copy-code">复制配对码</button>
       </div>`
-    : `<p class="hint">仅创建者/管理员可生成邀请链接和配对码。</p>`;
+    : `<p class="hint">仅创建者可生成邀请链接和配对码。</p>`;
   const settings = canManage
     ? `<section class="card detail-section detail-danger">
-        <div class="detail-section-head"><h3>网络设置</h3><span class="hint">仅创建者/管理员</span></div>
+        <div class="detail-section-head"><h3>网络设置</h3><span class="hint">仅创建者</span></div>
         <div class="detail-actions">
-          <button type="button" class="btn ghost sm" data-detail-act="settings">修改描述</button>
-          <button type="button" class="btn ghost sm" data-detail-act="approval">入网审批</button>
+          <button type="button" class="btn ghost sm" data-detail-act="settings">网络设置</button>
           <button type="button" class="btn ghost sm" data-detail-act="subnets">子网路由管理</button>
           <button type="button" class="btn danger sm" data-detail-act="delete">删除网络</button>
         </div>
@@ -1933,10 +1944,12 @@ async function openNetworkDetail(nid: string) {
   if (detail) detail.hidden = false;
   renderNetworkDetail();
   try {
-    peerDetails[nid] = await backend.peers(nid);
+    peerDetails[nid] = await withTimeout(backend.peers(nid), 5000, "成员信息加载超时");
+    delete peerErrors[nid];
     renderNetworkDetail();
   } catch {
-    // Keep the cached snapshot; refresh() will retry on the next poll.
+    peerErrors[nid] = "该网络已失效或加载失败";
+    renderNetworkDetail();
   }
 }
 
@@ -1985,8 +1998,7 @@ function bindNetworkDetailEvents() {
       case "back": closeNetworkDetail(); break;
       case "copy-invite": await copyInviteLink(nid, el as HTMLButtonElement); break;
       case "copy-code": await copyPairingCode(nid, el as HTMLButtonElement); break;
-      case "settings":
-      case "approval": await openNetworkSettings(nid); break;
+      case "settings": await openNetworkSettings(nid); break;
       case "subnets": await openSubnetRouteModal(nid); break;
       case "delete": await deleteNetworkFromDetail(nid, el as HTMLButtonElement); break;
     }

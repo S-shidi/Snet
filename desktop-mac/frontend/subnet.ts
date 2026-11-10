@@ -61,7 +61,7 @@ export function subnetCheck(raw: string, selectPrefix: number): SubnetCheck {
   if (base !== u32) {
     return { ok: true, value, fix: true, text: `主机位应为 0，已修正为 ${value}` };
   }
-  const capacity = Math.max(0, 2 ** (32 - prefix) - 2).toLocaleString("en-US");
+  const capacity = Math.min(100, Math.max(0, 2 ** (32 - prefix) - 2)).toLocaleString("en-US");
   return { ok: true, value, text: `✓ ${value} · 私有网段，可容纳 ${capacity} 台` };
 }
 

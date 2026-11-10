@@ -1245,8 +1245,10 @@ func (d *Daemon) SyncNetworks(deviceToken string) error {
 
 	synced := 0
 	updated := false
+	seen := make(map[string]struct{}, len(details))
 	for _, detail := range details {
 		nid := detail.Network.ID
+		seen[nid] = struct{}{}
 
 		// Existing networks keep their local runtime state, but the server
 		// rotates the node token on every DeviceNetworkDetails call. Persist
@@ -1318,7 +1320,22 @@ func (d *Daemon) SyncNetworks(deviceToken string) error {
 		synced++
 	}
 
-	if synced > 0 || updated {
+	// DeviceNetworks is authoritative for this device. Any local network not
+	// returned by the server has been deleted (or this node was removed), so
+	// drop the cached config and tear down its TUN/routes instead of leaving a
+	// ghost network that can never load its peers.
+	removed := 0
+	for nid := range d.cfg.Networks {
+		if _, ok := seen[nid]; ok {
+			continue
+		}
+		log.Printf("sync networks: removing deleted local network %s", nid)
+		d.leaveLocked(nid)
+		delete(d.cfg.Networks, nid)
+		delete(d.serverState, nid)
+		removed++
+	}
+	if synced > 0 || updated || removed > 0 {
 		if err := d.save(); err != nil {
 			log.Printf("sync networks: save: %v", err)
 		}
@@ -2206,6 +2223,19 @@ func (d *Daemon) pollLoop(nid string) {
 		// links do not stall the control API (status/info/members).
 		st, err := api.PeersState(nid, token, true)
 		if err != nil {
+			var se *httpStatusErr
+			if errors.As(err, &se) && se.code == 404 {
+				log.Printf("poll peers %s: network gone; removing local config", nid)
+				d.mu.Lock()
+				d.leaveLocked(nid)
+				delete(d.cfg.Networks, nid)
+				delete(d.serverState, nid)
+				if saveErr := d.save(); saveErr != nil {
+					log.Printf("remove gone network %s: save: %v", nid, saveErr)
+				}
+				d.mu.Unlock()
+				return
+			}
 			log.Printf("poll peers %s: %v", nid, err)
 			continue
 		}

@@ -24,10 +24,10 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title:             "SNET",
-		Width:             1040,
-		Height:            760,
-		MinWidth:          760,
-		MinHeight:         560,
+		Width:             1100,
+		Height:            800,
+		MinWidth:          800,
+		MinHeight:         600,
 		StartHidden:       false,
 		HideWindowOnClose: false,
 		BackgroundColour:  &options.RGBA{R: 13, G: 16, B: 23, A: 255},

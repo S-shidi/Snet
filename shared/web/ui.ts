@@ -88,12 +88,24 @@ const peerAllowed: Record<string, string[]> = {};
 // Full peer snapshots are kept for the path monitor so it can show names,
 // virtual IPs and direct-path details without issuing another request.
 const peerDetails: Record<string, PeersResp> = {};
+const peerErrors: Record<string, string> = {};
 // Member online counts come from the coordination server's LastSeen window
 // (the same source the Android client uses). WireGuard handshake age only
 // proves recent data-plane traffic, so an idle-but-connected member would
 // otherwise be miscounted as offline.
 const peerSummary: Record<string, { online: number; total: number }> = {};
 let lastPeerSubnetsFetch = 0;
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    p.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 async function refreshPeerSubnets(force = false) {
   const now = Date.now();
   if (!force && now - lastPeerSubnetsFetch < 10000) return;
@@ -102,8 +114,9 @@ async function refreshPeerSubnets(force = false) {
   await Promise.all(
     (status.networks ?? []).map(async (n) => {
       try {
-        const r = await backend.peers(n.networkId);
+        const r = await withTimeout(backend.peers(n.networkId), 5000, "成员信息加载超时");
         peerDetails[n.networkId] = r;
+        delete peerErrors[n.networkId];
         const list = r.peers ?? [];
         const selfOnline = r.self ? !!r.self.online : false;
         peerSummary[n.networkId] = {
@@ -114,10 +127,11 @@ async function refreshPeerSubnets(force = false) {
         for (const p of list) (p.allowedSubnets ?? []).forEach((s) => set.add(s));
         for (const s of n.allowedSubnets ?? []) set.add(s);
         peerAllowed[n.networkId] = [...set].sort();
-      } catch {
+      } catch (e) {
         delete peerAllowed[n.networkId];
         delete peerSummary[n.networkId];
         delete peerDetails[n.networkId];
+        peerErrors[n.networkId] = "该网络已失效或加载失败";
       }
     }),
   );
@@ -1686,7 +1700,7 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
     ? `<div class="path-p2p-banner"><span class="path-p2p-icon">↯</span><div><b>当前已建立 P2P 直连</b><span>${direct} 个节点正在通过直连传输，延迟更低。</span></div></div>`
     : "";
   const peerHTML = !r
-    ? `<div class="path-empty">正在获取成员信息…</div>`
+    ? `<div class="path-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</div>`
     : peers.length
       ? peers.map((p) => pathPeerRow(p, directMap[p.id], relayReady)).join("")
       : `<div class="path-empty">当前网络暂无其他节点。分享邀请链接或授权码即可组网。</div>`;
@@ -1738,7 +1752,7 @@ function canManageNetwork(n: NetInfo): boolean {
 }
 
 function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string): string {
-  if (!r) return `<p class="hint">正在获取成员信息…</p>`;
+  if (!r) return `<p class="hint">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
   const list: NetNode[] = self ? [self, ...(r.peers ?? [])] : (r.peers ?? []);
   if (!list.length) return `<p class="hint">暂无成员信息</p>`;
@@ -1930,10 +1944,12 @@ async function openNetworkDetail(nid: string) {
   if (detail) detail.hidden = false;
   renderNetworkDetail();
   try {
-    peerDetails[nid] = await backend.peers(nid);
+    peerDetails[nid] = await withTimeout(backend.peers(nid), 5000, "成员信息加载超时");
+    delete peerErrors[nid];
     renderNetworkDetail();
   } catch {
-    // Keep the cached snapshot; refresh() will retry on the next poll.
+    peerErrors[nid] = "该网络已失效或加载失败";
+    renderNetworkDetail();
   }
 }
 

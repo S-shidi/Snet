@@ -76,6 +76,13 @@ async function doSetPassword(current: string, newPass: string): Promise<void> {
   await authApi("/password", { method: "POST", body: JSON.stringify({ current, new: newPass }) });
 }
 
+/* ── Wails detection ──────────────────────────────────────────── */
+function isWailsDesktop(): boolean {
+  return typeof (window as any).runtime !== "undefined" ||
+    typeof (window as any).wails !== "undefined" ||
+    typeof (window as any).go !== "undefined";
+}
+
 /* ── Page routing ─────────────────────────────────────────────── */
 function showPage(id: string) {
   for (const p of ["app", "login-page", "setup-page", "onboarding-page"]) {
@@ -172,6 +179,15 @@ const backend: Backend = {
 /* ── Bootstrap ────────────────────────────────────────────────── */
 function startApp() {
   showPage("app");
+  if (isWailsDesktop()) {
+    // The desktop app is a trusted local process and its Go ctl proxy already
+    // injects the ctl-token. Do not expose the browser login/logout flow.
+    const logout = document.getElementById("btn-logout");
+    if (logout) logout.style.display = "none";
+    document.querySelectorAll<HTMLElement>('[data-action="logout"]').forEach((el) => {
+      el.style.display = "none";
+    });
+  }
   init(backend);
 }
 
@@ -269,7 +285,12 @@ document.addEventListener("DOMContentLoaded", () => {
     showPage("login-page");
   });
 
-  // Initial auth check
+  // Initial auth check. Wails desktop is a trusted local process and must not
+  // show the browser setup/login pages.
+  if (isWailsDesktop()) {
+    startApp();
+    return;
+  }
   (async () => {
     const authState = await checkAuth();
     if (authState === "no_password") { showPage("setup-page"); return; }

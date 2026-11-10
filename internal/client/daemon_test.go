@@ -2142,3 +2142,41 @@ func TestResolvePeerEndpointsSkipsSameEgressPublicFallback(t *testing.T) {
 		t.Fatalf("endpoint=%q, want relay-a.example:51840", got[0].Endpoint)
 	}
 }
+
+// TestSyncNetworksRemovesDeletedLocalNetwork ensures a cached network that the
+// server no longer returns is removed instead of becoming a permanent ghost.
+func TestSyncNetworksRemovesDeletedLocalNetwork(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/devices":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/devices/dev1/networks":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"networks":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	d, _ := newTestDaemon(t)
+	d.mu.Lock()
+	d.cfg.ServerAddr = ts.URL
+	d.cfg.DeviceID = "dev1"
+	d.cfg.DeviceToken = "dt"
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"ghost": {NodeID: "node1", IP: "10.88.1.5", Token: "old", Subnet: "10.88.1.0/24", Active: true},
+	}
+	d.mu.Unlock()
+
+	if err := d.SyncNetworks("dt"); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	_, exists := d.cfg.Networks["ghost"]
+	d.mu.Unlock()
+	if exists {
+		t.Fatal("deleted network was not removed from local config")
+	}
+}
