@@ -172,7 +172,14 @@ const backend: Backend = {
   },
 
   async ensureDaemon(): Promise<void> {
-    throw new Error("Web 版无法管理后台服务，请手动启动 snetd");
+    if (!isWailsDesktop()) {
+      throw new Error("Web 版无法管理后台服务，请手动启动 snetd");
+    }
+    const start = (window as any).go?.main?.App?.StartDaemon;
+    if (typeof start !== "function") {
+      throw new Error("Wails 启动接口不可用，请重新构建 App");
+    }
+    await start();
   },
 };
 
@@ -180,6 +187,8 @@ const backend: Backend = {
 function startApp() {
   showPage("app");
   if (isWailsDesktop()) {
+    document.documentElement.classList.add("wails-desktop");
+    backend.hasDaemonControl = true;
     // The desktop app is a trusted local process and its Go ctl proxy already
     // injects the ctl-token. Do not expose the browser login/logout flow, and
     // ignore stale browser-era state from a previous Web/Docker deployment.

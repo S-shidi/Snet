@@ -65,6 +65,25 @@ header {
 }
 .header-right { display: flex; align-items: center; gap: 10px; }
 
+/* macOS Wails: leave room for traffic lights and make the header draggable. */
+.wails-desktop .header-inner {
+  padding-left: 80px;
+  --wails-draggable: drag;
+}
+.wails-desktop header {
+  --wails-draggable: drag;
+}
+.wails-desktop header button,
+.wails-desktop header a,
+.wails-desktop header input,
+.wails-desktop header select,
+.wails-desktop header label,
+.wails-desktop header .header-dropdown,
+.wails-desktop header .header-actions,
+.wails-desktop header .header-more {
+  --wails-draggable: no-drag;
+}
+
 /* ── header dropdown (mobile) ───────────── */
 .header-more { position: relative; }
 .header-dropdown {
