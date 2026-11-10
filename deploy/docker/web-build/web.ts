@@ -181,7 +181,17 @@ function startApp() {
   showPage("app");
   if (isWailsDesktop()) {
     // The desktop app is a trusted local process and its Go ctl proxy already
-    // injects the ctl-token. Do not expose the browser login/logout flow.
+    // injects the ctl-token. Do not expose the browser login/logout flow, and
+    // ignore stale browser-era state from a previous Web/Docker deployment.
+    authToken = null;
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && (key === "snet_token" || key.startsWith("snet."))) {
+          localStorage.removeItem(key);
+        }
+      }
+    } catch { /* localStorage may be unavailable in some webviews */ }
     const logout = document.getElementById("btn-logout");
     if (logout) logout.style.display = "none";
     document.querySelectorAll<HTMLElement>('[data-action="logout"]').forEach((el) => {
