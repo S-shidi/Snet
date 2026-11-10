@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/efeenesc/systray"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -36,15 +35,6 @@ func (a *App) startup(ctx context.Context) {
 		log.Printf("snetd: %v", err)
 		wruntime.WindowShow(ctx)
 	}
-}
-
-func (a *App) beforeClose(ctx context.Context) bool {
-	wruntime.WindowHide(ctx)
-	return true
-}
-
-func (a *App) shutdown(ctx context.Context) {
-	systray.Quit()
 }
 
 func (a *App) ShowWindow() {
