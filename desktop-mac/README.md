@@ -1,8 +1,8 @@
 # SnetMac — macOS 菜单栏客户端
 
-基于 **Wails v2** 的 macOS 原生 GUI 骨架。前端复用仓库根目录的 `shared/web`，Go 后端负责启动/复用 `snetd`、代理 `/ctl/*`，并通过 `getlantern/systray` 提供菜单栏入口。
+基于 **Wails v2** 的 macOS 原生 GUI 骨架。前端复用仓库根目录的 `shared/web`，Go 后端负责启动/复用 `snetd`、代理 `/ctl/*`，并通过 `efeenesc/systray` 提供菜单栏入口。
 
-> Wails v2 没有内置 system tray API，因此托盘使用 `github.com/getlantern/systray`。如果遇到 Wails/托盘主线程冲突，见文末说明。
+> Wails v2 没有内置 system tray API，因此托盘使用 `github.com/efeenesc/systray`。如果遇到 Wails/托盘主线程冲突，见文末说明。
 
 ## 环境要求
 
@@ -131,7 +131,7 @@ open build/bin/SnetMac.app
 
 ## 注意事项
 
-- Wails v2 没有官方 system tray API；当前使用 `getlantern/systray`。
+- Wails v2 没有官方 system tray API；当前使用 `efeenesc/systray`。
 - 如果菜单栏图标不出现，先确认 `wails doctor` 正常，并尝试将 `main.go` 中的托盘启动方式改为在 `main` 运行托盘、Wails 放到 goroutine；不同 macOS/Wails 版本对主线程调度敏感。
 - `snetd` 需要 root；不要在 WebView 内直接执行特权命令。
 - 不要提交 `ctl-token`、`device.id`、`config.json` 或私钥。

@@ -1,0 +1,66 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            desktop-mac/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build snetd daemon
+        run: |
+          export PATH=$PATH:$(go env GOPATH)/bin
+          VERSION=$(cat VERSION)
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath \
+            -ldflags="-s -w -X snet/internal/buildinfo.Version=${VERSION} -X snet/internal/buildinfo.Commit=${COMMIT} -X snet/internal/buildinfo.BuildDate=${BUILD_DATE}" \
+            -o dist/snetd-darwin-arm64 ./cmd/client/snetd
+
+      - name: Build Wails App
+        working-directory: ./desktop-mac
+        run: |
+          export PATH=$PATH:$(go env GOPATH)/bin
+          ./frontend/build-frontend.sh
+          wails build -platform darwin/arm64 -clean
+
+      - name: Package App with Daemon
+        run: |
+          mkdir -p desktop-mac/build/bin/SnetMac.app/Contents/Resources/
+          cp dist/snetd-darwin-arm64 desktop-mac/build/bin/SnetMac.app/Contents/Resources/snetd
+          chmod +x desktop-mac/build/bin/SnetMac.app/Contents/Resources/snetd
+
+          codesign --force --deep --sign - desktop-mac/build/bin/SnetMac.app
+
+          cd desktop-mac/build/bin
+          zip -r SnetMac-arm64.zip SnetMac.app
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SnetMac-arm64
+          path: desktop-mac/build/bin/SnetMac-arm64.zip
+          retention-days: 7

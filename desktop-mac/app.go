@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getlantern/systray"
+	"github.com/efeenesc/systray"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 

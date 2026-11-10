@@ -3,7 +3,7 @@ module snet/desktop-mac
 go 1.25.0
 
 require (
-	github.com/getlantern/systray v1.2.2
+	github.com/efeenesc/systray v0.0.1
 	github.com/wailsapp/wails/v2 v2.13.0
 )
 
