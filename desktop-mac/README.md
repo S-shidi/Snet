@@ -56,7 +56,7 @@ http://127.0.0.1:19432/ctl/*
 代理会读取：
 
 ```text
-~/Library/Application Support/virtual-net/ctl-token
+/usr/local/etc/snet/ctl-token
 ```
 
 并注入 `X-Ctl-Token`，因此不需要在 Web UI 中暴露 token，也没有 CORS 问题。
@@ -76,24 +76,24 @@ do shell script "nohup snetd ..." with administrator privileges
 
 macOS 会弹出系统管理员授权框；`snetd` 以 root 启动，以便创建 `utun` 和配置路由。
 
-启动参数固定使用当前用户的沙盒配置：
+启动参数固定使用系统级配置目录：
 
 ```text
--config ~/Library/Application Support/virtual-net/config.json
--device-id-file ~/Library/Application Support/virtual-net/device.id
+-config /usr/local/etc/snet/config.json
+-device-id-file /usr/local/etc/snet/device.id
 -ctl 127.0.0.1:19432
 ```
 
 配置与身份文件：
 
 ```text
-~/Library/Application Support/virtual-net/config.json
-~/Library/Application Support/virtual-net/device.id
-~/Library/Application Support/virtual-net/ctl-token
-~/Library/Application Support/virtual-net/snetd.log
+/usr/local/etc/snet/config.json
+/usr/local/etc/snet/device.id
+/usr/local/etc/snet/ctl-token
+/usr/local/etc/snet/snetd.log
 ```
 
-应用只会复用由同一 App 包、同一沙盒配置启动的 `snetd`，不会复用系统级 `/usr/local` 守护进程。
+应用只会复用由同一 App 包、同一 `/usr/local/etc/snet/config.json` 启动的 `snetd`。启动时若检测到旧的 `~/Library/Application Support/virtual-net/`，会在同一次提权脚本中删除。
 
 ## 开发
 

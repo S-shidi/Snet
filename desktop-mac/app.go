@@ -99,9 +99,6 @@ func (a *App) ensureDaemon() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
 	configPath := filepath.Join(dir, "config.json")
 	deviceIDFile := filepath.Join(dir, "device.id")
 	logPath := filepath.Join(dir, "snetd.log")
@@ -110,15 +107,28 @@ func (a *App) ensureDaemon() error {
 	}
 	sanitizeSandboxConfig(configPath)
 
-	// Use AppleScript's quoted form for every path. This is the robust
-	// equivalent of shell single-quoting and keeps "Application Support"
-	// as one argument instead of truncating at the space.
+	// Use AppleScript's quoted form for every path. The daemon runs as root,
+	// so create /usr/local/etc/snet with root:wheel permissions in the same
+	// privileged script. This avoids SIP-protected user directories and keeps
+	// "Application Support" out of the privileged command entirely.
+	legacyPath := ""
+	if legacy, err := legacyConfigDir(); err == nil {
+		if st, statErr := os.Stat(legacy); statErr == nil && st.IsDir() {
+			legacyPath = legacy
+		}
+	}
 	script := fmt.Sprintf(`set binPath to %s
+set dataDir to %s
 set configPath to %s
 set deviceIDPath to %s
 set logPath to %s
-do shell script "nohup " & quoted form of binPath & " -config " & quoted form of configPath & " -device-id-file " & quoted form of deviceIDPath & " -ctl " & quoted form of "%s" & " >> " & quoted form of logPath & " 2>&1 &" with administrator privileges`,
-		appleScriptQuote(bin), appleScriptQuote(configPath), appleScriptQuote(deviceIDFile), appleScriptQuote(logPath), ctlAddr)
+set legacyPath to %s
+set cleanupCmd to ""
+if legacyPath is not "" then
+  set cleanupCmd to "rm -rf " & quoted form of legacyPath & " && "
+end if
+do shell script cleanupCmd & "mkdir -p " & quoted form of dataDir & " && chown root:wheel " & quoted form of dataDir & " && chmod 755 " & quoted form of dataDir & " && nohup " & quoted form of binPath & " -config " & quoted form of configPath & " -device-id-file " & quoted form of deviceIDPath & " -ctl " & quoted form of "%s" & " >> " & quoted form of logPath & " 2>&1 &" with administrator privileges`,
+		appleScriptQuote(bin), appleScriptQuote(dir), appleScriptQuote(configPath), appleScriptQuote(deviceIDFile), appleScriptQuote(logPath), appleScriptQuote(legacyPath), ctlAddr)
 	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("无法通过管理员权限启动 snetd: %v %s", err, strings.TrimSpace(string(out)))
@@ -171,7 +181,13 @@ func sanitizeSandboxConfig(configPath string) {
 	}
 }
 
+const sandboxConfigDir = "/usr/local/etc/snet"
+
 func configDir() (string, error) {
+	return sandboxConfigDir, nil
+}
+
+func legacyConfigDir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
