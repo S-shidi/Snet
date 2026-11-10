@@ -1,6 +1,6 @@
 # SnetMac — macOS Wails 客户端
 
-基于 **Wails v2** 的 macOS 菜单栏应用。前端复用 `shared/web`，Go 后端通过 LaunchDaemon 管理内置 `snetd`，并提供原生菜单栏。
+基于 **Wails v2** 的 macOS 原生客户端。前端复用 `shared/web`，Go 后端通过 LaunchDaemon 管理内置 `snetd`。
 
 ## 环境要求
 
@@ -19,7 +19,7 @@ wails doctor
 
 ```text
 desktop-mac/
-├── main.go                 Wails + fyne.io/systray 菜单栏
+├── main.go                 Wails 入口
 ├── app.go                  LaunchDaemon 安装/唤醒、ctl-token 代理
 ├── scripts/install-daemon.sh
 ├── assets/tray.png
@@ -87,16 +87,11 @@ App 不会搜索 `/usr/local/snet`、系统 `PATH` 或其他旧配置。内置 `
 应用包损坏，缺少 snetd 核心
 ```
 
-## 菜单栏
+## 窗口
 
-使用 `fyne.io/systray`：
-
-- 点击菜单栏图标打开菜单
-- `打开控制面板`：显示 Wails 窗口
-- `关闭窗口`：隐藏到菜单栏
-- `退出 SNET`：退出应用
-
-`systray.Run` 在独立 goroutine 中运行，不阻塞 Wails 主线程。窗口关闭按钮默认隐藏到菜单栏。
+- 应用以普通窗口启动
+- 关闭窗口直接退出 App
+- 不使用系统托盘/systray，避免 macOS 26+ 主线程 SIGTRAP
 
 ## 前端
 

@@ -47,11 +47,6 @@ func (a *App) startup(ctx context.Context) {
 	}
 }
 
-func (a *App) beforeClose(ctx context.Context) bool {
-	wruntime.WindowHide(ctx)
-	return true
-}
-
 func (a *App) ShowWindow() {
 	a.mu.RLock()
 	ctx := a.ctx

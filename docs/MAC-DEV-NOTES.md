@@ -6,7 +6,7 @@
 
 **现象**
 
-Wails v2 同时引入 `getlantern/systray` / `efeenesc/systray` 时，应用启动即崩溃，macOS 报 SIGTRAP。
+Wails v2 同时引入 `getlantern/systray`、`efeenesc/systray` 或 `fyne.io/systray` 时，应用启动即崩溃，macOS 报 SIGTRAP。
 
 **原因**
 
@@ -158,16 +158,12 @@ launchctl kickstart -k system/com.snet.daemon
 
 不再每次弹出管理员密码。安装脚本位于 `desktop-mac/scripts/install-daemon.sh`，构建时必须复制到 App 的 `Contents/Resources/`。
 
-## 8. 菜单栏托盘
+## 8. 托盘最终移除
 
-使用 `fyne.io/systray` 替代已触发 SIGTRAP 的旧 systray：
+`fyne.io/systray` 在 macOS 26 上仍然会触发 SIGTRAP。当前结论：
 
-```go
-go systray.Run(onReady, onExit)
-```
-
-`startTray` 在独立 goroutine 中运行，不阻塞 Wails 主线程。窗口关闭时隐藏到菜单栏，托盘菜单提供：
-
-- 打开控制面板
-- 关闭窗口
-- 退出 SNET
+- 不再使用任何第三方 systray
+- 应用恢复普通窗口启动
+- 关闭窗口直接退出
+- LaunchDaemon 继续负责 `snetd` 的免密启动
+- 如需菜单栏，等待 Wails v3 原生 SystemTray 后再评估

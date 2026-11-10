@@ -124,7 +124,7 @@ SnetMac-v<VERSION>-<SHORT_SHA>.dmg
 /usr/local/etc/snet/snetd.log
 ```
 
-App 只使用包内 `Contents/Resources/snetd`，不依赖 `/usr/local/snet` 或系统 `PATH`。应用包含原生菜单栏，可显示/隐藏控制面板。
+App 只使用包内 `Contents/Resources/snetd`，不依赖 `/usr/local/snet` 或系统 `PATH`。应用以普通窗口启动，关闭窗口即退出；不使用系统托盘。
 
 本地构建见 [macOS Wails 客户端说明](desktop-mac/README.md)，开发排坑记录见 [MAC-DEV-NOTES](docs/MAC-DEV-NOTES.md)。
 
