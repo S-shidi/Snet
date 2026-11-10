@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -107,10 +108,17 @@ func (a *App) ensureDaemon() error {
 	if daemonRunning(bin, configPath) {
 		return nil
 	}
+	sanitizeSandboxConfig(configPath)
 
-	cmdline := fmt.Sprintf("nohup %s -config %s -device-id-file %s -ctl %s >>%s 2>&1 &",
-		shellQuote(bin), shellQuote(configPath), shellQuote(deviceIDFile), ctlAddr, shellQuote(logPath))
-	script := fmt.Sprintf("do shell script %s with administrator privileges", appleScriptQuote(cmdline))
+	// Use AppleScript's quoted form for every path. This is the robust
+	// equivalent of shell single-quoting and keeps "Application Support"
+	// as one argument instead of truncating at the space.
+	script := fmt.Sprintf(`set binPath to %s
+set configPath to %s
+set deviceIDPath to %s
+set logPath to %s
+do shell script "nohup " & quoted form of binPath & " -config " & quoted form of configPath & " -device-id-file " & quoted form of deviceIDPath & " -ctl " & quoted form of "%s" & " >> " & quoted form of logPath & " 2>&1 &" with administrator privileges`,
+		appleScriptQuote(bin), appleScriptQuote(configPath), appleScriptQuote(deviceIDFile), appleScriptQuote(logPath), ctlAddr)
 	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("无法通过管理员权限启动 snetd: %v %s", err, strings.TrimSpace(string(out)))
@@ -144,6 +152,25 @@ func findDaemonBinary() (string, error) {
 	return resource, nil
 }
 
+func sanitizeSandboxConfig(configPath string) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return
+	}
+	var cfg struct {
+		ServerAddr string `json:"serverAddr"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return
+	}
+	server := strings.ToLower(strings.TrimSpace(cfg.ServerAddr))
+	if strings.Contains(server, "127.0.0.1:8090") || strings.Contains(server, "localhost:8090") {
+		if err := os.Remove(configPath); err == nil {
+			log.Printf("removed legacy sandbox config with old server address: %s", configPath)
+		}
+	}
+}
+
 func configDir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
@@ -170,10 +197,6 @@ func readCtlToken() (string, error) {
 		}
 	}
 	return "", errors.New("ctl-token not found")
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func appleScriptQuote(s string) string {

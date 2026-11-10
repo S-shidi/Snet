@@ -19,7 +19,8 @@ async function api(path: string, opts?: RequestInit): Promise<any> {
     if (res.status === 401) {
       authToken = null;
       localStorage.removeItem("snet_token");
-      showPage("login-page");
+      // Wails desktop must never fall back to the browser login/setup flow.
+      if (!isWailsDesktop()) showPage("login-page");
     }
     let msg = "HTTP " + res.status;
     try { const j = JSON.parse(text); if (j.error) msg = j.error; } catch {}
