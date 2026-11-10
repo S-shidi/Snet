@@ -109,7 +109,13 @@ SnetMac-v<VERSION>-<SHORT_SHA>.dmg
 
 下载后打开 `.dmg`，把 `SnetMac.app` 拖入 Applications。
 
-首次启动需要 macOS 管理员授权：客户端会通过 AppleScript 提权启动内置的 `snetd`，用于创建 `utun` 网卡、安装路由和写入：
+首次启动需要一次 macOS 管理员授权：客户端会安装 LaunchDaemon：
+
+```text
+/Library/LaunchDaemons/com.snet.daemon.plist
+```
+
+之后每次打开 App 会自动通过 `launchctl kickstart system/com.snet.daemon` 启动服务，不再弹窗。配置固定为：
 
 ```text
 /usr/local/etc/snet/config.json
@@ -118,7 +124,7 @@ SnetMac-v<VERSION>-<SHORT_SHA>.dmg
 /usr/local/etc/snet/snetd.log
 ```
 
-App 只使用包内 `Contents/Resources/snetd`，不依赖 `/usr/local/snet` 或系统 `PATH`。
+App 只使用包内 `Contents/Resources/snetd`，不依赖 `/usr/local/snet` 或系统 `PATH`。应用包含原生菜单栏，可显示/隐藏控制面板。
 
 本地构建见 [macOS Wails 客户端说明](desktop-mac/README.md)，开发排坑记录见 [MAC-DEV-NOTES](docs/MAC-DEV-NOTES.md)。
 

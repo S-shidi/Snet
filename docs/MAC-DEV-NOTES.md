@@ -132,3 +132,42 @@ GitHub Actions `Build macOS App` 会：
 SnetMac-v<VERSION>-<SHORT_SHA>.zip
 SnetMac-v<VERSION>-<SHORT_SHA>.dmg
 ```
+
+## 7. LaunchDaemon 自动提权
+
+首次启动只提权一次，安装：
+
+```text
+/Library/LaunchDaemons/com.snet.daemon.plist
+/usr/local/bin/snetd
+/usr/local/etc/snet/
+```
+
+plist 使用：
+
+```text
+RunAtLoad = true
+KeepAlive = true
+```
+
+后续启动通过：
+
+```bash
+launchctl kickstart -k system/com.snet.daemon
+```
+
+不再每次弹出管理员密码。安装脚本位于 `desktop-mac/scripts/install-daemon.sh`，构建时必须复制到 App 的 `Contents/Resources/`。
+
+## 8. 菜单栏托盘
+
+使用 `fyne.io/systray` 替代已触发 SIGTRAP 的旧 systray：
+
+```go
+go systray.Run(onReady, onExit)
+```
+
+`startTray` 在独立 goroutine 中运行，不阻塞 Wails 主线程。窗口关闭时隐藏到菜单栏，托盘菜单提供：
+
+- 打开控制面板
+- 关闭窗口
+- 退出 SNET

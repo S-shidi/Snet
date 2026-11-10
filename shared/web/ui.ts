@@ -1549,10 +1549,10 @@ function renderOnboarding() {
   if (startDaemon) {
     startDaemon.onclick = async () => {
       startDaemon.disabled = true;
-      startDaemon.textContent = "启动中…";
+      startDaemon.textContent = "正在初始化系统服务…";
       const daemonResult = $("#onb-daemon-result") as HTMLElement;
       daemonResult.className = "msg";
-      daemonResult.textContent = "正在启动…";
+      daemonResult.textContent = "正在初始化系统服务…";
       try {
         await backend.ensureDaemon();
         daemonResult.className = "msg ok";
@@ -2031,7 +2031,7 @@ function renderStatus() {
 /* ── Ensure daemon ────────────────────────────────────────────── */
 async function ensureDaemon() {
   const btn = $("#header-svc-btn") as HTMLButtonElement;
-  if (btn) { btn.disabled = true; btn.textContent = "启动中…"; }
+  if (btn) { btn.disabled = true; btn.textContent = "正在初始化系统服务…"; }
   try {
     await backend.ensureDaemon();
     toast("后台服务已就绪");

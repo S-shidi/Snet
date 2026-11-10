@@ -57,7 +57,9 @@ jobs:
         run: |
           mkdir -p desktop-mac/build/bin/SnetMac.app/Contents/Resources/
           cp dist/snetd-darwin-arm64 desktop-mac/build/bin/SnetMac.app/Contents/Resources/snetd
+          cp desktop-mac/scripts/install-daemon.sh desktop-mac/build/bin/SnetMac.app/Contents/Resources/install-daemon.sh
           chmod +x desktop-mac/build/bin/SnetMac.app/Contents/Resources/snetd
+          chmod +x desktop-mac/build/bin/SnetMac.app/Contents/Resources/install-daemon.sh
 
           codesign --force --deep --sign - desktop-mac/build/bin/SnetMac.app
 

@@ -1,8 +1,6 @@
 # SnetMac — macOS Wails 客户端
 
-基于 **Wails v2** 的 macOS 原生 GUI。前端复用仓库根目录的 `shared/web`，Go 后端负责启动/复用 `snetd`，并代理 `/ctl/*`。
-
-> 重要：当前版本移除了 `getlantern/systray` / `efeenesc/systray`，以普通窗口模式启动。Wails v2 与第三方 systray 在较新 macOS 上存在主线程冲突，会导致启动即 SIGTRAP 崩溃。
+基于 **Wails v2** 的 macOS 菜单栏应用。前端复用 `shared/web`，Go 后端通过 LaunchDaemon 管理内置 `snetd`，并提供原生菜单栏。
 
 ## 环境要求
 
@@ -17,74 +15,64 @@ go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 wails doctor
 ```
 
-## 目录
+## 结构
 
 ```text
 desktop-mac/
-├── main.go                 Wails 入口
-├── app.go                  snetd 启动/复用、ctl-token 代理
-├── wails.json              Wails 配置
-├── frontend/               WebView 资源
-│   ├── build-frontend.sh   从 shared/web 同步并 esbuild
-│   ├── index.html
-│   ├── styles.css
-│   └── app.js
-└── build/appicon.png       应用图标
+├── main.go                 Wails + fyne.io/systray 菜单栏
+├── app.go                  LaunchDaemon 安装/唤醒、ctl-token 代理
+├── scripts/install-daemon.sh
+├── assets/tray.png
+├── frontend/               shared/web 构建产物
+└── wails.json
 ```
 
-## 前端
+## 首次安装：LaunchDaemon
 
-`frontend` 是 `shared/web` 的构建副本。修改 `shared/web` 后执行：
-
-```bash
-cd desktop-mac
-./frontend/build-frontend.sh
-```
-
-`wails.json` 已配置：
-
-- `assetdir`: `frontend`
-- `frontend:build`: `./build-frontend.sh`
-- `frontend:dev:build`: `./build-frontend.sh`
-
-WebView 内的相对 `/ctl/*` 请求由 `app.go` 的 `ctlProxy` 转发到：
+第一次启动时，App 会通过 AppleScript 弹出一次管理员授权，执行：
 
 ```text
-http://127.0.0.1:19432/ctl/*
+desktop-mac/scripts/install-daemon.sh
 ```
 
-代理会读取：
+脚本会：
+
+1. 将 App 内置的 `Contents/Resources/snetd` 安装到：
 
 ```text
-/usr/local/etc/snet/ctl-token
+/usr/local/bin/snetd
 ```
 
-并注入 `X-Ctl-Token`，因此不需要在 Web UI 中暴露 token，也没有 CORS 问题。
-
-## 启动 snetd
-
-应用启动时：
-
-1. 只查找应用包内的 `Contents/Resources/snetd`。
-2. 找不到时直接报错：`应用包损坏，缺少 snetd 核心`。
-3. 不会搜索 `/usr/local/snet/bin/snetd`、系统 `PATH` 或开发目录。
-4. 使用 AppleScript：
-
-```applescript
-do shell script "pkill -f '[s]netd' || true && /Applications/SnetMac.app/Contents/Resources/snetd ... >> /usr/local/etc/snet/snetd.log 2>&1 &" with administrator privileges
-```
-
-macOS 会弹出系统管理员授权框；`snetd` 以 root 启动，以便创建 `utun` 和配置路由。
-
-启动参数固定使用系统级配置目录：
+2. 创建：
 
 ```text
--config /usr/local/etc/snet/config.json
--device-id-file /usr/local/etc/snet/device.id
--ctl 127.0.0.1:19432
+/usr/local/etc/snet/
 ```
 
-配置与身份文件：
+3. 写入并加载：
+
+```text
+/Library/LaunchDaemons/com.snet.daemon.plist
+```
+
+4. 设置：
+
+```text
+RunAtLoad = true
+KeepAlive = true
+```
+
+5. 删除旧目录：
+
+```text
+~/Library/Application Support/virtual-net/
+```
+
+以后启动 App 不再弹管理员密码，只会通过 `launchctl kickstart system/com.snet.daemon` 唤醒服务。
+
+## 配置与身份
+
+固定使用：
 
 ```text
 /usr/local/etc/snet/config.json
@@ -93,28 +81,38 @@ macOS 会弹出系统管理员授权框；`snetd` 以 root 启动，以便创建
 /usr/local/etc/snet/snetd.log
 ```
 
-应用只会复用由同一 App 包、同一 `/usr/local/etc/snet/config.json` 启动的 `snetd`。启动时若检测到旧的 `~/Library/Application Support/virtual-net/`，会在同一次提权脚本中删除。
+App 不会搜索 `/usr/local/snet`、系统 `PATH` 或其他旧配置。内置 `snetd` 缺失时直接报错：
 
-## 开发
-
-先构建 macOS arm64 daemon：
-
-```bash
-cd /path/to/Snet
-GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
-  go build -trimpath -o dist/snetd-darwin-arm64 ./cmd/client/snetd
+```text
+应用包损坏，缺少 snetd 核心
 ```
 
-应用只接受 App 包内二进制，因此开发验证建议直接构建：
+## 菜单栏
+
+使用 `fyne.io/systray`：
+
+- 点击菜单栏图标打开菜单
+- `打开控制面板`：显示 Wails 窗口
+- `关闭窗口`：隐藏到菜单栏
+- `退出 SNET`：退出应用
+
+`systray.Run` 在独立 goroutine 中运行，不阻塞 Wails 主线程。窗口关闭按钮默认隐藏到菜单栏。
+
+## 前端
+
+修改 `shared/web` 后执行：
 
 ```bash
 cd desktop-mac
-wails build -platform darwin/arm64
-cp ../dist/snetd-darwin-arm64 build/bin/SnetMac.app/Contents/Resources/snetd
-chmod +x build/bin/SnetMac.app/Contents/Resources/snetd
-codesign --force --deep --sign - build/bin/SnetMac.app
-open build/bin/SnetMac.app
+./frontend/build-frontend.sh
 ```
+
+Wails 环境会：
+
+- 跳过 Web 登录/setup 页面
+- 清除旧的 `snet.*` localStorage
+- 通过 Go `ctlProxy` 注入 `/usr/local/etc/snet/ctl-token`
+- `/ctl/*` 转发到 `http://127.0.0.1:19432`
 
 ## 构建
 
@@ -123,19 +121,21 @@ cd desktop-mac
 wails build -platform darwin/arm64
 ```
 
-把 daemon 放进应用包：
+把 daemon 和安装脚本放进应用包：
 
 ```bash
 cp ../dist/snetd-darwin-arm64 build/bin/SnetMac.app/Contents/Resources/snetd
+cp scripts/install-daemon.sh build/bin/SnetMac.app/Contents/Resources/install-daemon.sh
 chmod +x build/bin/SnetMac.app/Contents/Resources/snetd
+chmod +x build/bin/SnetMac.app/Contents/Resources/install-daemon.sh
 codesign --force --deep --sign - build/bin/SnetMac.app
 open build/bin/SnetMac.app
 ```
 
-应用以普通窗口启动；关闭窗口即退出应用。
+GitHub Actions 会自动完成上述步骤，并生成 `.zip` / `.dmg`。
 
 ## 注意
 
-- 当前不使用系统托盘，避免 Wails v2 与 systray 的主线程冲突。
-- `snetd` 需要 root；不要在 WebView 内直接执行特权命令。
 - 不要提交 `ctl-token`、`device.id`、`config.json` 或私钥。
+- `snetd` 需要 root；只通过 LaunchDaemon 运行，不在 WebView 内执行特权命令。
+- 开发排坑记录见 [`docs/MAC-DEV-NOTES.md`](../docs/MAC-DEV-NOTES.md)。
