@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "SnetMac",
+  "outputfilename": "SnetMac",
+  "assetdir": "frontend",
+  "frontend:dir": "frontend",
+  "frontend:install": "true",
+  "frontend:build": "./build-frontend.sh",
+  "frontend:dev:install": "true",
+  "frontend:dev:build": "./build-frontend.sh",
+  "wailsjsdir": "./frontend/wailsjs",
+  "info": {
+    "companyName": "SNET",
+    "productName": "SnetMac",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright SNET"
+  },
+  "author": {
+    "name": "SNET"
+  }
+}

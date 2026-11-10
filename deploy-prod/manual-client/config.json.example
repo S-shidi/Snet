@@ -1,0 +1,8 @@
+{
+  "_comment": "ctl listen address is a CLI flag (-ctl), not a config field. This build has no configurable log level. device-id-file is also a CLI flag.",
+  "serverAddr": "https://snet.uizhi.eu.org:8090",
+  "wireguardPort": 52100,
+  "networks": {},
+  "keyRotationDays": 30,
+  "natMapping": true
+}
