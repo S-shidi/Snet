@@ -21,14 +21,15 @@ jobs:
           cache-dependency-path: |
             go.sum
             desktop-mac/go.sum
+            desktop-mac-v3/go.sum
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+      - name: Install Wails v3
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
 
       - name: Build snetd daemon
         run: |
@@ -40,54 +41,29 @@ jobs:
             -ldflags="-s -w -X snet/internal/buildinfo.Version=${VERSION} -X snet/internal/buildinfo.Commit=${COMMIT} -X snet/internal/buildinfo.BuildDate=${BUILD_DATE}" \
             -o dist/snetd-darwin-arm64 ./cmd/client/snetd
 
-      - name: Build Wails App
-        working-directory: ./desktop-mac
-        run: |
-          export PATH=$PATH:$(go env GOPATH)/bin
-          ./frontend/build-frontend.sh
-          wails build -platform darwin/arm64 -clean
-
       - name: Get Version Info
         id: vars
         run: |
           echo "VERSION=$(cat VERSION)" >> $GITHUB_OUTPUT
           echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Package App with Daemon
+      - name: Build and Package Wails v3 App
+        working-directory: ./desktop-mac-v3
         run: |
-          mkdir -p desktop-mac/build/bin/SnetMac.app/Contents/Resources/
-          cp dist/snetd-darwin-arm64 desktop-mac/build/bin/SnetMac.app/Contents/Resources/snetd
-          cp desktop-mac/scripts/install-daemon.sh desktop-mac/build/bin/SnetMac.app/Contents/Resources/install-daemon.sh
-          chmod +x desktop-mac/build/bin/SnetMac.app/Contents/Resources/snetd
-          chmod +x desktop-mac/build/bin/SnetMac.app/Contents/Resources/install-daemon.sh
+          export PATH=$PATH:$(go env GOPATH)/bin
+          wails3 task darwin:package:dmg
 
-          codesign --force --deep --sign - desktop-mac/build/bin/SnetMac.app
-
-          cd desktop-mac/build/bin
+          cd bin
           ZIP_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.zip"
+          DMG_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.dmg"
           zip -r "$ZIP_NAME" SnetMac.app
-
-      - name: Create DMG
-        run: |
-          brew install create-dmg || true
-
-          cd desktop-mac/build/bin
-          create-dmg \
-            --volname "Snet Installer" \
-            --window-pos 200 120 \
-            --window-size 800 400 \
-            --icon-size 100 \
-            --icon "SnetMac.app" 200 190 \
-            --hide-extension "SnetMac.app" \
-            --app-drop-link 600 185 \
-            "SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.dmg" \
-            "SnetMac.app"
+          mv SnetMac.dmg "$DMG_NAME"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}
           path: |
-            desktop-mac/build/bin/SnetMac-v*.zip
-            desktop-mac/build/bin/SnetMac-v*.dmg
+            desktop-mac-v3/bin/SnetMac-v*.zip
+            desktop-mac-v3/bin/SnetMac-v*.dmg
           retention-days: 7

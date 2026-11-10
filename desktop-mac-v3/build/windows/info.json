@@ -1,0 +1,17 @@
+{
+	"fixed": {
+		"file_version": "1.0.4",
+		"product_version": "1.0.4"
+	},
+	"info": {
+		"0409": {
+			"FileVersion": "1.0.4",
+			"ProductVersion": "1.0.4",
+			"CompanyName": "SNET",
+			"FileDescription": "SNET macOS client",
+			"LegalCopyright": "© 2026, My Company",
+			"ProductName": "SnetMac",
+			"Comments": "This is a comment"
+		}
+	}
+}

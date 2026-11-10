@@ -80,6 +80,7 @@ async function doSetPassword(current: string, newPass: string): Promise<void> {
 /* ── Wails detection ──────────────────────────────────────────── */
 function isWailsDesktop(): boolean {
   return typeof (window as any).runtime !== "undefined" ||
+    typeof (window as any)._wails !== "undefined" ||
     typeof (window as any).wails !== "undefined" ||
     typeof (window as any).go !== "undefined";
 }
@@ -176,11 +177,11 @@ const backend: Backend = {
     if (!isWailsDesktop()) {
       throw new Error("Web 版无法管理后台服务，请手动启动 snetd");
     }
-    const start = (window as any).go?.main?.App?.StartDaemon;
-    if (typeof start !== "function") {
-      throw new Error("Wails 启动接口不可用，请重新构建 App");
+    const res = await fetch("/desktop/start", { method: "POST" });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || ("启动服务失败: HTTP " + res.status));
     }
-    await start();
   },
 };
 
