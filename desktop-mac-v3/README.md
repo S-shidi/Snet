@@ -49,22 +49,26 @@ launchctl kickstart -k system/com.snet.daemon
 
 ```bash
 cd desktop-mac-v3
-wails3 task darwin:package:dmg
+wails3 task darwin:build-only
+xattr -cr bin/SnetMac.app
+codesign --force --sign - bin/SnetMac.app/Contents/Resources/snetd
+codesign --force --deep --sign - bin/SnetMac.app
+codesign --verify --deep --strict bin/SnetMac.app
 ```
 
-Taskfile 会：
+Taskfile 的 `build-only` 会：
 
 1. 从 `shared/web` 构建 `frontend/dist`
 2. 编译 Wails v3 App
 3. 将 `../dist/snetd-darwin-arm64` 和 `scripts/install-daemon.sh` 复制到 App Resources
-4. Ad-hoc 签名
-5. 生成 `.app` 和 `.dmg`
+4. 生成未签名的 `bin/SnetMac.app`
+
+签名和 DMG 打包由 CI 手工完成，避免 Wails 自动签名后再修改 App 内容。
 
 产物在：
 
 ```text
 bin/SnetMac.app
-bin/SnetMac.dmg
 ```
 
 ## 开发

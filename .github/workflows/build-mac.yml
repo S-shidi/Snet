@@ -47,34 +47,63 @@ jobs:
           echo "VERSION=$(cat VERSION)" >> $GITHUB_OUTPUT
           echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Build Wails v3 App
+      - name: Build App Bundle (No Sign)
         working-directory: ./desktop-mac-v3
         run: |
           set -euo pipefail
           export PATH=$PATH:$(go env GOPATH)/bin
-          wails3 task darwin:package
+          wails3 task darwin:build-only
+          test -d bin/SnetMac.app
+          test -f bin/SnetMac.app/Contents/Info.plist
+          test -x bin/SnetMac.app/Contents/Resources/snetd
+          test -f bin/SnetMac.app/Contents/Resources/install-daemon.sh
 
-      - name: Verify App Signature
+      - name: Clean xattrs
         working-directory: ./desktop-mac-v3
         run: |
           set -euo pipefail
-          codesign --verify --strict --verbose=2 bin/SnetMac.app/Contents/Resources/snetd
-          codesign --verify --deep --strict --verbose=2 bin/SnetMac.app
-          codesign --display --verbose=2 bin/SnetMac.app
+          xattr -cr bin/SnetMac.app
 
-      - name: Package DMG
+      - name: Manual Codesign (Bottom-Up)
         working-directory: ./desktop-mac-v3
         run: |
           set -euo pipefail
-          export PATH=$PATH:$(go env GOPATH)/bin
-          wails3 task darwin:create:dmg
-          codesign --verify --deep --strict --verbose=2 bin/SnetMac.app
+          APP_PATH="bin/SnetMac.app"
+          codesign --force --sign - "$APP_PATH/Contents/Resources/snetd"
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --strict --verbose=2 "$APP_PATH/Contents/Resources/snetd"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign -dv --verbose=4 "$APP_PATH"
 
-          cd bin
-          ZIP_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.zip"
+      - name: Create DMG
+        working-directory: ./desktop-mac-v3/bin
+        run: |
+          set -euo pipefail
           DMG_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.dmg"
+          if ! command -v create-dmg >/dev/null 2>&1; then
+            brew install create-dmg || true
+          fi
+          if ! command -v create-dmg >/dev/null 2>&1 || ! create-dmg \
+            --volname "Snet Installer" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "SnetMac.app" 200 190 \
+            --hide-extension "SnetMac.app" \
+            --app-drop-link 600 185 \
+            "$DMG_NAME" \
+            "SnetMac.app"; then
+            rm -f "$DMG_NAME"
+            hdiutil create -volname "Snet Installer" -srcfolder SnetMac.app -ov -format UDZO "$DMG_NAME"
+          fi
+          codesign --verify --deep --strict --verbose=2 SnetMac.app
+
+      - name: Package Zip
+        working-directory: ./desktop-mac-v3/bin
+        run: |
+          set -euo pipefail
+          ZIP_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.zip"
           ditto -c -k --sequesterRsrc --keepParent SnetMac.app "$ZIP_NAME"
-          mv SnetMac.dmg "$DMG_NAME"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4

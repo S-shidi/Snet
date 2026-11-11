@@ -117,8 +117,15 @@ tasks:
       - wails3 tool lipo -output "{{.BIN_DIR}}/{{.APP_NAME}}" -input "{{.BIN_DIR}}/{{.APP_NAME}}-amd64" -input "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"
       - rm -f "{{.BIN_DIR}}/{{.APP_NAME}}-amd64" "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"
 
+  build-only:
+    summary: Builds an unsigned `.app` bundle with daemon resources
+    deps:
+      - task: build
+    cmds:
+      - task: create:app:bundle
+
   package:
-    summary: Packages the application into a `.app` bundle
+    summary: Packages the application into an unsigned `.app` bundle
     deps:
       - task: build
     cmds:
@@ -160,10 +167,8 @@ tasks:
 
 
   create:app:bundle:
-    summary: Creates an `.app` bundle
+    summary: Creates an unsigned `.app` bundle with injected resources
     cmds:
-      # A reused bundle can acquire Finder metadata in synced folders. Build a
-      # fresh bundle so codesign never has to replace a contaminated signature.
       - test -n "{{.BIN_DIR}}" && test -n "{{.APP_NAME}}" && rm -rf -- "{{.BIN_DIR}}/{{.APP_NAME}}.app"
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
@@ -179,7 +184,6 @@ tasks:
       - cp ../dist/snetd-darwin-arm64 "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/snetd"
       - cp scripts/install-daemon.sh "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/install-daemon.sh"
       - chmod +x "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/snetd" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/install-daemon.sh"
-      - task: '{{if eq OS "darwin"}}codesign:adhoc{{else}}codesign:skip{{end}}'
 
   codesign:adhoc:
     summary: Ad-hoc signs the app bundle (macOS only)
