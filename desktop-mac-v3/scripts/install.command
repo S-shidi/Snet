@@ -1,9 +1,12 @@
-#!/bin/sh
+#!/bin/bash
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 APP="$SCRIPT_DIR/SnetMac.app"
 TARGET="/Applications/SnetMac.app"
+
+xattr -cr "$APP" 2>/dev/null || true
+xattr -cr "$0" 2>/dev/null || true
 
 if [ ! -d "$APP" ]; then
   echo "未找到 SnetMac.app，请在 DMG 中运行此脚本。" >&2

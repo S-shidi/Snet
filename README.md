@@ -2,7 +2,7 @@
 
 SNET 是一个端到端加密的私有虚拟局域网：WireGuard 负责数据面，HTTPS 协调服务负责成员与网络状态，UDP Relay 负责在无法直连时保证连通性。
 
-当前版本：**v1.0.9**
+当前版本：**v1.0.10**
 
 ## 核心特性
 
@@ -64,7 +64,7 @@ docker compose --env-file .env up -d --build
 curl -fsS https://snet.uizhi.eu.org:8090/healthz
 ```
 
-预期返回 `serverVersion: "1.0.9"` 和 `status: "ok"`。
+预期返回 `serverVersion: "1.0.10"` 和 `status: "ok"`。
 
 ### 2. 客户端 Docker 镜像
 
@@ -129,6 +129,8 @@ SnetMac-v<VERSION>-<SHORT_SHA>.dmg
 ```
 
 下载后打开 `.dmg`。如果直接拖拽 `SnetMac.app` 提示“已损坏”，请双击 DMG 中的 **`一键安装.command`**；它会自动清除隔离属性、安装到 Applications 并启动 App。
+
+如果双击提示“无法验证开发者”或 Gatekeeper 拦截，请按住 `Control` 键点击 `一键安装.command`，在菜单中选择“打开”，再确认一次。
 
 也可以在终端一键安装最新 Release：
 
