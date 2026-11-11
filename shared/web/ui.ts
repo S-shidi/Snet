@@ -32,8 +32,14 @@ function loadSettings(): Settings {
 function saveSettings(s: Settings) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
 }
+function isOfficialServer(addr: string): boolean {
+  const v = String(addr || "").trim().replace(/\/+$/, "");
+  return !v || v === DEFAULT_SERVER.replace(/\/+$/, "");
+}
+
 function currentServer(): string {
-  return status?.serverAddr || loadSettings().server || DEFAULT_SERVER;
+  const configured = String(status?.serverAddr || loadSettings().server || "").trim();
+  return isOfficialServer(configured) ? "" : configured;
 }
 
 /* ── Refresh ──────────────────────────────────────────────────── */
@@ -1084,7 +1090,7 @@ function openCreateModal() {
   const hint = hasOwner
     ? `<p class="msg">本设备已创建网络（每客户端仅能创建一个）。如需新网络，请先删除或退出当前网络。</p>`
     : "";
-  const serverHint = `<p class="hint">SnetServ: ${esc(srv)}</p>`;
+  const serverHint = `<p class="hint">SnetServ${srv ? `: ${esc(srv)}` : ""}</p>`;
   openModal({
     title: "创建网络",
     body: `${hint}
@@ -1800,7 +1806,10 @@ function renderStatus() {
     const types = [...new Set(nets.map((n) => n.relayPath?.natType).filter(Boolean))];
     svcNat.textContent = types.length ? types.join(" / ") : "未知";
   }
-  if (statusJson) statusJson.textContent = JSON.stringify(status, null, 2);
+  if (statusJson) {
+    const display = { ...status, serverAddr: isOfficialServer(status.serverAddr || "") ? "SnetServ" : status.serverAddr };
+    statusJson.textContent = JSON.stringify(display, null, 2);
+  }
 }
 
 /* ── Ensure daemon ────────────────────────────────────────────── */

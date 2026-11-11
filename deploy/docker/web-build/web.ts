@@ -2,6 +2,7 @@
  * Thin adapter: provides Backend + auth flow, delegates UI to shared/ui.ts.
  */
 import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp } from "../../../shared/web/types.js";
+import { DEFAULT_SERVER } from "../../../shared/web/types.js";
 import { init } from "../../../shared/web/ui.js";
 
 const NS = "/ctl";
@@ -107,8 +108,10 @@ const backend: Backend = {
       name: params.name, subnet: params.subnet, port: params.port,
       approvalRequired: params.approvalRequired,
     }));
+    const linkServer = String(params.server || "").replace(/\/+$/, "");
+    const showServer = linkServer && linkServer !== DEFAULT_SERVER.replace(/\/+$/, "");
     const link = `snet://join?nid=${encodeURIComponent(r.networkId)}&code=${encodeURIComponent(r.pairingCode)}` +
-      (params.server ? `&server=${encodeURIComponent(params.server)}` : "");
+      (showServer ? `&server=${encodeURIComponent(linkServer)}` : "");
     return { ...r, link };
   },
 
