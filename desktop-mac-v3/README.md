@@ -51,9 +51,13 @@ launchctl kickstart -k system/com.snet.daemon
 cd desktop-mac-v3
 wails3 task darwin:build-only
 xattr -cr bin/SnetMac.app
+codesign --remove-signature bin/SnetMac.app/Contents/MacOS/SnetMac 2>/dev/null || true
+codesign --remove-signature bin/SnetMac.app/Contents/Resources/snetd 2>/dev/null || true
+plutil -lint bin/SnetMac.app/Contents/Info.plist
 codesign --force --sign - bin/SnetMac.app/Contents/Resources/snetd
-codesign --force --deep --sign - bin/SnetMac.app
-codesign --verify --deep --strict bin/SnetMac.app
+codesign --force --sign - bin/SnetMac.app/Contents/MacOS/SnetMac
+codesign --force --sign - bin/SnetMac.app
+codesign --verify --strict bin/SnetMac.app
 ```
 
 Taskfile 的 `build-only` 会：

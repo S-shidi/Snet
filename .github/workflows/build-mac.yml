@@ -58,22 +58,41 @@ jobs:
           test -x bin/SnetMac.app/Contents/Resources/snetd
           test -f bin/SnetMac.app/Contents/Resources/install-daemon.sh
 
-      - name: Clean xattrs
-        working-directory: ./desktop-mac-v3
-        run: |
-          set -euo pipefail
-          xattr -cr bin/SnetMac.app
-
-      - name: Manual Codesign (Bottom-Up)
+      - name: Manual Codesign (Bottom-Up, No Deep)
         working-directory: ./desktop-mac-v3
         run: |
           set -euo pipefail
           APP_PATH="bin/SnetMac.app"
+
+          echo "=== 1. 清理所有扩展属性 ==="
+          xattr -cr "$APP_PATH"
+
+          echo "=== 2. 移除 Wails 残留的旧签名 ==="
+          codesign --remove-signature "$APP_PATH/Contents/MacOS/SnetMac" 2>/dev/null || true
+          codesign --remove-signature "$APP_PATH/Contents/Resources/snetd" 2>/dev/null || true
+
+          echo "=== 3. 检查 Info.plist 是否合法 ==="
+          plutil -lint "$APP_PATH/Contents/Info.plist"
+
+          echo "=== 4. 先签内部可执行文件 (snetd) ==="
           codesign --force --sign - "$APP_PATH/Contents/Resources/snetd"
-          codesign --force --deep --sign - "$APP_PATH"
-          codesign --verify --strict --verbose=2 "$APP_PATH/Contents/Resources/snetd"
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign --verify --strict "$APP_PATH/Contents/Resources/snetd"
+
+          echo "=== 5. 再签主可执行文件 (SnetMac) ==="
+          codesign --force --sign - "$APP_PATH/Contents/MacOS/SnetMac"
+
+          echo "=== 6. 最后签整个 App 包 (不带 --deep) ==="
+          codesign --force --sign - "$APP_PATH"
+
+          echo "=== 7. 验证整个 App ==="
+          codesign --verify --strict "$APP_PATH"
           codesign -dv --verbose=4 "$APP_PATH"
+
+      - name: Verify App Signature
+        working-directory: ./desktop-mac-v3
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 bin/SnetMac.app
 
       - name: Create DMG
         working-directory: ./desktop-mac-v3/bin
@@ -96,7 +115,6 @@ jobs:
             rm -f "$DMG_NAME"
             hdiutil create -volname "Snet Installer" -srcfolder SnetMac.app -ov -format UDZO "$DMG_NAME"
           fi
-          codesign --verify --deep --strict --verbose=2 SnetMac.app
 
       - name: Package Zip
         working-directory: ./desktop-mac-v3/bin

@@ -186,14 +186,18 @@ tasks:
       - chmod +x "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/snetd" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/install-daemon.sh"
 
   codesign:adhoc:
-    summary: Ad-hoc signs the app bundle (macOS only)
+    summary: Ad-hoc signs the app bundle from the inside out (macOS only)
     internal: true
     cmds:
       - xattr -cr "{{.BIN_DIR}}/{{.APP_NAME}}.app"
+      - codesign --remove-signature "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}" 2>/dev/null || true
+      - codesign --remove-signature "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/snetd" 2>/dev/null || true
+      - plutil -lint "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Info.plist"
       - codesign --force --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/snetd"
-      - codesign --force --deep --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.app"
       - codesign --verify --strict --verbose=2 "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources/snetd"
-      - codesign --verify --deep --strict --verbose=2 "{{.BIN_DIR}}/{{.APP_NAME}}.app"
+      - codesign --force --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS/{{.APP_NAME}}"
+      - codesign --force --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.app"
+      - codesign --verify --strict --verbose=2 "{{.BIN_DIR}}/{{.APP_NAME}}.app"
 
   codesign:skip:
     summary: Skips codesigning when cross-compiling
@@ -215,8 +219,9 @@ tasks:
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/MacOS"
       - cp "build/darwin/Info.dev.plist" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Info.plist"
       - xattr -cr "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
-      - codesign --force --deep --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
-      - codesign --verify --deep --strict "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
+      - codesign --force --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/MacOS/{{.APP_NAME}}"
+      - codesign --force --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
+      - codesign --verify --strict "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
       - '"{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/MacOS/{{.APP_NAME}}"'
 
   sign:
