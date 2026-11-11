@@ -29,6 +29,60 @@ type SnetService struct {
 
 func (s *SnetService) StartDaemon() error { return s.ensureDaemon() }
 
+func binaryVersion(path string) (string, error) {
+	out, err := exec.Command(path, "-version").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s: %w (%s)", path, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// upgradeDaemonIfNeeded replaces /usr/local/bin/snetd when the App bundle
+// carries a different build. Overwriting the .app does not update the
+// LaunchDaemon binary, so this keeps the running daemon in sync with the UI.
+func (s *SnetService) upgradeDaemonIfNeeded() error {
+	appBinary, err := findDaemonBinary()
+	if err != nil {
+		return err
+	}
+	appVersion, err := binaryVersion(appBinary)
+	if err != nil {
+		return fmt.Errorf("读取应用内 snetd 版本失败: %w", err)
+	}
+	systemBinary := "/usr/local/bin/snetd"
+	systemVersion, systemErr := binaryVersion(systemBinary)
+	if systemErr == nil && systemVersion == appVersion {
+		return nil
+	}
+	log.Printf("[SnetMac] daemon version mismatch app=%q system=%q", appVersion, systemVersion)
+	scriptPath, appBundle, err := installPaths()
+	if err != nil {
+		return err
+	}
+	if err := installDaemon(scriptPath, appBundle); err != nil {
+		return err
+	}
+	log.Printf("[SnetMac] upgraded daemon binary from App bundle")
+	return nil
+}
+
+func installDaemon(scriptPath, appBundle string) error {
+	home, _ := os.UserHomeDir()
+	script := fmt.Sprintf(`set installScript to %s
+set appBundle to %s
+set userHome to %s
+do shell script "sh " & quoted form of installScript & " " & quoted form of appBundle & " " & quoted form of userHome with administrator privileges`,
+		appleScriptQuote(scriptPath), appleScriptQuote(appBundle), appleScriptQuote(home))
+	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("安装系统服务失败: %v %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := waitForCtl(20 * time.Second); err != nil {
+		return fmt.Errorf("系统服务安装后未就绪: %w", err)
+	}
+	return nil
+}
+
 func (s *SnetService) ShutdownDaemon() {
 	s.shutdownOnce.Do(func() {
 		log.Printf("snetd: shutting down")
@@ -54,6 +108,9 @@ func (s *SnetService) ensureDaemon() error {
 	}
 
 	if _, err := os.Stat(daemonPlist); err == nil {
+		if err := s.upgradeDaemonIfNeeded(); err != nil {
+			return err
+		}
 		if ctlPortOpen() {
 			return nil
 		}
@@ -70,20 +127,7 @@ func (s *SnetService) ensureDaemon() error {
 	if err != nil {
 		return err
 	}
-	home, _ := os.UserHomeDir()
-	script := fmt.Sprintf(`set installScript to %s
-set appBundle to %s
-set userHome to %s
-do shell script "sh " & quoted form of installScript & " " & quoted form of appBundle & " " & quoted form of userHome with administrator privileges`,
-		appleScriptQuote(scriptPath), appleScriptQuote(appBundle), appleScriptQuote(home))
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("安装系统服务失败: %v %s", err, strings.TrimSpace(string(out)))
-	}
-	if err := waitForCtl(20 * time.Second); err != nil {
-		return fmt.Errorf("系统服务安装后未就绪: %w", err)
-	}
-	return nil
+	return installDaemon(scriptPath, appBundle)
 }
 
 func findDaemonBinary() (string, error) {
