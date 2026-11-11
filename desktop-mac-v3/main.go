@@ -60,7 +60,7 @@ func main() {
 	setupSystray(app, window, svc)
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		log.Printf("SnetMac: application started")
-		showWindow(app, window)
+		showWindow(window)
 	})
 
 	log.Printf("SnetMac: starting snetd")
@@ -83,8 +83,7 @@ func initLogging() {
 	log.SetOutput(io.MultiWriter(os.Stderr, f))
 }
 
-func showWindow(app *application.App, window *application.WebviewWindow) {
-	app.Show()
+func showWindow(window *application.WebviewWindow) {
 	window.Show()
 	window.Focus()
 	_ = exec.Command("osascript", "-e", `tell application "System Events" to set frontmost of process "SnetMac" to true`).Run()
@@ -101,7 +100,7 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 
 	menu := app.NewMenu()
 	menu.Add("打开控制面板").OnClick(func(*application.Context) {
-		showWindow(app, window)
+		showWindow(window)
 	})
 	menu.Add("退出 SNET").OnClick(func(*application.Context) {
 		log.Printf("SnetMac: quit requested from tray")
