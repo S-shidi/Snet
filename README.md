@@ -121,37 +121,20 @@ snetctl -ctl http://127.0.0.1:19432 config --server ""
 
 ### 4. macOS Wails 客户端
 
-#### 推荐安装：终端一行命令
+GitHub Release 提供标准 `.dmg` 安装包，DMG 内包含 `SnetMac.app`、`Applications` 快捷方式和 `安装说明.txt`。
 
-打开 macOS 的“终端”，复制并运行：
+1. 下载并打开 `.dmg`。
+2. 将左侧的 `SnetMac.app` 拖入右侧的 `Applications` 文件夹。
+3. 打开 Mac 自带的“终端”应用（在启动台搜索“终端”）。
+4. 在终端中复制并粘贴以下整行命令，然后按回车：
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install-macos.sh | bash
-```
-
-脚本会自动下载最新版本、停止旧服务、安装到“应用程序”、清除隔离属性并启动 App。无需解压，也无需手动寻找安装脚本。
-
-国内网络可使用镜像或代理：
-
-```bash
-# GitHub 镜像
-curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install-macos.sh | bash
-
-# 使用本地代理
-HTTPS_PROXY=http://127.0.0.1:7890 bash -c "$(curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install-macos.sh)"
-```
-
-#### 备用安装：手动拖拽 DMG
-
-如果不习惯使用终端：
-
-1. 下载 Release 中的 `.dmg` 安装包。
-2. 打开 DMG，将 `SnetMac.app` 拖进“应用程序”。
-3. 打开“终端”，执行：
    ```bash
-   sudo xattr -cr /Applications/SnetMac.app
+   sudo xattr -cr /Applications/SnetMac.app && open /Applications/SnetMac.app
    ```
-4. 双击 App 运行。
+
+5. 根据提示输入你的 Mac 开机密码（输入时屏幕不显示，输完直接回车）。
+
+此命令用于解除 macOS 对未公证应用的隔离限制，仅需执行一次，后续可直接从启动台打开。
 
 首次启动需要一次 macOS 管理员授权：客户端会安装 LaunchDaemon：
 
