@@ -2,7 +2,7 @@
 
 SNET 是一个端到端加密的私有虚拟局域网：WireGuard 负责数据面，HTTPS 协调服务负责成员与网络状态，UDP Relay 负责在无法直连时保证连通性。
 
-当前版本：**v1.0.10**
+当前版本：**v1.0.11**
 
 ## 核心特性
 
@@ -64,7 +64,7 @@ docker compose --env-file .env up -d --build
 curl -fsS https://snet.uizhi.eu.org:8090/healthz
 ```
 
-预期返回 `serverVersion: "1.0.10"` 和 `status: "ok"`。
+预期返回 `serverVersion: "1.0.11"` 和 `status: "ok"`。
 
 ### 2. 客户端 Docker 镜像
 
@@ -121,22 +121,15 @@ snetctl -ctl http://127.0.0.1:19432 config --server ""
 
 ### 4. macOS Wails 客户端
 
-GitHub Actions 会构建并上传：
+#### 推荐安装：终端一行命令
 
-```text
-SnetMac-v<VERSION>-<SHORT_SHA>.zip
-SnetMac-v<VERSION>-<SHORT_SHA>.dmg
-```
-
-下载后打开 `.dmg`。如果直接拖拽 `SnetMac.app` 提示“已损坏”，请双击 DMG 中的 **`一键安装.command`**；它会自动清除隔离属性、安装到 Applications 并启动 App。
-
-如果双击提示“无法验证开发者”或 Gatekeeper 拦截，请按住 `Control` 键点击 `一键安装.command`，在菜单中选择“打开”，再确认一次。
-
-也可以在终端一键安装最新 Release：
+打开 macOS 的“终端”，复制并运行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install-macos.sh | bash
 ```
+
+脚本会自动下载最新版本、停止旧服务、安装到“应用程序”、清除隔离属性并启动 App。无需解压，也无需手动寻找安装脚本。
 
 国内网络可使用镜像或代理：
 
@@ -148,7 +141,17 @@ curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/S-shidi/Snet/ma
 HTTPS_PROXY=http://127.0.0.1:7890 bash -c "$(curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install-macos.sh)"
 ```
 
-安装脚本会自动停止旧版 LaunchDaemon/进程，再安装新 App；首次启动 App 会安装最新守护进程。
+#### 备用安装：手动拖拽 DMG
+
+如果不习惯使用终端：
+
+1. 下载 Release 中的 `.dmg` 安装包。
+2. 打开 DMG，将 `SnetMac.app` 拖进“应用程序”。
+3. 打开“终端”，执行：
+   ```bash
+   sudo xattr -cr /Applications/SnetMac.app
+   ```
+4. 双击 App 运行。
 
 首次启动需要一次 macOS 管理员授权：客户端会安装 LaunchDaemon：
 

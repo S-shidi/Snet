@@ -87,8 +87,15 @@ esac
 
 echo "正在安装到 /Applications…"
 xattr -cr "$APP"
-if ! rm -rf /Applications/SnetMac.app 2>/dev/null || ! cp -R "$APP" /Applications/SnetMac.app 2>/dev/null; then
-  echo "需要管理员权限才能写入 /Applications。"
+
+install_app() {
+  rm -rf /Applications/SnetMac.app && cp -R "$APP" /Applications/SnetMac.app
+}
+
+if [ -w /Applications ] && install_app 2>/dev/null; then
+  :
+else
+  echo "需要管理员权限才能写入 /Applications，正在请求 macOS 授权…"
   osascript -e "do shell script \"rm -rf '/Applications/SnetMac.app' && cp -R '$APP' '/Applications/SnetMac.app'\" with administrator privileges"
 fi
 

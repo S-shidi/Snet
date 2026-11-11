@@ -10,7 +10,7 @@
   <Identity 
     Name="com.snet.snetmac"
     Publisher="CN=SNET"
-    Version="1.0.10.0"
+    Version="1.0.11.0"
     ProcessorArchitecture="x64" />
   
   <Properties>

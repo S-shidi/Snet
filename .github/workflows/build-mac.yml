@@ -91,9 +91,9 @@ jobs:
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
-              <string>1.0.10</string>
+              <string>1.0.11</string>
               <key>CFBundleVersion</key>
-              <string>1.0.10</string>
+              <string>1.0.11</string>
               <key>CFBundleInfoDictionaryVersion</key>
               <string>6.0</string>
               <key>LSMinimumSystemVersion</key>
@@ -136,20 +136,17 @@ jobs:
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
           cp -R SnetMac.app "$STAGE/"
-          cp ../scripts/install.command "$STAGE/一键安装.command"
-          chmod +x "$STAGE/一键安装.command"
           if ! command -v create-dmg >/dev/null 2>&1; then
             brew install create-dmg || true
           fi
           if ! command -v create-dmg >/dev/null 2>&1 || ! create-dmg \
             --volname "Snet Installer" \
             --window-pos 200 120 \
-            --window-size 900 420 \
+            --window-size 800 400 \
             --icon-size 100 \
-            --icon "SnetMac.app" 180 190 \
+            --icon "SnetMac.app" 200 190 \
             --hide-extension "SnetMac.app" \
-            --app-drop-link 450 190 \
-            --icon "一键安装.command" 720 190 \
+            --app-drop-link 600 185 \
             "$DMG_NAME" \
             "$STAGE"; then
             rm -f "$DMG_NAME"
@@ -164,24 +161,6 @@ jobs:
           ZIP_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.zip"
           ditto -c -k --sequesterRsrc --keepParent SnetMac.app "$ZIP_NAME"
 
-      - name: Create Tar.gz Package
-        working-directory: ./desktop-mac-v3/build
-        run: |
-          set -euo pipefail
-          TAR_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.tar.gz"
-          INSTALL_SCRIPT="${{ github.workspace }}/desktop-mac-v3/scripts/install.command"
-          PKG="pkg"
-          test -f "$INSTALL_SCRIPT"
-          rm -rf "$PKG"
-          mkdir -p "$PKG"
-          cp -R SnetMac.app "$PKG/"
-          cp "$INSTALL_SCRIPT" "$PKG/一键安装.command"
-          chmod +x "$PKG/一键安装.command"
-          echo "=== tar.gz contents ==="
-          ls -la "$PKG"
-          COPYFILE_DISABLE=1 tar -czf "$TAR_NAME" -C "$PKG" SnetMac.app "一键安装.command"
-          tar -tzf "$TAR_NAME" | sed -n '1,20p'
-
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -189,7 +168,6 @@ jobs:
           path: |
             desktop-mac-v3/build/SnetMac-v*.zip
             desktop-mac-v3/build/SnetMac-v*.dmg
-            desktop-mac-v3/build/SnetMac-v*.tar.gz
           retention-days: 7
 
       - name: Publish GitHub Release
@@ -199,5 +177,4 @@ jobs:
           files: |
             desktop-mac-v3/build/SnetMac-v*.zip
             desktop-mac-v3/build/SnetMac-v*.dmg
-            desktop-mac-v3/build/SnetMac-v*.tar.gz
           generate_release_notes: true
