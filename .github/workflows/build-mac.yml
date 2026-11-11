@@ -164,6 +164,13 @@ jobs:
           ZIP_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.zip"
           ditto -c -k --sequesterRsrc --keepParent SnetMac.app "$ZIP_NAME"
 
+      - name: Create Tar.gz Package
+        working-directory: ./desktop-mac-v3/build
+        run: |
+          set -euo pipefail
+          TAR_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "$TAR_NAME" SnetMac.app
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -171,6 +178,7 @@ jobs:
           path: |
             desktop-mac-v3/build/SnetMac-v*.zip
             desktop-mac-v3/build/SnetMac-v*.dmg
+            desktop-mac-v3/build/SnetMac-v*.tar.gz
           retention-days: 7
 
       - name: Publish GitHub Release
@@ -180,4 +188,5 @@ jobs:
           files: |
             desktop-mac-v3/build/SnetMac-v*.zip
             desktop-mac-v3/build/SnetMac-v*.dmg
+            desktop-mac-v3/build/SnetMac-v*.tar.gz
           generate_release_notes: true
