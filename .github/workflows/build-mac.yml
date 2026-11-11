@@ -28,9 +28,6 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Wails v3
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
-
       - name: Build snetd daemon
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
@@ -47,55 +44,85 @@ jobs:
           echo "VERSION=$(cat VERSION)" >> $GITHUB_OUTPUT
           echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Build App Bundle (No Sign)
+      - name: Build Frontend
         working-directory: ./desktop-mac-v3
         run: |
           set -euo pipefail
-          export PATH=$PATH:$(go env GOPATH)/bin
-          wails3 task darwin:build-only
-          test -d bin/SnetMac.app
-          test -f bin/SnetMac.app/Contents/Info.plist
-          test -x bin/SnetMac.app/Contents/Resources/snetd
-          test -f bin/SnetMac.app/Contents/Resources/install-daemon.sh
+          ./frontend/build-frontend.sh
 
-      - name: Manual Codesign (Bottom-Up, No Deep)
+      - name: Build Wails Binary (No Bundle)
         working-directory: ./desktop-mac-v3
         run: |
           set -euo pipefail
-          APP_PATH="bin/SnetMac.app"
+          CGO_ENABLED=1 go build -tags desktop,production -trimpath -buildvcs=false \
+            -ldflags "-w -s" -o SnetMac .
 
-          echo "=== 1. 清理所有扩展属性 ==="
+      - name: Manually Assemble .app Bundle
+        working-directory: ./desktop-mac-v3
+        run: |
+          set -euo pipefail
+          APP_DIR="build/SnetMac.app"
+          rm -rf "$APP_DIR"
+          mkdir -p "$APP_DIR/Contents/MacOS"
+          mkdir -p "$APP_DIR/Contents/Resources"
+
+          cp SnetMac "$APP_DIR/Contents/MacOS/SnetMac"
+          chmod +x "$APP_DIR/Contents/MacOS/SnetMac"
+
+          test -f ../dist/snetd-darwin-arm64
+          test -f scripts/install-daemon.sh
+          cp ../dist/snetd-darwin-arm64 "$APP_DIR/Contents/Resources/snetd"
+          cp scripts/install-daemon.sh "$APP_DIR/Contents/Resources/install-daemon.sh"
+          chmod +x "$APP_DIR/Contents/Resources/snetd" "$APP_DIR/Contents/Resources/install-daemon.sh"
+
+          cat > "$APP_DIR/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>SnetMac</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.snet.app</string>
+              <key>CFBundleName</key>
+              <string>SnetMac</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0.4</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>10.13</string>
+              <key>LSUIElement</key>
+              <true/>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          echo "=== 检查 .app 结构 ==="
+          find "$APP_DIR" -type f
+          plutil -lint "$APP_DIR/Contents/Info.plist"
+
+      - name: Manual Codesign (Clean Room)
+        working-directory: ./desktop-mac-v3
+        run: |
+          set -euo pipefail
+          APP_PATH="build/SnetMac.app"
           xattr -cr "$APP_PATH"
 
-          echo "=== 2. 移除 Wails 残留的旧签名 ==="
-          codesign --remove-signature "$APP_PATH/Contents/MacOS/SnetMac" 2>/dev/null || true
-          codesign --remove-signature "$APP_PATH/Contents/Resources/snetd" 2>/dev/null || true
-
-          echo "=== 3. 检查 Info.plist 是否合法 ==="
-          plutil -lint "$APP_PATH/Contents/Info.plist"
-
-          echo "=== 4. 先签内部可执行文件 (snetd) ==="
           codesign --force --sign - "$APP_PATH/Contents/Resources/snetd"
           codesign --verify --strict "$APP_PATH/Contents/Resources/snetd"
 
-          echo "=== 5. 再签主可执行文件 (SnetMac) ==="
           codesign --force --sign - "$APP_PATH/Contents/MacOS/SnetMac"
 
-          echo "=== 6. 最后签整个 App 包 (不带 --deep) ==="
           codesign --force --sign - "$APP_PATH"
 
-          echo "=== 7. 验证整个 App ==="
-          codesign --verify --strict "$APP_PATH"
+          codesign --verify --deep --strict "$APP_PATH"
           codesign -dv --verbose=4 "$APP_PATH"
 
-      - name: Verify App Signature
-        working-directory: ./desktop-mac-v3
-        run: |
-          set -euo pipefail
-          codesign --verify --deep --strict --verbose=2 bin/SnetMac.app
-
       - name: Create DMG
-        working-directory: ./desktop-mac-v3/bin
+        working-directory: ./desktop-mac-v3/build
         run: |
           set -euo pipefail
           DMG_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.dmg"
@@ -117,7 +144,7 @@ jobs:
           fi
 
       - name: Package Zip
-        working-directory: ./desktop-mac-v3/bin
+        working-directory: ./desktop-mac-v3/build
         run: |
           set -euo pipefail
           ZIP_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.zip"
@@ -128,6 +155,6 @@ jobs:
         with:
           name: SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}
           path: |
-            desktop-mac-v3/bin/SnetMac-v*.zip
-            desktop-mac-v3/bin/SnetMac-v*.dmg
+            desktop-mac-v3/build/SnetMac-v*.zip
+            desktop-mac-v3/build/SnetMac-v*.dmg
           retention-days: 7
