@@ -130,21 +130,29 @@ jobs:
         run: |
           set -euo pipefail
           DMG_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.dmg"
+          STAGE="dmg-stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp -R SnetMac.app "$STAGE/"
+          cp ../scripts/install.command "$STAGE/一键安装.command"
+          chmod +x "$STAGE/一键安装.command"
           if ! command -v create-dmg >/dev/null 2>&1; then
             brew install create-dmg || true
           fi
           if ! command -v create-dmg >/dev/null 2>&1 || ! create-dmg \
             --volname "Snet Installer" \
             --window-pos 200 120 \
-            --window-size 800 400 \
+            --window-size 900 420 \
             --icon-size 100 \
-            --icon "SnetMac.app" 200 190 \
+            --icon "SnetMac.app" 180 190 \
             --hide-extension "SnetMac.app" \
-            --app-drop-link 600 185 \
+            --app-drop-link 450 190 \
+            --icon "一键安装.command" 720 190 \
             "$DMG_NAME" \
-            "SnetMac.app"; then
+            "$STAGE"; then
             rm -f "$DMG_NAME"
-            hdiutil create -volname "Snet Installer" -srcfolder SnetMac.app -ov -format UDZO "$DMG_NAME"
+            ln -sfn /Applications "$STAGE/Applications"
+            hdiutil create -volname "Snet Installer" -srcfolder "$STAGE" -ov -format UDZO "$DMG_NAME"
           fi
 
       - name: Package Zip

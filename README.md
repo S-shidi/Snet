@@ -128,7 +128,13 @@ SnetMac-v<VERSION>-<SHORT_SHA>.zip
 SnetMac-v<VERSION>-<SHORT_SHA>.dmg
 ```
 
-下载后打开 `.dmg`，把 `SnetMac.app` 拖入 Applications。
+下载后打开 `.dmg`。如果直接拖拽 `SnetMac.app` 提示“已损坏”，请双击 DMG 中的 **`一键安装.command`**；它会自动清除隔离属性、安装到 Applications 并启动 App。
+
+也可以在终端一键安装最新 Release：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install-macos.sh | bash
+```
 
 首次启动需要一次 macOS 管理员授权：客户端会安装 LaunchDaemon：
 
