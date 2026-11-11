@@ -68,12 +68,12 @@ header {
 /* macOS Wails: leave room for traffic lights and make the header draggable. */
 .wails-desktop .header-inner {
   padding-left: 80px;
-  --wails-draggable: drag;
+  --wails-draggable: drag !important;
   -webkit-app-region: drag;
   user-select: none;
 }
 .wails-desktop header {
-  --wails-draggable: drag;
+  --wails-draggable: drag !important;
   -webkit-app-region: drag;
   user-select: none;
 }
@@ -85,7 +85,7 @@ header {
 .wails-desktop header .header-dropdown,
 .wails-desktop header .header-actions,
 .wails-desktop header .header-more {
-  --wails-draggable: no-drag;
+  --wails-draggable: no-drag !important;
   -webkit-app-region: no-drag;
 }
 
@@ -631,6 +631,11 @@ th { color: var(--dim); font-weight: 600; font-size: 11.5px; letter-spacing: .3p
 tbody tr:hover { background: rgba(255,255,255,.025); }
 td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 table.members button { padding: 3px 9px; font-size: 12px; border-radius: 6px; }
+.ping-cell { white-space: nowrap; }
+.ping-result { margin-left: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.ping-result.ok { color: var(--ok); }
+.ping-result.warn { color: var(--warn); }
+.ping-result.err { color: var(--err); }
 
 .confirm-msg { margin: 0 0 14px; color: var(--dim); font-size: 13.5px; white-space: pre-wrap; }
 .confirm-msg b { color: var(--text); }

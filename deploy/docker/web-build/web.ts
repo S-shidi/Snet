@@ -180,6 +180,18 @@ const backend: Backend = {
     return resp?.subnets ?? (Array.isArray(resp) ? resp : []);
   },
 
+  async ping(target: string): Promise<{ loss: number; avgRtt: number }> {
+    return api("/ping", jsonPost("/ping", { target }));
+  },
+
+  async logs(): Promise<string> {
+    const headers: Record<string, string> = {};
+    if (authToken) headers["Authorization"] = "Bearer " + authToken;
+    const res = await fetch(NS + "/logs", { headers });
+    if (!res.ok) throw new Error(await res.text() || ("HTTP " + res.status));
+    return res.text();
+  },
+
   async ensureDaemon(): Promise<void> {
     if (!isWailsDesktop()) {
       throw new Error("Web 版无法管理后台服务，请手动启动 snetd");

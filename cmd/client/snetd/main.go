@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"os"
 
 	"snet/internal/buildinfo"
 	"snet/internal/client"
@@ -20,6 +22,7 @@ func main() {
 		fmt.Println(buildinfo.String())
 		return
 	}
+	log.SetOutput(io.MultiWriter(os.Stderr, client.LogWriter()))
 	log.Printf("snetd %s", buildinfo.String())
 
 	cfg, err := client.LoadConfigAt(*configPath)

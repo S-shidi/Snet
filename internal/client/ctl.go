@@ -1,12 +1,21 @@
 package client
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +38,49 @@ func resolveServer(server string) string {
 // shutdownGraceDelay is the pause between flushing the shutdown HTTP
 // response and actually stopping the server.  Tests may override it.
 var shutdownGraceDelay = 200 * time.Millisecond
+
+var (
+	pingLossRE = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%\s+(?:packet )?loss`)
+	pingAvgRE  = regexp.MustCompile(`(?:rtt|round-trip)[^=]*=\s*[0-9.]+\/([0-9.]+)\/`)
+)
+
+func parsePingOutput(out string) (float64, float64) {
+	loss, avg := 100.0, 0.0
+	if m := pingLossRE.FindStringSubmatch(out); len(m) == 2 {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			loss = v
+		}
+	}
+	if m := pingAvgRE.FindStringSubmatch(out); len(m) == 2 {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			avg = v
+		}
+	}
+	return loss, avg
+}
+
+func (d *Daemon) logText(n int) string {
+	if d.configPath != "" {
+		path := filepath.Join(filepath.Dir(d.configPath), "snetd.log")
+		if b, err := os.ReadFile(path); err == nil {
+			if text := tailLogLines(string(b), n); text != "" {
+				return text
+			}
+		}
+	}
+	return LogTail(n)
+}
+
+func tailLogLines(text string, n int) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return ""
+	}
+	if n > 0 && len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
 
 // CtlReq is the request body for create/join control endpoints.
 type CtlReq struct {
@@ -149,6 +201,40 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			return
 		}
 		writeCtlJSON(w, 200, st)
+	})
+
+	mux.HandleFunc("POST /ctl/ping", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Target string `json:"target"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		target := strings.TrimSpace(req.Target)
+		if net.ParseIP(target) == nil {
+			writeCtlErr(w, 400, errors.New("target must be an IP address"))
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		wait := "2"
+		if runtime.GOOS == "darwin" {
+			wait = "2000"
+		}
+		out, err := exec.CommandContext(ctx, "ping", "-c", "3", "-W", wait, target).CombinedOutput()
+		if err != nil && len(out) == 0 {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		loss, avg := parsePingOutput(string(out))
+		writeCtlJSON(w, 200, map[string]any{"loss": loss, "avgRtt": avg})
+	})
+
+	mux.HandleFunc("GET /ctl/logs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="snet-diagnostic.log"`)
+		_, _ = io.WriteString(w, d.logText(200))
 	})
 
 	mux.HandleFunc("POST /ctl/check-server", func(w http.ResponseWriter, r *http.Request) {

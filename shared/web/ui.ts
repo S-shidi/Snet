@@ -1281,6 +1281,9 @@ function openSettingsModal() {
         <p class="msg" id="s-nat-state">${!status ? "后台服务未运行" : !natEnabled ? "已关闭" : natLines.length ? `已映射 ${natLines.length} 个端口` : "正在等待路由器分配映射…"}</p>
         <div class="hint" id="s-nat-list">${natLines.map(esc).join("<br>")}${natErr ? `<div style="color:var(--err)">端口 ${natErr.port}: ${esc(natErr.error)}</div>` : ""}</div>
       </div>
+      <div class="settings-actions">
+        <button id="s-logs" class="btn ghost" type="button">导出诊断日志</button>
+      </div>
       <div class="settings-actions" id="s-daemon-row">
         ${backend.hasDaemonControl
           ? (status ? `<span class="live-dot ok">运行中</span>` : `<button id="s-start-daemon" class="btn ghost">启动</button>`)
@@ -1360,6 +1363,26 @@ function openSettingsModal() {
           natState.textContent = `保存失败: ${e}`;
         } finally {
           natInput.disabled = false;
+        }
+      });
+
+      body.querySelector("#s-logs")?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.disabled = true;
+        try {
+          const text = await backend.logs();
+          const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "snet-diagnostic.log";
+          a.click();
+          URL.revokeObjectURL(url);
+          toast("诊断日志已导出");
+        } catch (err) {
+          toast(`导出日志失败: ${err}`, "err");
+        } finally {
+          btn.disabled = false;
         }
       });
 
@@ -1558,6 +1581,9 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const rolePill = role === "owner"
       ? `<span class="pill accent">${roleLabel(role)}</span>`
       : `<span class="pill off">${roleLabel(role)}</span>`;
+    const diag = isSelf
+      ? '<td><span class="muted">-</span></td>'
+      : `<td class="ping-cell"><button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">📡 诊断</button><span class="ping-result" data-ping-result="${esc(nd.id)}"></span></td>`;
     const op = canManage
       ? `<td>${isSelf ? '<span class="muted">自己</span>' : `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}">移除</button>`}</td>`
       : "";
@@ -1567,12 +1593,45 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       <td>${online}</td>
       <td>${subnets}</td>
       <td>${rolePill}</td>
+      ${diag}
       ${op}
     </tr>`;
   }).join("");
   return `<div class="tbl-wrap"><table class="members"><thead><tr>
-    <th>设备名 / 设备ID</th><th>虚拟 IP</th><th>状态</th><th>子网路由</th><th>角色</th>${canManage ? "<th>操作</th>" : ""}
+    <th>设备名 / 设备ID</th><th>虚拟 IP</th><th>状态</th><th>子网路由</th><th>角色</th><th>诊断</th>${canManage ? "<th>操作</th>" : ""}
   </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+async function runPeerPing(btn: HTMLButtonElement) {
+  const target = btn.dataset.pingTarget || "";
+  const result = btn.closest("td")?.querySelector<HTMLElement>("[data-ping-result]");
+  if (!target) {
+    if (result) { result.className = "ping-result err"; result.textContent = "无 IP"; }
+    return;
+  }
+  const original = btn.textContent || "📡 诊断";
+  btn.disabled = true;
+  btn.textContent = "诊断中…";
+  if (result) { result.className = "ping-result"; result.textContent = ""; }
+  try {
+    const r = await backend.ping(target);
+    const loss = Math.max(0, Number(r.loss) || 0);
+    const avg = Math.max(0, Number(r.avgRtt) || 0);
+    const cls = loss >= 50 || avg >= 200 ? "err" : loss > 0 || avg >= 80 ? "warn" : "ok";
+    if (result) {
+      result.className = "ping-result " + cls;
+      result.textContent = `${loss.toFixed(0)}% 丢包 / ${avg > 0 ? `${avg.toFixed(0)}ms` : "超时"}`;
+    }
+  } catch (e) {
+    if (result) {
+      result.className = "ping-result err";
+      result.textContent = "诊断失败";
+    }
+    toast(String(e), "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 
 async function inviteInfo(nid: string): Promise<{ link: string; code: string } | null> {
@@ -1762,6 +1821,11 @@ function bindNetworkDetailEvents() {
   const detail = $("#net-detail");
   if (!detail) return;
   detail.addEventListener("click", async (e) => {
+    const pingEl = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-detail-ping]");
+    if (pingEl && detailNid) {
+      await runPeerPing(pingEl);
+      return;
+    }
     const el = (e.target as HTMLElement).closest<HTMLElement>("[data-detail-act], [data-detail-kick]");
     if (!el || !detailNid) return;
     const nid = detailNid;

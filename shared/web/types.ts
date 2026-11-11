@@ -141,6 +141,10 @@ export interface Backend {
   resetCode(nid: string): Promise<{ pairingCode: string }>;
   /** Detect local subnets */
   detectLocalSubnets(): Promise<string[]>;
+  /** Ping a peer IP and return loss percentage and average RTT */
+  ping(target: string): Promise<{ loss: number; avgRtt: number }>;
+  /** Fetch recent daemon diagnostic logs */
+  logs(): Promise<string>;
   /** Ensure daemon is running (Desktop only, Web returns error) */
   ensureDaemon(): Promise<void>;
   /** Scan a QR code and return the decoded text (Android native only) */
