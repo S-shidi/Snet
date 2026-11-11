@@ -47,16 +47,33 @@ jobs:
           echo "VERSION=$(cat VERSION)" >> $GITHUB_OUTPUT
           echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Build and Package Wails v3 App
+      - name: Build Wails v3 App
         working-directory: ./desktop-mac-v3
         run: |
+          set -euo pipefail
           export PATH=$PATH:$(go env GOPATH)/bin
-          wails3 task darwin:package:dmg
+          wails3 task darwin:package
+
+      - name: Verify App Signature
+        working-directory: ./desktop-mac-v3
+        run: |
+          set -euo pipefail
+          codesign --verify --strict --verbose=2 bin/SnetMac.app/Contents/Resources/snetd
+          codesign --verify --deep --strict --verbose=2 bin/SnetMac.app
+          codesign --display --verbose=2 bin/SnetMac.app
+
+      - name: Package DMG
+        working-directory: ./desktop-mac-v3
+        run: |
+          set -euo pipefail
+          export PATH=$PATH:$(go env GOPATH)/bin
+          wails3 task darwin:create:dmg
+          codesign --verify --deep --strict --verbose=2 bin/SnetMac.app
 
           cd bin
           ZIP_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.zip"
           DMG_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.dmg"
-          zip -r "$ZIP_NAME" SnetMac.app
+          ditto -c -k --sequesterRsrc --keepParent SnetMac.app "$ZIP_NAME"
           mv SnetMac.dmg "$DMG_NAME"
 
       - name: Upload Artifact
