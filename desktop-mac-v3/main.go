@@ -115,17 +115,17 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 
 	menu := app.NewMenu()
 	statusItem := menu.Add("未连接").SetEnabled(false).SetBitmap(dotIcon(color.RGBA{R: 239, G: 68, B: 68, A: 255}))
-	ipItem := menu.Add("IP: -").SetEnabled(false).SetBitmap(dotIcon(color.RGBA{R: 79, G: 140, B: 255, A: 255}))
-	subnetItem := menu.Add("子网: -").SetEnabled(false).SetBitmap(dotIcon(color.RGBA{R: 154, G: 163, B: 178, A: 255}))
+	ipItem := menu.Add("IP: -").SetEnabled(false).SetBitmap(ipIcon())
+	subnetItem := menu.Add("子网: -").SetEnabled(false).SetBitmap(subnetIcon())
 	subnetItem.SetHidden(true)
 	menu.AddSeparator()
 	openItem := menu.Add("打开控制面板")
-	openItem.SetBitmap(dotIcon(color.RGBA{R: 52, G: 199, B: 123, A: 255}))
+	openItem.SetBitmap(windowIcon())
 	openItem.OnClick(func(*application.Context) {
 		showWindow(window)
 	})
 	quitItem := menu.Add("退出 SNET")
-	quitItem.SetBitmap(dotIcon(color.RGBA{R: 239, G: 68, B: 68, A: 255}))
+	quitItem.SetBitmap(quitIcon())
 	quitItem.OnClick(func(*application.Context) {
 		log.Printf("SnetMac: quit requested from tray")
 		svc.ShutdownDaemon()
@@ -135,21 +135,115 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 	return statusItem, ipItem, subnetItem
 }
 
-func dotIcon(c color.RGBA) []byte {
+func makeIcon(draw func(*image.RGBA)) []byte {
 	const size = 16
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
-	cx, cy, r := 7.5, 7.5, 5.5
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			dx, dy := float64(x)-cx, float64(y)-cy
-			if dx*dx+dy*dy <= r*r {
-				img.SetRGBA(x, y, c)
-			}
-		}
-	}
+	draw(img)
 	var buf bytes.Buffer
 	_ = png.Encode(&buf, img)
 	return buf.Bytes()
+}
+
+func setPixel(img *image.RGBA, x, y int, c color.RGBA) {
+	if x >= 0 && x < 16 && y >= 0 && y < 16 {
+		img.SetRGBA(x, y, c)
+	}
+}
+
+func drawLine(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
+	dx, dy := x1-x0, y1-y0
+	if dx < 0 {
+		dx = -dx
+	}
+	if dy < 0 {
+		dy = -dy
+	}
+	sx, sy := 1, 1
+	if x0 > x1 {
+		sx = -1
+	}
+	if y0 > y1 {
+		sy = -1
+	}
+	err := dx - dy
+	for {
+		setPixel(img, x0, y0, c)
+		if x0 == x1 && y0 == y1 {
+			break
+		}
+		e2 := 2 * err
+		if e2 > -dy {
+			err -= dy
+			x0 += sx
+		}
+		if e2 < dx {
+			err += dx
+			y0 += sy
+		}
+	}
+}
+
+func dotIcon(c color.RGBA) []byte {
+	return makeIcon(func(img *image.RGBA) {
+		for y := 0; y < 16; y++ {
+			for x := 0; x < 16; x++ {
+				dx, dy := float64(x)-7.5, float64(y)-7.5
+				if dx*dx+dy*dy <= 5.5*5.5 {
+					setPixel(img, x, y, c)
+				}
+			}
+		}
+	})
+}
+
+func ipIcon() []byte {
+	ink := color.RGBA{R: 210, G: 218, B: 230, A: 255}
+	return makeIcon(func(img *image.RGBA) {
+		for y := 0; y < 16; y++ {
+			for x := 0; x < 16; x++ {
+				dx, dy := float64(x)-7.5, float64(y)-7.5
+				if dx*dx+dy*dy >= 4.0*4.0 && dx*dx+dy*dy <= 5.8*5.8 {
+					setPixel(img, x, y, ink)
+				}
+			}
+		}
+		drawLine(img, 3, 8, 12, 8, ink)
+		drawLine(img, 8, 3, 8, 12, ink)
+	})
+}
+
+func subnetIcon() []byte {
+	ink := color.RGBA{R: 210, G: 218, B: 230, A: 255}
+	return makeIcon(func(img *image.RGBA) {
+		for _, p := range [][2]int{{3, 8}, {12, 3}, {12, 13}} {
+			for y := p[1] - 1; y <= p[1]+1; y++ {
+				for x := p[0] - 1; x <= p[0]+1; x++ {
+					setPixel(img, x, y, ink)
+				}
+			}
+		}
+		drawLine(img, 4, 8, 11, 4, ink)
+		drawLine(img, 4, 8, 11, 12, ink)
+	})
+}
+
+func windowIcon() []byte {
+	ink := color.RGBA{R: 210, G: 218, B: 230, A: 255}
+	return makeIcon(func(img *image.RGBA) {
+		drawLine(img, 3, 4, 12, 4, ink)
+		drawLine(img, 3, 12, 12, 12, ink)
+		drawLine(img, 3, 4, 3, 12, ink)
+		drawLine(img, 12, 4, 12, 12, ink)
+		drawLine(img, 3, 7, 12, 7, ink)
+	})
+}
+
+func quitIcon() []byte {
+	ink := color.RGBA{R: 239, G: 68, B: 68, A: 255}
+	return makeIcon(func(img *image.RGBA) {
+		drawLine(img, 4, 4, 11, 11, ink)
+		drawLine(img, 11, 4, 4, 11, ink)
+	})
 }
 
 type trayStatusResponse struct {
