@@ -361,7 +361,7 @@ function renderNetworks() {
     if (tb) return 1;
     return (a.networkId || "").localeCompare(b.networkId || "");
   });
-  const netHTML = expBanner + sortedNets.map(netCard).join("");
+  const netHTML = sortedNets.map(netCard).join("");
   const pendingHTML = pending.length
     ? `<h4 class="pending-heading">待批准 · 加入请求</h4>` +
       pending.map(

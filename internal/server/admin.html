@@ -3644,7 +3644,6 @@ function renderNetDetail() {
   const external = nodes.filter(n => !n.deviceId);
   const online = nodes.filter(n => n.lastSeen && (now - n.lastSeen) < 60).length;
   const ownerID = info.ownerNodeId || '';
-  const desc = info.description ? esc(info.description) : '<span class="hint">暂无描述</span>';
 
   let memberRows = '';
   for (const nd of nodes) {
@@ -3725,12 +3724,10 @@ function renderNetDetail() {
       <div class="detail-kv"><span>入网审批</span><span class="pill ${info.approvalRequired ? 'active' : 'free'}">${info.approvalRequired ? '已开启' : '未开启'}</span></div>
     </div>
     <div class="detail-actions">
-      <button type="button" class="btn ghost sm" data-detail-act="edit-desc">编辑描述</button>
       <button type="button" class="btn ghost sm" data-detail-act="toggle-approval">${info.approvalRequired ? '关闭入网审批' : '开启入网审批'}</button>
       <span class="spacer"></span>
       <button type="button" class="btn danger sm" data-detail-act="delete">删除网络</button>
     </div>
-    <p class="detail-note">描述：${desc}</p>
   </section>
   <section class="card detail-section">
     <div class="detail-section-head"><h3>成员与节点管理</h3><span class="hint">${nodes.length} 个节点</span></div>
@@ -3750,85 +3747,6 @@ function renderNetDetail() {
       <th>Node ID</th><th>虚拟 IP</th><th>公钥</th><th>状态</th><th>Endpoint</th>
     </tr></thead><tbody>${externalRows}</tbody></table></div>
   </section>`;
-}
-
-function openEditNetDescription() {
-  if (!netDetailInfo || !netDetailNid) return;
-  setModal('编辑网络描述 · ' + (netDetailInfo.name || netDetailNid), `
-    <div class="row"><label for="nd-desc">描述</label>
-      <textarea id="nd-desc" rows="4" maxlength="500" placeholder="简短说明这个网络的用途">${esc(netDetailInfo.description || '')}</textarea>
-    </div>
-    <p class="hint">最多 500 个字符；保存后可在网络列表和客户端详情中看到。</p>
-    <p class="msg" id="nd-desc-msg"></p>
-    <div class="modal-foot">
-      <button type="button" class="btn ghost" data-act="close-modal">取消</button>
-      <button type="button" class="btn" data-act="do-save-desc">保存</button>
-    </div>`);
-}
-
-async function saveNetDescription() {
-  const nid = netDetailNid;
-  if (!nid) return;
-  const desc = $('nd-desc').value.trim();
-  const msg = $('nd-desc-msg');
-  try {
-    await api('PATCH', '/admin/networks/' + encodeURIComponent(nid), { description: desc });
-    closeModal();
-    toast('描述已更新');
-    await openNetDetail(nid);
-    loadNetworks(false);
-  } catch (e) { msg.textContent = '保存失败：' + e.message.replace(/^\d+\s*/, ''); }
-}
-
-async function toggleNetApproval() {
-  const nid = netDetailNid;
-  const info = netDetailInfo;
-  if (!nid || !info) return;
-  const next = !info.approvalRequired;
-  try {
-    await api('PATCH', '/admin/networks/' + encodeURIComponent(nid), { approvalRequired: next });
-    toast(next ? '已开启入网审批' : '已关闭入网审批');
-    await openNetDetail(nid);
-    loadNetworks(false);
-  } catch (e) { handleErr(e, '切换入网审批失败'); }
-}
-
-async function deleteNetFromDetail() {
-  const nid = netDetailNid;
-  const info = netDetailInfo;
-  if (!nid || !info) return;
-  const name = info.name || nid;
-  const ok = await confirmDlg({
-    title: '删除网络',
-    message: `即将删除网络 <b>${esc(name)}</b>（${esc(nid)}）。\n所有成员断开、网段释放，此操作不可恢复。`,
-    confirmText: '永久删除', danger: true, typed: name,
-  });
-  if (!ok) return;
-  try {
-    await api('DELETE', '/admin/networks/' + encodeURIComponent(nid));
-    toast('网络已删除');
-    closeNetDetail();
-    loadNetworks(false);
-    loadOverview(false);
-  } catch (e) { handleErr(e, '删除失败'); }
-}
-
-async function kickNodeFromDetail(nid, nodeID, btn) {
-  const ok = await confirmDlg({
-    title: '踢出节点',
-    message: `确定把节点 <b class="code">${esc(nodeID)}</b> 踢出网络 ${esc(nid)}？\n被踢设备将立即断开该网络。`,
-    confirmText: '踢出', danger: true,
-  });
-  if (!ok) return;
-  btn.disabled = true;
-  try {
-    await api('DELETE', `/admin/networks/${encodeURIComponent(nid)}/nodes/${encodeURIComponent(nodeID)}`);
-    toast('节点已踢出');
-    await openNetDetail(nid);
-    loadNetworks(false);
-    loadOverview(false);
-  } catch (e) { handleErr(e, '踢出失败'); }
-  finally { btn.disabled = false; }
 }
 
 function openNodeSubnets(nodeID) {
@@ -4498,9 +4416,6 @@ document.addEventListener('click', async e => {
     case 'do-chpass':
       withBusy(el, () => doChpass());
       break;
-    case 'do-save-desc':
-      withBusy(el, () => saveNetDescription());
-      break;
     case 'do-save-subnets':
       withBusy(el, () => saveNodeSubnets(el.dataset.node));
       break;
@@ -4537,7 +4452,6 @@ $('net-detail').addEventListener('click', async e => {
   const nodeID = el.dataset.node;
   switch (el.dataset.detailAct) {
     case 'back': closeNetDetail(); break;
-    case 'edit-desc': openEditNetDescription(); break;
     case 'toggle-approval': await toggleNetApproval(); break;
     case 'delete': await deleteNetFromDetail(); break;
     case 'kick': await kickNodeFromDetail(nid, nodeID, el); break;
