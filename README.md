@@ -2,7 +2,7 @@
 
 SNET 是一个端到端加密的私有虚拟局域网：WireGuard 负责数据面，HTTPS 协调服务负责成员与网络状态，UDP Relay 负责在无法直连时保证连通性。
 
-当前版本：**v1.0.5**
+当前版本：**v1.0.6**
 
 ## 核心特性
 
@@ -64,7 +64,7 @@ docker compose --env-file .env up -d --build
 curl -fsS https://snet.uizhi.eu.org:8090/healthz
 ```
 
-预期返回 `serverVersion: "1.0.5"` 和 `status: "ok"`。
+预期返回 `serverVersion: "1.0.6"` 和 `status: "ok"`。
 
 ### 2. 客户端 Docker 镜像
 
@@ -98,7 +98,28 @@ http://<主机IP>:8081
 
 客户端容器使用 host network、`/dev/net/tun` 和 `/etc/snet` 数据卷；首次启动会在数据卷内生成稳定的 `device.id`。
 
-### 3. macOS Wails 客户端
+客户端不再需要设备授权码或设备绑定，启动后可以直接创建或加入网络。
+
+### 3. 连接自托管 SnetServ
+
+默认连接官方 SnetServ。需要使用自建服务端时，在客户端 Web UI 或 macOS App 的「设置」中：
+
+1. 点击「协调服务」旁的修改按钮。
+2. 填写自托管地址，例如 `https://my-vps:8090`。
+3. 点击保存；客户端会先请求目标 `/healthz` 校验连通性。
+4. 校验通过后保存并重新连接。点击「恢复默认」可切回官方 SnetServ。
+
+也可以在本地控制 API 修改：
+
+```bash
+snetctl -ctl http://127.0.0.1:19432 config --server https://my-vps:8090
+# 恢复官方
+snetctl -ctl http://127.0.0.1:19432 config --server ""
+```
+
+自托管服务端需要暴露 8090/tcp、8091/udp 和 8092/udp，并配置有效的 TLS 证书。
+
+### 4. macOS Wails 客户端
 
 GitHub Actions 会构建并上传：
 
