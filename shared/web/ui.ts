@@ -1383,6 +1383,14 @@ function openSettingsModal() {
 
 /* ── Status tab ───────────────────────────────────────────────── */
 /* ── Path monitor ─────────────────────────────────────────────── */
+function fmtSpeed(bytesPerSec?: number): string {
+  const n = Math.max(0, bytesPerSec || 0);
+  if (n < 1024) return `${n.toFixed(0)} B/s`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB/s`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB/s`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB/s`;
+}
+
 function fmtAgo(sec?: number): string {
   if (typeof sec !== "number" || sec < 0) return "未知";
   if (sec < 2) return "刚刚";
@@ -1673,6 +1681,7 @@ function networkDetailHTML(n: NetInfo): string {
       <div class="detail-kv"><span>当前角色</span><span class="pill ${role === "member" ? "off" : "accent"}">${roleLabel(role)}</span></div>
       <div class="detail-kv"><span>本机虚拟 IP</span><code>${esc(ip)}</code></div>
       <div class="detail-kv"><span>连接状态</span><span class="pill ${linkCls}">${linkText}</span></div>
+      <div class="detail-kv"><span>实时速率</span><code>↑ ${fmtSpeed(status?.txSpeed)} ↓ ${fmtSpeed(status?.rxSpeed)}</code></div>
     </div>
     ${copyActions}
   </section>

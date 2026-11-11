@@ -349,6 +349,11 @@ type Daemon struct {
 	// the background loops. Later Start calls (Android VPN restarts) only
 	// re-bring-up active tunnels instead of duplicating loops.
 	started bool
+
+	// Last aggregate counters used to derive real-time speeds for /ctl/status.
+	lastStatusAt time.Time
+	lastStatusRx uint64
+	lastStatusTx uint64
 }
 
 func NewDaemonAt(cfg *Config, configPath string) *Daemon {
@@ -3184,6 +3189,7 @@ func (d *Daemon) Status() (map[string]any, error) {
 	defer d.mu.Unlock()
 
 	nets := make([]map[string]any, 0, len(d.cfg.Networks))
+	var totalRx, totalTx uint64
 	for nid, nc := range d.cfg.Networks {
 		statePtr := d.serverState[nid]
 		active := nc.Active
@@ -3227,6 +3233,14 @@ func (d *Daemon) Status() (map[string]any, error) {
 				entry["peerSubnets"] = rt.tun.PeerSubnets()
 				if stats, err := rt.tun.Stats(); err == nil {
 					entry["peerStats"] = stats
+					for _, ps := range stats {
+						if ps.RxBytes > 0 {
+							totalRx += uint64(ps.RxBytes)
+						}
+						if ps.TxBytes > 0 {
+							totalTx += uint64(ps.TxBytes)
+						}
+					}
 				}
 			}
 			entry["peerPaths"] = peerPathInfo(rt)
@@ -3237,6 +3251,23 @@ func (d *Daemon) Status() (map[string]any, error) {
 		}
 		nets = append(nets, entry)
 	}
+	now := time.Now()
+	var rxSpeed, txSpeed uint64
+	if !d.lastStatusAt.IsZero() {
+		elapsed := now.Sub(d.lastStatusAt).Seconds()
+		if elapsed > 0 {
+			if totalRx >= d.lastStatusRx {
+				rxSpeed = uint64(float64(totalRx-d.lastStatusRx) / elapsed)
+			}
+			if totalTx >= d.lastStatusTx {
+				txSpeed = uint64(float64(totalTx-d.lastStatusTx) / elapsed)
+			}
+		}
+	}
+	d.lastStatusAt = now
+	d.lastStatusRx = totalRx
+	d.lastStatusTx = totalTx
+
 	pending := make([]map[string]any, 0, len(d.cfg.PendingJoins))
 	for pid, pj := range d.cfg.PendingJoins {
 		pending = append(pending, map[string]any{
@@ -3254,6 +3285,8 @@ func (d *Daemon) Status() (map[string]any, error) {
 		"deviceId":     d.cfg.DeviceID,
 		"serverAddr":   d.serverAddrLocked(),
 		"wgPort":       d.cfg.WireguardPort,
+		"rxSpeed":      rxSpeed,
+		"txSpeed":      txSpeed,
 		"networks":     nets,
 		"pendingJoins": pending,
 		"natMapping":   d.nat.status(),

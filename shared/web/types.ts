@@ -69,6 +69,8 @@ export type DaemonStatus = {
   deviceId?: string;
   serverAddr?: string;
   wgPort?: number;
+  rxSpeed?: number;
+  txSpeed?: number;
   version?: string;
   networks?: NetInfo[];
   pendingJoins?: PendingJoin[];
