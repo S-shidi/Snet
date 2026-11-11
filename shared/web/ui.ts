@@ -48,6 +48,7 @@ let refreshAgain = false;
 let detailNid: string | null = null;
 let lastNetHTML = "";
 let lastEmptyHTML = "";
+let lastTabsHTML = "";
 async function refresh() {
   if (refreshing) {
     refreshAgain = true;
@@ -306,60 +307,8 @@ function toggleNetMenu(btn: HTMLButtonElement, nid: string, gone: boolean) {
   buildNetMenu(nid, isOwner, gone);
 }
 
-function renderNetworks() {
-  const list = $("#net-list");
-  if (!list) return;
-  const nets = status?.networks ?? [];
-  const pending = status?.pendingJoins ?? [];
-  if (!status) {
-    const html = `<div class="empty">
-      <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 4l18 26H6L24 4z"/><path d="M24 34v6"/><path d="M12 46h24"/></svg>
-      <div class="t">后台服务未运行</div>
-      <div class="s">需要系统后台守护进程 snetd 维持网络隧道</div>
-      <div class="empty-actions">${backend.hasDaemonControl ? `<button id="empty-start" class="btn">启动</button>` : ""}</div>
-    </div>`;
-    if (html !== lastEmptyHTML) {
-      list.innerHTML = html;
-      lastEmptyHTML = html;
-      lastNetHTML = "";
-      const startBtn = $("#empty-start");
-      if (startBtn) startBtn.addEventListener("click", ensureDaemon);
-    }
-    return;
-  }
-  lastEmptyHTML = "";
-  const hasOwner = nets.some((n) => n.owner);
-  const btnCreate = $("#btn-create") as HTMLButtonElement;
-  if (btnCreate) {
-    btnCreate.disabled = hasOwner;
-    btnCreate.classList.toggle("muted", hasOwner);
-    btnCreate.title = hasOwner ? "已创建网络，不支持再创建" : "";
-  }
-  const btnJoin = $("#btn-join") as HTMLButtonElement;
-  if (btnJoin) {
-    btnJoin.disabled = false;
-    btnJoin.title = "";
-  }
-  if (!nets.length && !pending.length) {
-    const html = `<div class="empty">
-      <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="24" r="6"/><circle cx="36" cy="24" r="6"/><path d="M18 24h12"/></svg>
-      <div class="t">还没有加入任何网络</div>
-      <div class="s">创建一个网络，或使用邀请链接/配对码加入其他设备</div>
-      <div class="empty-actions">
-        <button id="empty-create" class="btn" ${hasOwner ? 'disabled data-disabled-reason="已创建网络，不支持再创建"' : ""}>创建网络</button>
-        <button id="empty-join" class="btn ghost">加入网络</button>
-      </div>
-    </div>`;
-    if (html !== lastEmptyHTML) {
-      list.innerHTML = html;
-      lastEmptyHTML = html;
-      lastNetHTML = "";
-      $("#empty-create")?.addEventListener("click", openCreateModal);
-      $("#empty-join")?.addEventListener("click", openJoinModal);
-    }
-    return;
-  }
-  const sortedNets = [...nets].sort((a, b) => {
+function sortedNetworks(): NetInfo[] {
+  return [...(status?.networks ?? [])].sort((a, b) => {
     const ta = a.joinedAt || "";
     const tb = b.joinedAt || "";
     if (ta && tb) return ta.localeCompare(tb);
@@ -367,34 +316,67 @@ function renderNetworks() {
     if (tb) return 1;
     return (a.networkId || "").localeCompare(b.networkId || "");
   });
-  const netHTML = sortedNets.map(netCard).join("");
-  const pendingHTML = pending.length
-    ? `<h4 class="pending-heading">待批准 · 加入请求</h4>` +
-      pending.map(
-        (p) => `<div class="net pending" data-pid="${esc(p.pendingId)}" data-nid="${esc(p.networkId)}">
-        <div class="net-row">
-          <div class="net-main">
-            <div class="net-name">${esc(p.networkId)} <span class="pill warn">待批准</span></div>
-            <div class="net-meta">${p.error ? `<span class="muted">${esc(p.error)}</span>` : "等待网络创建者批准加入请求"}</div>
-          </div>
-          <div class="net-side">
-            <button data-act="cancel-pending" class="btn danger ghost sm">取消请求</button>
-          </div>
-        </div>
-      </div>`,
-      ).join("")
-    : "";
-  const combinedHTML = netHTML + pendingHTML;
-  if (combinedHTML !== lastNetHTML) {
-    list.innerHTML = combinedHTML;
-    lastNetHTML = combinedHTML;
+}
+
+function renderNetworkTabs(nets: NetInfo[]) {
+  const tabs = $("#network-tabs");
+  if (!tabs) return;
+  const html = nets.map((n) => {
+    const active = n.networkId === detailNid ? " active" : "";
+    return `<button type="button" class="network-tab${active}" data-nid="${esc(n.networkId)}" title="${esc(n.name || n.networkId)}">${esc(n.name || n.networkId)}</button>`;
+  }).join("") + '<button type="button" class="network-tab-add" id="btn-add-network" title="创建或加入网络">+</button>';
+  if (html !== lastTabsHTML) {
+    tabs.innerHTML = html;
+    lastTabsHTML = html;
   }
-  const cnt = $("#cnt-net");
-  if (cnt) {
-    cnt.textContent = String(nets.length);
-    cnt.className = "cnt" + (pending.length ? " hot" : "");
-    cnt.title = pending.length ? `${pending.length} 个待批准请求` : "";
+}
+
+function openNetworkChooser() {
+  openModal({
+    title: "添加网络",
+    body: `<div class="network-choice">
+      <button type="button" class="network-choice-card" id="choice-create">
+        <span class="choice-icon">+</span>
+        <b>创建新网络</b>
+        <small>创建一个新的虚拟网络并邀请设备加入</small>
+      </button>
+      <button type="button" class="network-choice-card" id="choice-join">
+        <span class="choice-icon">→</span>
+        <b>加入现有网络</b>
+        <small>使用邀请链接或配对码加入已有网络</small>
+      </button>
+    </div>`,
+    footer: `<button data-close class="btn ghost">取消</button>`,
+    onBody: (body) => {
+      body.querySelector("#choice-create")?.addEventListener("click", () => {
+        closeModal();
+        openCreateModal();
+      });
+      body.querySelector("#choice-join")?.addEventListener("click", () => {
+        closeModal();
+        openJoinModal();
+      });
+    },
+  });
+}
+
+function renderNetworks() {
+  const nets = sortedNetworks();
+  const hasNets = !!status && nets.length > 0;
+  const empty = $("#empty-state");
+  const main = $("#app-main");
+  if (empty) empty.hidden = hasNets;
+  if (main) main.hidden = !hasNets;
+
+  if (!hasNets) {
+    detailNid = null;
+    renderNetworkTabs(nets);
+    return;
   }
+  if (!detailNid || !nets.some((n) => n.networkId === detailNid && n.serverState !== "gone")) {
+    detailNid = nets.find((n) => n.serverState !== "gone")?.networkId ?? nets[0].networkId;
+  }
+  renderNetworkTabs(nets);
 }
 
 /* ── Network card events (delegation) ─────────────────────────── */
@@ -1128,6 +1110,7 @@ function openCreateModal() {
               <div class="kv"><span>邀请链接</span><code>${esc(r.link)}</code></div>
             </div>`;
           renderQR(mBody.querySelector<HTMLElement>("#qr")!, r.link);
+          detailNid = r.networkId;
           mFoot.innerHTML = `<button id="m-copy" class="btn">复制邀请链接</button><button id="m-close" class="btn ghost">关闭</button>`;
           mFoot.querySelector<HTMLButtonElement>("#m-copy")!.addEventListener("click", async (e) => {
             await copyText(r.link, e.currentTarget as HTMLButtonElement);
@@ -1216,6 +1199,7 @@ function openJoinModal() {
             result.innerHTML = `<p>已提交加入请求，等待网络创建者批准。</p><p class="hint">批准后本机会自动加入并连接；也可在上方「待批准 · 加入请求」卡片中取消。</p>`;
           } else {
             result.textContent = `已加入: IP ${r.ip ?? "-"}，网络 ${r.networkId ?? "-"}`;
+          if (r.networkId) detailNid = r.networkId;
           }
           await refresh();
           closeModal();
@@ -1727,7 +1711,6 @@ function networkDetailHTML(n: NetInfo): string {
       </section>`
     : "";
   return `<div class="net-detail-head">
-    <button type="button" class="btn ghost sm" data-detail-act="back">← 返回</button>
     <div class="detail-heading">
       <div class="detail-title">${esc(n.name || n.networkId)}</div>
       <div class="detail-sub">网络详情 · ${esc(n.networkId)}</div>
@@ -1740,6 +1723,7 @@ function networkDetailHTML(n: NetInfo): string {
       <div class="detail-kv"><span>当前角色</span><span class="pill ${role === "member" ? "off" : "accent"}">${roleLabel(role)}</span></div>
       <div class="detail-kv"><span>本机虚拟 IP</span><code>${esc(ip)}</code></div>
       <div class="detail-kv"><span>连接状态</span><span class="pill ${linkCls}">${linkText}</span></div>
+      <div class="detail-kv"><span>连接/断开</span><label class="switch"><input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} /><span class="slider"></span></label></div>
       <div class="detail-kv"><span>实时速率</span><code>↑ ${fmtSpeed(status?.txSpeed)} ↓ ${fmtSpeed(status?.rxSpeed)}</code></div>
     </div>
     ${copyActions}
@@ -1768,7 +1752,6 @@ function renderNetworkDetail() {
   if (!status) {
     box.hidden = false;
     box.innerHTML = `<div class="net-detail-head">
-      <button type="button" class="btn ghost sm" data-detail-act="back">← 返回</button>
       <div class="detail-heading"><div class="detail-title">网络详情</div></div>
     </div><p class="muted">后台服务未运行，无法读取网络详情</p>`;
     return;
@@ -1786,11 +1769,8 @@ async function openNetworkDetail(nid: string) {
   const n = (status?.networks ?? []).find((x) => x.networkId === nid);
   if (!n || n.serverState === "gone") return;
   detailNid = nid;
-  const list = $("#net-list");
-  const toolbar = $("#net-toolbar");
+  renderNetworkTabs(sortedNetworks());
   const detail = $("#net-detail");
-  if (list) list.hidden = true;
-  if (toolbar) toolbar.hidden = true;
   if (detail) detail.hidden = false;
   renderNetworkDetail();
   try {
@@ -1806,14 +1786,10 @@ async function openNetworkDetail(nid: string) {
 function closeNetworkDetail() {
   detailNid = null;
   const detail = $("#net-detail");
-  const list = $("#net-list");
-  const toolbar = $("#net-toolbar");
   if (detail) {
     detail.hidden = true;
     detail.innerHTML = "";
   }
-  if (list) list.hidden = false;
-  if (toolbar) toolbar.hidden = false;
   renderNetworks();
 }
 
@@ -1850,12 +1826,28 @@ function bindNetworkDetailEvents() {
       return;
     }
     switch (el.dataset.detailAct) {
-      case "back": closeNetworkDetail(); break;
       case "copy-invite": await copyInviteLink(nid, el as HTMLButtonElement); break;
       case "copy-code": await copyPairingCode(nid, el as HTMLButtonElement); break;
       case "settings": await openNetworkSettings(nid); break;
       case "subnets": await openSubnetRouteModal(nid); break;
       case "delete": await deleteNetworkFromDetail(nid, el as HTMLButtonElement); break;
+    }
+  });
+  detail.addEventListener("change", async (e) => {
+    const input = e.target as HTMLInputElement;
+    if (input.id !== "detail-net-toggle" || !detailNid) return;
+    input.disabled = true;
+    try {
+      const r = await ctlOrClean(detailNid, input.checked ? "连接网络" : "断开网络",
+        () => input.checked ? backend.rejoin(detailNid!) : backend.leave(detailNid!));
+      if (r === null) return;
+      toast(input.checked ? "已连接" : "已断开");
+      await refresh();
+    } catch (err) {
+      toast(String(err), "err");
+      input.checked = !input.checked;
+    } finally {
+      input.disabled = false;
     }
   });
 }
@@ -1914,6 +1906,17 @@ async function ensureDaemon() {
 function bindEvents() {
   $("#btn-status")?.addEventListener("click", openStatusModal);
   $("#btn-settings")?.addEventListener("click", openSettingsModal);
+  $("#empty-create")?.addEventListener("click", openCreateModal);
+  $("#empty-join")?.addEventListener("click", openJoinModal);
+  $("#network-tabs")?.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("#btn-add-network")) {
+      openNetworkChooser();
+      return;
+    }
+    const tab = target.closest<HTMLElement>("[data-nid]");
+    if (tab?.dataset.nid) void openNetworkDetail(tab.dataset.nid);
+  });
   $("#btn-create")?.addEventListener("click", openCreateModal);
   $("#btn-join")?.addEventListener("click", openJoinModal);
   $("#btn-refresh")?.addEventListener("click", async () => { await refresh(); toast("已刷新"); });
