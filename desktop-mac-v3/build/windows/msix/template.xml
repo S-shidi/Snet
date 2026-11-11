@@ -17,7 +17,7 @@
         PackageDisplayName="SnetMac"
         PublisherName="CN=SNET"
         PublisherDisplayName="SNET"
-        Version="1.0.11.0"
+        Version="1.0.12.0"
         PackageDescription="SNET macOS client">
         <Capabilities>
             <Capability Name="runFullTrust" />
