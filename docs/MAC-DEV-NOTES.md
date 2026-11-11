@@ -143,20 +143,13 @@ SnetMac-v<VERSION>-<SHORT_SHA>.dmg
 /usr/local/etc/snet/
 ```
 
-plist 使用：
-
-```text
-RunAtLoad = true
-KeepAlive = true
-```
-
-后续启动通过：
+plist 按需启动，不设置 `RunAtLoad` / `KeepAlive`。App 启动时检测 19432 端口，端口不通则：
 
 ```bash
 launchctl kickstart -k system/com.snet.daemon
 ```
 
-不再每次弹出管理员密码。安装脚本位于 `desktop-mac/scripts/install-daemon.sh`，构建时必须复制到 App 的 `Contents/Resources/`。
+App 退出时先请求 `/ctl/shutdown`，再清理 launchd job 和残留 `snetd` 进程。安装脚本位于 `desktop-mac-v3/scripts/install-daemon.sh`，构建时必须复制到 App 的 `Contents/Resources/`。
 
 ## 8. 托盘最终移除
 

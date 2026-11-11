@@ -79,10 +79,12 @@ async function doSetPassword(current: string, newPass: string): Promise<void> {
 
 /* ── Wails detection ──────────────────────────────────────────── */
 function isWailsDesktop(): boolean {
+  const loc = typeof window !== "undefined" ? window.location : null;
   return typeof (window as any).runtime !== "undefined" ||
     typeof (window as any)._wails !== "undefined" ||
     typeof (window as any).wails !== "undefined" ||
-    typeof (window as any).go !== "undefined";
+    typeof (window as any).go !== "undefined" ||
+    (!!loc && (loc.protocol === "wails:" || loc.hostname === "wails.localhost"));
 }
 
 /* ── Page routing ─────────────────────────────────────────────── */

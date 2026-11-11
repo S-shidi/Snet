@@ -45,10 +45,6 @@ cat > "$PLIST" <<PLIST_EOF
     <string>-ctl</string>
     <string>127.0.0.1:19432</string>
   </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
   <key>StandardOutPath</key>
   <string>$DATA_DIR/snetd.log</string>
   <key>StandardErrorPath</key>

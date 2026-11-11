@@ -41,8 +41,10 @@ launchctl kickstart -k system/com.snet.daemon
 /usr/local/etc/snet/snetd.log
 ```
 
+- 双击启动时直接显示主窗口
 - 关闭主窗口隐藏到菜单栏，不退出 App
 - 托盘菜单：打开控制面板 / 退出 SNET
+- 退出 SNET 会关闭 `snetd`，下次启动按需重新拉起
 - 前端通过 Go `ctlProxy` 访问 `127.0.0.1:19432`
 
 ## 构建

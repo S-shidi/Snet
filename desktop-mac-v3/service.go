@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,9 +22,28 @@ const (
 	daemonPlist      = "/Library/LaunchDaemons/com.snet.daemon.plist"
 )
 
-type SnetService struct{}
+type SnetService struct {
+	shutdownOnce sync.Once
+}
 
 func (s *SnetService) StartDaemon() error { return s.ensureDaemon() }
+
+func (s *SnetService) ShutdownDaemon() {
+	s.shutdownOnce.Do(func() {
+		if token, err := readCtlToken(); err == nil {
+			req, reqErr := http.NewRequest(http.MethodPost, "http://"+ctlAddr+"/ctl/shutdown", nil)
+			if reqErr == nil {
+				req.Header.Set("X-Ctl-Token", token)
+				client := &http.Client{Timeout: 2 * time.Second}
+				if resp, doErr := client.Do(req); doErr == nil {
+					_ = resp.Body.Close()
+				}
+			}
+		}
+		_ = exec.Command("launchctl", "kill", "SIGTERM", "system/"+daemonLabel).Run()
+		_ = exec.Command("pkill", "-f", "/usr/local/bin/snetd").Run()
+	})
+}
 
 func (s *SnetService) ensureDaemon() error {
 	if _, err := findDaemonBinary(); err != nil {
@@ -147,6 +167,13 @@ func newCtlProxy(service *SnetService, next http.Handler) http.Handler {
 	p := httputil.NewSingleHostReverseProxy(target)
 	p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		http.Error(w, "snetd 未就绪: "+err.Error(), http.StatusBadGateway)
+	}
+	p.ModifyResponse = func(resp *http.Response) error {
+		if resp.StatusCode == http.StatusUnauthorized {
+			_ = resp.Body.Close()
+			return errors.New("snetd rejected ctl-token")
+		}
+		return nil
 	}
 	return &ctlProxy{service: service, next: next, proxy: p}
 }
