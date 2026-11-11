@@ -1885,6 +1885,16 @@ function renderStatus() {
   }
 }
 
+function openStatusModal() {
+  const src = document.getElementById("status-source");
+  openModal({
+    title: "状态",
+    wide: true,
+    body: src ? `<div class="status-modal">${src.innerHTML}</div>` : `<p class="muted">暂无状态数据</p>`,
+    footer: `<button data-close class="btn ghost">关闭</button>`,
+  });
+}
+
 /* ── Ensure daemon ────────────────────────────────────────────── */
 async function ensureDaemon() {
   const btn = $("#header-svc-btn") as HTMLButtonElement;
@@ -1902,6 +1912,7 @@ async function ensureDaemon() {
 
 /* ── Event bindings ───────────────────────────────────────────── */
 function bindEvents() {
+  $("#btn-status")?.addEventListener("click", openStatusModal);
   $("#btn-settings")?.addEventListener("click", openSettingsModal);
   $("#btn-create")?.addEventListener("click", openCreateModal);
   $("#btn-join")?.addEventListener("click", openJoinModal);
@@ -1930,6 +1941,7 @@ function bindEvents() {
         dropdown.hidden = true;
         const action = item.dataset.action;
         if (action === "refresh") void refresh();
+        else if (action === "status") openStatusModal();
         else if (action === "settings") openSettingsModal();
         else if (action === "logout") { /* logout handled in adapter */ window.dispatchEvent(new Event("snet-logout")); }
       });
