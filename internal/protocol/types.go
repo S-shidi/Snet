@@ -348,11 +348,6 @@ type AdminRenameDeviceReq struct {
 
 type RegisterDeviceResp struct {
 	DeviceID string `json:"deviceId"`
-	// Bound reports whether the server currently considers this device bound
-	// to an authorization code. It is a pointer so an old server (field
-	// absent) can be told apart from an explicit false; clients only treat an
-	// explicit non-nil value as authoritative.
-	Bound *bool `json:"bound,omitempty"`
 }
 
 // AdminCreateNetworkReq creates a server-managed network. Managed networks

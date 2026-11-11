@@ -162,29 +162,15 @@ scripts/rollout-vps.sh
 不传 `SNET_RELAY_V2_ENDPOINT` / `SNET_RELAY_V2_ENDPOINTS` 时服务端 env 不包含
 Relay v2 配置；已安装的 `snet-relay` 单元会保持运行。
 
-### 可选：强制设备授权（-require-device-auth）
+### 自定义 SnetServ
 
-默认关闭（兼容存量部署与 e2e 回归）。开启后，**未绑定设备授权码的设备无法
-创建/加入/注册**（create/join/register 返回 403「设备未授权」），达到"只允许白名单
-设备接入"的效果：
+服务端不再提供设备授权码。客户端可以在 Web/桌面「设置」中填写自托管 SnetServ
+地址，留空则使用官方 `https://snet.uizhi.eu.org:8090`。
 
 ```bash
-# 开启方式一：命令行标志
-ExecStart=.../server -require-device-auth ...
-# 开启方式二：环境文件（/etc/snet-server.env）
-SNET_REQUIRE_DEVICE_AUTH=1
+# 客户端本地设置（也可在 UI 中操作）
+snetctl -ctl http://127.0.0.1:19432 config --server https://my-vps:8090
 ```
-
-- 开启后先在管理页「设备」页生成若干授权码，再让各客户端在桌面端「设置」里
-  用授权码「链接服务器」（或 `snetctl bind --code ...`）。协调服务器地址为全局
-  固定值（`https://snet.uizhi.eu.org:8090`，见 `internal/constants`），客户端
-  create/join/bind 不再接受、也不再展示服务器地址输入。
-- 授权码明文存于服务端（bbolt），管理页列表可随时查看复制；一码可绑定多设备（生成时设定）；
-  换码自动释放旧码；吊销/解绑只影响后续准入，已加入节点由管理员踢出。
-- 客户端有 `deviceToken` 时每次启动都会先查 `GET /api/v1/devices/auth-status`：
-  有效则恢复本地网络并拉取服务器上的历史网络，过期则保持所有网络离线；
-  `authorization code` 续期后即使本地 bound 状态已被清掉，也会在下次启动自动恢复。
-- 绑定接口 `/api/v1/devices/bind` 不套强制门槛，但按 IP 限频（20 次/分钟）。
 
 ## 4. 防火墙
 

@@ -133,57 +133,10 @@ func (c *apiClient) Join(nid, code, publicKey, deviceID string) (protocol.JoinRe
 	return out, err
 }
 
-// RegisterDevice records (or refreshes) this device on the server and reports
-// the server's view of the device binding. A nil bound pointer means the server
-// did not report binding status (old server); non-nil is authoritative.
-func (c *apiClient) RegisterDevice(deviceID, publicKey, name string) (*bool, error) {
-	var out protocol.RegisterDeviceResp
-	err := c.do(http.MethodPost, "/api/v1/devices", "",
-		protocol.RegisterDeviceReq{DeviceID: deviceID, PublicKey: publicKey, Name: name}, &out)
-	if err != nil {
-		return nil, err
-	}
-	return out.Bound, nil
-}
-
-// BindDevice presents a device authorization code to link this device to the
-// server. The code is sent once and never persisted. name is the
-// client-reported display name (hostname); old servers ignore it.
-func (c *apiClient) BindDevice(deviceID, publicKey, code, name string) (protocol.BindDeviceResp, error) {
-	var out protocol.BindDeviceResp
-	err := c.do(http.MethodPost, "/api/v1/devices/bind", "",
-		protocol.BindDeviceReq{Code: code, DeviceID: deviceID, PublicKey: publicKey, Name: name}, &out)
-	return out, err
-}
-
-// GetDeviceAuthStatus queries the server for the device's binding and
-// expiration status. Bound devices authenticate with the device token from
-// their bind response; unbound devices send none and receive the generic
-// not-bound answer.
-func (c *apiClient) GetDeviceAuthStatus(deviceID, deviceToken string) (protocol.DeviceAuthStatusResp, error) {
-	var out protocol.DeviceAuthStatusResp
-	req, err := http.NewRequest(http.MethodGet, c.server+"/api/v1/devices/auth-status?deviceId="+deviceID, nil)
-	if err != nil {
-		return out, err
-	}
-	if deviceToken != "" {
-		req.Header.Set("X-Device-Token", deviceToken)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return out, err
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		var e protocol.ErrResp
-		_ = json.Unmarshal(data, &e)
-		return out, &httpStatusErr{code: resp.StatusCode, msg: e.Error}
-	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return out, err
-	}
-	return out, nil
+// RegisterDevice records (or refreshes) this device on the server.
+func (c *apiClient) RegisterDevice(deviceID, publicKey, name string) error {
+	return c.do(http.MethodPost, "/api/v1/devices", "",
+		protocol.RegisterDeviceReq{DeviceID: deviceID, PublicKey: publicKey, Name: name}, nil)
 }
 
 func (c *apiClient) SetNodeDevice(nid, nodeID, token, deviceID string) error {
@@ -304,34 +257,6 @@ func (c *apiClient) RemoveNode(nid, nodeID, token string) error {
 	return c.do(http.MethodDelete, "/api/v1/networks/"+nid+"/nodes/"+nodeID, token, nil, nil)
 }
 
-// DeviceNetworks returns all networks the device holds a node in, including
-// per-node credentials needed to reconstruct the client config after a reinstall.
-func (c *apiClient) DeviceNetworks(deviceID, deviceToken string) ([]protocol.DeviceNetworkDetail, error) {
-	var out protocol.DeviceNetworksResp
-	req, err := http.NewRequest(http.MethodGet, c.server+"/api/v1/devices/"+deviceID+"/networks", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-Device-Token", deviceToken)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		var e protocol.ErrResp
-		_ = json.Unmarshal(data, &e)
-		return nil, &httpStatusErr{code: resp.StatusCode, msg: e.Error}
-	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, err
-	}
-	return out.Networks, nil
-}
-
-// UpdateNodePublicKey updates a node's WireGuard public key. Used after a
-// client reinstall when the device generates a new keypair.
 func (c *apiClient) UpdateNodePublicKey(nid, nodeID, deviceID, deviceToken, publicKey string) error {
 	path := fmt.Sprintf("/api/v1/networks/%s/nodes/%s/publickey", nid, nodeID)
 	body := protocol.UpdateNodePublicKeyReq{PublicKey: publicKey, DeviceID: deviceID}

@@ -124,20 +124,6 @@ func TestAdminPagination(t *testing.T) {
 		t.Fatalf("recent: %d entries", len(ov.RecentNetworks))
 	}
 
-	// auth codes are paginated too
-	var gen protocol.AdminGenerateAuthCodesResp
-	doJSON(t, http.MethodPost, ts.URL+"/admin/devices/authcodes/generate", "secret",
-		protocol.AdminGenerateAuthCodesReq{Count: 23, MaxBindings: 1}, &gen)
-	var codePage struct {
-		Items    []protocol.AuthCodeInfo `json:"items"`
-		Total    int                     `json:"total"`
-		Page     int                     `json:"page"`
-		PageSize int                     `json:"pageSize"`
-	}
-	doJSON(t, http.MethodGet, ts.URL+"/admin/devices/authcodes?page=2", "secret", nil, &codePage)
-	if len(codePage.Items) != 3 || codePage.Total != 23 || codePage.Page != 2 {
-		t.Fatalf("codes page2: len=%d total=%d page=%d", len(codePage.Items), codePage.Total, codePage.Page)
-	}
 	if s == nil {
 		t.Fatal("store missing")
 	}

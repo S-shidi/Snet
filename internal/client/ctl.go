@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,18 +16,14 @@ import (
 	"snet/internal/protocol"
 )
 
-// enforceServer pins every incoming server address to the product's fixed
-// coordination server. Empty (caller omitted it) resolves to the fixed
-// address; any other address is rejected so no surface can point the daemon
-// at a different server.
-func enforceServer(server string) (string, error) {
-	if server == "" {
-		return constants.DefaultServerAddr, nil
+// resolveServer returns the configured SnetServ address, falling back to the
+// official server when the caller leaves it empty. Custom self-hosted servers
+// are accepted.
+func resolveServer(server string) string {
+	if strings.TrimSpace(server) == "" {
+		return constants.DefaultServer
 	}
-	if normalizeServer(server) != normalizeServer(constants.DefaultServerAddr) {
-		return "", fmt.Errorf("服务器地址固定为 %s", constants.DefaultServerAddr)
-	}
-	return constants.DefaultServerAddr, nil
+	return normalizeServer(server)
 }
 
 // shutdownGraceDelay is the pause between flushing the shutdown HTTP
@@ -101,11 +96,7 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		if req.ApprovalRequired != nil {
 			approval = *req.ApprovalRequired
 		}
-		server, err := enforceServer(req.Server)
-		if err != nil {
-			writeCtlErr(w, 400, err)
-			return
-		}
+		server := resolveServer(req.Server)
 		var tags []string
 		if req.Tags != nil {
 			tags = *req.Tags
@@ -139,17 +130,9 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		// An invite link that carries its own server address wins over the
 		// request field: the join targets the network's own server. Both must
 		// point at the fixed coordination server.
-		server, err := enforceServer(req.Server)
-		if err != nil {
-			writeCtlErr(w, 400, err)
-			return
-		}
+		server := resolveServer(req.Server)
 		if linkServer != "" {
-			server, err = enforceServer(linkServer)
-			if err != nil {
-				writeCtlErr(w, 400, err)
-				return
-			}
+			server = resolveServer(linkServer)
 		}
 		resp, err := d.Join(server, req.Port, nid, code)
 		if err != nil {
@@ -168,29 +151,19 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		writeCtlJSON(w, 200, st)
 	})
 
-	// Bind links this device to the server using an admin-generated device
-	// authorization code (custom server mode). The code is accepted once over
-	// the control channel and never stored.
-	mux.HandleFunc("POST /ctl/bind", func(w http.ResponseWriter, r *http.Request) {
-		var req CtlReq
+	mux.HandleFunc("POST /ctl/config", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ServerAddr string `json:"serverAddr"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeCtlErr(w, 400, err)
 			return
 		}
-		if req.Code == "" {
-			writeCtlErr(w, 400, errors.New("缺少设备授权码"))
-			return
-		}
-		server, err := enforceServer(req.Server)
-		if err != nil {
-			writeCtlErr(w, 400, err)
-			return
-		}
-		if err := d.Bind(server, req.Code); err != nil {
+		if err := d.SetServer(req.ServerAddr); err != nil {
 			writeCtlErr(w, 500, err)
 			return
 		}
-		writeCtlJSON(w, 200, map[string]string{"bound": "true"})
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("POST /ctl/leave", func(w http.ResponseWriter, r *http.Request) {

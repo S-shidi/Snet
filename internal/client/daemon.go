@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"snet/internal/buildinfo"
+	"snet/internal/constants"
 	"snet/internal/protocol"
 )
 
@@ -313,9 +314,6 @@ type Daemon struct {
 	// deviceIDFile is the on-disk stable device identity; empty disables it
 	// (used in tests / read-only environments).
 	deviceIDFile string
-	// bindCheckStop stops the periodic binding-verification goroutine that
-	// detects an admin revocation of this device on its bound server.
-	bindCheckStop chan struct{}
 	// netErrs records the last tunnel bring-up failure per network so the
 	// status API can explain why an active-looking network has no tunnel.
 	netErrs map[string]string
@@ -459,13 +457,35 @@ func (d *Daemon) Config() *Config {
 	return d.cfg
 }
 
+func (d *Daemon) serverAddrLocked() string {
+	return normalizeServer(d.cfg.EffectiveServerAddr())
+}
+
 func (d *Daemon) apiLocked() *apiClient {
-	if d.api != nil && d.apiServer == d.cfg.ServerAddr {
+	server := d.serverAddrLocked()
+	if d.api != nil && d.apiServer == server {
 		return d.api
 	}
-	d.api = newAPIClient(d.cfg.ServerAddr, d.ctx)
-	d.apiServer = d.cfg.ServerAddr
+	d.api = newAPIClient(server, d.ctx)
+	d.apiServer = server
 	return d.api
+}
+
+// SetServer updates the SnetServ address and resets the API client so the
+// next request uses the new server. An empty address means the official
+// server.
+func (d *Daemon) SetServer(serverAddr string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	serverAddr = strings.TrimSpace(serverAddr)
+	if serverAddr != "" {
+		serverAddr = normalizeServer(serverAddr)
+	}
+	d.cfg.ServerAddr = serverAddr
+	d.api = nil
+	d.apiServer = ""
+	d.serverState = make(map[string]*string)
+	return d.save()
 }
 
 func (d *Daemon) publicKeyLocked() string {
@@ -496,6 +516,9 @@ func (d *Daemon) SetHostname(name string) {
 // always allowed, and any networks held on the previous server are torn down
 // by commitSwitchLocked once the operation against the new server succeeds.
 func (d *Daemon) ensureKeys(serverAddr string, port int) error {
+	if strings.TrimSpace(serverAddr) == "" {
+		serverAddr = constants.DefaultServer
+	}
 	d.cfg.ServerAddr = normalizeServer(serverAddr)
 	if port != 0 {
 		d.cfg.WireguardPort = port
@@ -599,7 +622,7 @@ func (d *Daemon) RotateKeys() error {
 		return fmt.Errorf("key rotation already in progress")
 	}
 	d.keyRotating = true
-	serverAddr := d.cfg.ServerAddr
+	serverAddr := d.serverAddrLocked()
 	type target struct {
 		nid, nodeID, token, name string
 	}
@@ -684,7 +707,7 @@ type serverSwitch struct {
 func (d *Daemon) beginSwitchLocked(target string) serverSwitch {
 	return serverSwitch{
 		prevAddr: d.cfg.ServerAddr,
-		changed:  normalizeServer(target) != normalizeServer(d.cfg.ServerAddr),
+		changed:  normalizeServer(target) != d.serverAddrLocked(),
 	}
 }
 
@@ -722,158 +745,6 @@ func (d *Daemon) rollbackSwitchLocked(sw serverSwitch) {
 	_ = d.save()
 }
 
-// isUnboundErr reports whether err is the server's "device not authorized"
-// enrollment-gate response, i.e. the device is not bound on that server.
-func isUnboundErr(err error) bool {
-	var se *httpStatusErr
-	return errors.As(err, &se) && se.code == 403
-}
-
-// isAuthRejectedErr reports a definitive authorization rejection from the
-// auth-status endpoint: 401 means the stored device token is no longer valid,
-// 403 means the server no longer considers the device bound.
-func isAuthRejectedErr(err error) bool {
-	var se *httpStatusErr
-	return errors.As(err, &se) && (se.code == 401 || se.code == 403)
-}
-
-// clearBindingLocked drops the local bound state. Callers must hold d.mu.
-func (d *Daemon) clearBindingLocked() {
-	if d.cfg.BoundServer == "" {
-		return
-	}
-	d.cfg.BoundServer = ""
-	_ = d.save()
-}
-
-// handleUnboundOpErrLocked clears the local binding when an operation against
-// this device's own bound server reports it as no longer authorized. A 403
-// against a different server is expected (the device simply is not bound
-// there) and must not erase the current binding.
-func (d *Daemon) handleUnboundOpErrLocked(target string, err error) {
-	if !isUnboundErr(err) {
-		return
-	}
-	if d.cfg.BoundServer != "" && normalizeServer(target) == d.cfg.BoundServer {
-		d.cfg.AuthExpired = false
-		d.clearBindingLocked()
-	}
-}
-
-// bindCheckInterval is how often a bound device verifies its binding with the
-// server, so an admin revocation is reflected in the status within seconds.
-var bindCheckInterval = 10 * time.Second
-
-// startBindCheckLocked launches the periodic binding-verification goroutine.
-// Callers must hold d.mu.
-func (d *Daemon) startBindCheckLocked() {
-	if d.bindCheckStop != nil {
-		return
-	}
-	stop := make(chan struct{})
-	d.bindCheckStop = stop
-	go d.bindCheckLoop(stop)
-}
-
-// bindCheckLoop polls the server's view of this device's binding. It exits as
-// soon as the device is no longer bound (revocation detected) or no longer in
-// a bindable custom mode, or when the daemon closes.
-func (d *Daemon) bindCheckLoop(stop chan struct{}) {
-	ticker := time.NewTicker(bindCheckInterval)
-	defer ticker.Stop()
-	for {
-		// Check immediately on startup instead of waiting one full interval:
-		// an authorization code may have expired or been revoked while the
-		// daemon was stopped.
-		if !d.verifyBinding() {
-			d.mu.Lock()
-			d.bindCheckStop = nil
-			d.mu.Unlock()
-			return
-		}
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-// verifyBinding checks the current server's view of this device's binding and
-// expiration status. It clears the local bound state when the server no longer
-// considers the device bound or the auth code has expired. It returns false
-// when the check loop should stop.
-func (d *Daemon) verifyBinding() bool {
-	d.mu.Lock()
-	if !d.cfg.Bound() || d.cfg.ServerAddr == "" {
-		d.mu.Unlock()
-		return false
-	}
-	api := d.apiLocked()
-	deviceID := d.cfg.DeviceID
-	deviceToken := d.cfg.DeviceToken
-	d.mu.Unlock()
-
-	// Query the server for binding and expiration status
-	status, err := api.GetDeviceAuthStatus(deviceID, deviceToken)
-	if err != nil {
-		// A definite "not authorized" answer means the server revoked the
-		// binding. Transient errors (timeouts, DNS) are not a revocation.
-		if isAuthRejectedErr(err) {
-			d.mu.Lock()
-			d.cfg.AuthExpired = false
-			d.cfg.AuthExpiresAt = nil
-			d.clearBindingLocked()
-			d.mu.Unlock()
-			return false
-		}
-		return true
-	}
-
-	d.mu.Lock()
-	d.cfg.AuthExpiresAt = status.ExpiresAt
-	d.mu.Unlock()
-
-	// Handle expiration: stop all networks and clear binding
-	if status.Expired {
-		log.Printf("auth code expired, stopping all networks")
-		d.mu.Lock()
-		d.cfg.AuthExpired = true
-		d.clearBindingLocked()
-		d.stopAllNetworksLocked()
-		_ = d.save()
-		d.mu.Unlock()
-		return false
-	}
-
-	// Handle revocation
-	if !status.Bound {
-		d.mu.Lock()
-		d.cfg.AuthExpired = false
-		d.clearBindingLocked()
-		d.mu.Unlock()
-		return false
-	}
-
-	return true
-}
-
-// GetAuthStatus queries the server for this device's authorization status.
-// It uses the configured server address and returns binding and expiration info.
-func (d *Daemon) GetAuthStatus() (protocol.DeviceAuthStatusResp, error) {
-	d.mu.RLock()
-	if d.cfg.ServerAddr == "" {
-		d.mu.RUnlock()
-		return protocol.DeviceAuthStatusResp{}, errors.New("no server configured")
-	}
-	api := d.apiLocked()
-	deviceID := d.cfg.DeviceID
-	deviceToken := d.cfg.DeviceToken
-	d.mu.RUnlock()
-
-	return api.GetDeviceAuthStatus(deviceID, deviceToken)
-}
-
 // Create makes a new network on the server and joins this node as owner.
 // Optional share metadata (description, tags, visibility) may be passed via
 // the variadic shareOpt, keeping existing callers source-compatible.
@@ -897,11 +768,8 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 		}
 	}
 
-	if serverAddr == "" {
-		serverAddr = d.cfg.ServerAddr
-	}
-	if serverAddr == "" {
-		return protocol.CreateNetworkResp{}, errors.New("未连接服务器：请先在设置中链接服务器")
+	if strings.TrimSpace(serverAddr) == "" {
+		serverAddr = d.serverAddrLocked()
 	}
 	sw := d.beginSwitchLocked(serverAddr)
 	// The per-device owner limit applies to the networks that remain after the
@@ -939,7 +807,6 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	}
 	resp, err := api.CreateNetwork(d.publicKeyLocked(), d.cfg.DeviceID, name, subnet, approvalRequired, desc, so.tags, vis, so.allowOverlap)
 	if err != nil {
-		d.handleUnboundOpErrLocked(serverAddr, err)
 		d.rollbackSwitchLocked(sw)
 		return resp, err
 	}
@@ -956,11 +823,8 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if serverAddr == "" {
-		serverAddr = d.cfg.ServerAddr
-	}
-	if serverAddr == "" {
-		return protocol.JoinResp{}, errors.New("未连接服务器：请先在设置中链接服务器")
+	if strings.TrimSpace(serverAddr) == "" {
+		serverAddr = d.serverAddrLocked()
 	}
 	sw := d.beginSwitchLocked(serverAddr)
 	if err := d.ensureKeys(serverAddr, port); err != nil {
@@ -970,7 +834,6 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 	api := d.apiLocked()
 	resp, err := api.Join(nid, code, d.publicKeyLocked(), d.cfg.DeviceID)
 	if err != nil {
-		d.handleUnboundOpErrLocked(serverAddr, err)
 		d.rollbackSwitchLocked(sw)
 		return resp, err
 	}
@@ -989,48 +852,6 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 	}
 	d.reconcileOwnership(resp.NetworkID)
 	return resp, nil
-}
-
-// Bind links this device to the coordination server using an admin-generated
-// device authorization code. The code travels once over the wire and is never
-// persisted. Binding puts the daemon in "custom" server mode. Binding to a
-// different server clears the previous server's networks on success; a failed
-// bind leaves them untouched. After a successful bind, the device's historical
-// networks are synced from the server (reinstall recovery).
-func (d *Daemon) Bind(serverAddr, code string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	sw := d.beginSwitchLocked(serverAddr)
-	if err := d.ensureKeys(serverAddr, 0); err != nil {
-		d.rollbackSwitchLocked(sw)
-		return err
-	}
-	api := d.apiLocked()
-	resp, err := api.BindDevice(d.cfg.DeviceID, d.publicKeyLocked(), code, d.hostnameLocked())
-	if err != nil {
-		d.rollbackSwitchLocked(sw)
-		return err
-	}
-	d.commitSwitchLocked(sw)
-	d.cfg.BoundServer = normalizeServer(d.cfg.ServerAddr)
-	d.cfg.AuthExpired = false
-	d.cfg.DeviceToken = resp.DeviceToken
-	if err := d.save(); err != nil {
-		return err
-	}
-	d.startBindCheckLocked()
-	// Sync historical networks from the server (reinstall recovery).
-	if resp.DeviceToken != "" {
-		// Unlock before SyncNetworks since it acquires d.mu internally.
-		d.mu.Unlock()
-		_ = d.SyncNetworks(resp.DeviceToken)
-		d.mu.Lock()
-	}
-	// A previously expired code leaves tunnels down while the config keeps its
-	// networks. Re-binding must bring those existing networks back up too,
-	// because SyncNetworks only restores networks missing locally.
-	d.bringUpAllLocked()
-	return nil
 }
 
 func (d *Daemon) registerPendingLocked(resp protocol.JoinResp) error {
@@ -1198,7 +1019,7 @@ func (d *Daemon) reconcileOwnership(nid string) {
 		return
 	}
 	api := d.apiLocked()
-	if _, err := api.RegisterDevice(d.cfg.DeviceID, d.publicKeyLocked(), d.hostnameLocked()); err != nil {
+	if err := api.RegisterDevice(d.cfg.DeviceID, d.publicKeyLocked(), d.hostnameLocked()); err != nil {
 		log.Printf("register device: %v", err)
 	}
 	if err := api.SetNodeDevice(nid, nc.NodeID, nc.Token, d.cfg.DeviceID); err != nil {
@@ -1210,149 +1031,6 @@ func (d *Daemon) reconcileOwnership(nid string) {
 			log.Printf("save owner flag: %v", err)
 		}
 	}
-}
-
-// SyncNetworks fetches the device's historical networks from the server and
-// reconstructs the local config. Used after a reinstall when the DeviceID
-// persists but the local config (networks, tokens, private key) is lost.
-// The deviceToken authenticates the request. Errors are logged but non-fatal.
-func (d *Daemon) SyncNetworks(deviceToken string) error {
-	d.mu.Lock()
-	api := d.apiLocked()
-	deviceID := d.cfg.DeviceID
-	d.mu.Unlock()
-
-	if deviceID == "" || deviceToken == "" {
-		return nil
-	}
-
-	details, err := api.DeviceNetworks(deviceID, deviceToken)
-	if err != nil {
-		log.Printf("sync networks: fetch device networks: %v", err)
-		return err
-	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	api = d.apiLocked()
-	pub := d.publicKeyLocked()
-
-	// Register this device with its current (possibly new) public key.
-	if _, err := api.RegisterDevice(deviceID, pub, d.hostnameLocked()); err != nil {
-		log.Printf("sync networks: register device: %v", err)
-	}
-
-	synced := 0
-	updated := false
-	seen := make(map[string]struct{}, len(details))
-	for _, detail := range details {
-		nid := detail.Network.ID
-		seen[nid] = struct{}{}
-
-		// Existing networks keep their local runtime state, but the server
-		// rotates the node token on every DeviceNetworkDetails call. Persist
-		// the fresh token or the next control request will 404 and the UI
-		// will wrongly mark a live network as deleted.
-		if existing, ok := d.cfg.Networks[nid]; ok {
-			if detail.Token != "" && existing.Token != detail.Token {
-				existing.Token = detail.Token
-				updated = true
-				if d.serverState != nil {
-					delete(d.serverState, nid)
-				}
-				// The relay PathManager copies the token at construction; a
-				// long-lived one created before this sync must be updated or
-				// its relay-ticket calls keep returning 401.
-				if rt := d.nets[nid]; rt != nil && rt.path != nil {
-					rt.path.SetToken(existing.Token)
-				}
-			}
-			continue
-		}
-
-		// Update the node's WireGuard public key on the server to match
-		// the current (new) keypair.
-		if detail.PublicKey != pub {
-			if err := api.UpdateNodePublicKey(nid, detail.NodeID, deviceID, deviceToken, pub); err != nil {
-				log.Printf("sync networks: update public key %s: %v", nid, err)
-			}
-		}
-
-		// Build local network config from server data.
-		if d.cfg.Networks == nil {
-			d.cfg.Networks = map[string]*NetworkCfg{}
-		}
-		// Check for subnet overlap with already-restored networks.
-		active := true
-		for other, oc := range d.cfg.Networks {
-			if other != nid && subnetsOverlap(detail.Subnet, oc.Subnet) {
-				log.Printf("sync networks: subnet %s overlaps with %s (%s), activating %s as inactive", detail.Subnet, other, oc.Subnet, nid)
-				active = false
-				break
-			}
-		}
-		nc := &NetworkCfg{
-			Name:     detail.Name,
-			NodeID:   detail.NodeID,
-			IP:       detail.IP,
-			Token:    detail.Token,
-			Subnet:   detail.Subnet,
-			Port:     0,
-			Active:   active,
-			Owner:    detail.Owner,
-			JoinedAt: time.Now().UTC().Format(time.RFC3339),
-		}
-		d.cfg.Networks[nid] = nc
-
-		// Bind the node to this device on the server.
-		if err := api.SetNodeDevice(nid, detail.NodeID, detail.Token, deviceID); err != nil {
-			log.Printf("sync networks: bind node device %s: %v", nid, err)
-		}
-
-		// Try to claim ownership if the server says we're the owner.
-		if detail.Owner {
-			if err := api.ClaimNetwork(nid, detail.Token, deviceID); err != nil {
-				log.Printf("sync networks: claim %s: %v", nid, err)
-			}
-		}
-
-		synced++
-	}
-
-	// DeviceNetworks is authoritative for this device. Any local network not
-	// returned by the server has been deleted (or this node was removed), so
-	// drop the cached config and tear down its TUN/routes instead of leaving a
-	// ghost network that can never load its peers.
-	removed := 0
-	for nid := range d.cfg.Networks {
-		if _, ok := seen[nid]; ok {
-			continue
-		}
-		log.Printf("sync networks: removing deleted local network %s", nid)
-		d.leaveLocked(nid)
-		delete(d.cfg.Networks, nid)
-		delete(d.serverState, nid)
-		removed++
-	}
-	if synced > 0 || updated || removed > 0 {
-		if err := d.save(); err != nil {
-			log.Printf("sync networks: save: %v", err)
-		}
-	}
-	if synced > 0 {
-		// Bring up tunnels for newly added networks.
-		for nid, nc := range d.cfg.Networks {
-			if nc.Active && d.nets[nid] == nil {
-				if err := d.bringUp(nid); err != nil {
-					log.Printf("sync networks: bring up %s: %v", nid, err)
-				}
-			}
-		}
-		log.Printf("sync networks: restored %d network(s)", synced)
-	}
-
-	return nil
 }
 
 // Start resumes from persisted state (tunnels + poll loops) for every active
@@ -1387,43 +1065,29 @@ func (d *Daemon) Start() error {
 			}
 		}
 	}
-	// An expired authorization means every network is offline until the device
-	// re-binds. Do not restore tunnels or resume pending joins in that state.
-	expired := d.cfg.AuthExpired
-	if !expired {
-		// Enable IP forwarding at startup if any active network has subnets
-		// configured, so the setting is restored after a reboot.
-		for nid := range d.cfg.Networks {
-			nc := d.cfg.Networks[nid]
-			if nc.Active && len(nc.AllowedSubnets) > 0 {
-				if err := enableIPForwarding(); err != nil {
-					log.Printf("enable IP forwarding: %v (needs admin/root)", err)
-				}
-				break
+	// Enable IP forwarding at startup if any active network has subnets
+	// configured, so the setting is restored after a reboot.
+	for nid := range d.cfg.Networks {
+		nc := d.cfg.Networks[nid]
+		if nc.Active && len(nc.AllowedSubnets) > 0 {
+			if err := enableIPForwarding(); err != nil {
+				log.Printf("enable IP forwarding: %v (needs admin/root)", err)
 			}
-		}
-		for nid := range d.cfg.Networks {
-			nc := d.cfg.Networks[nid]
-			if !nc.Active {
-				continue
-			}
-			if err := d.bringUp(nid); err != nil {
-				log.Printf("start network %s: %v", nid, err)
-			}
-			d.reconcileOwnership(nid)
-		}
-		for pendingID := range d.cfg.PendingJoins {
-			d.startPendingLoopLocked(pendingID)
+			break
 		}
 	}
-	// A bound device verifies its binding with the server periodically so an
-	// admin revocation clears the local "bound" state within seconds. When a
-	// device token exists, startupAuthSync performs the first check and starts
-	// this loop after the result, avoiding two concurrent auth-status requests
-	// racing to clear/restore the binding. Legacy bindings without a token
-	// start the loop directly.
-	if d.cfg.Bound() && !expired && d.cfg.DeviceToken == "" {
-		d.startBindCheckLocked()
+	for nid := range d.cfg.Networks {
+		nc := d.cfg.Networks[nid]
+		if !nc.Active {
+			continue
+		}
+		if err := d.bringUp(nid); err != nil {
+			log.Printf("start network %s: %v", nid, err)
+		}
+		d.reconcileOwnership(nid)
+	}
+	for pendingID := range d.cfg.PendingJoins {
+		d.startPendingLoopLocked(pendingID)
 	}
 	// Periodic WireGuard key rotation (KeyRotationDays > 0) for forward secrecy.
 	if d.cfg.KeyRotationDays > 0 {
@@ -1439,109 +1103,7 @@ func (d *Daemon) Start() error {
 	go d.pingAllServerStates()
 
 	d.started = true
-	// Ask the server whether this device is still authorized and restore any
-	// networks it owns. This also revives a device whose local bound state was
-	// cleared after an expired code was renewed by the administrator.
-	if d.cfg.DeviceToken != "" {
-		go d.startupAuthSync()
-	}
 	return nil
-}
-
-// startupAuthSync reconciles the local binding with the server at startup and
-// pulls the device's historical networks. It runs asynchronously so an
-// unreachable server never blocks daemon startup.
-func (d *Daemon) startupAuthSync() {
-	d.mu.Lock()
-	api := d.apiLocked()
-	deviceID := d.cfg.DeviceID
-	deviceToken := d.cfg.DeviceToken
-	serverAddr := d.cfg.ServerAddr
-	d.mu.Unlock()
-	if deviceID == "" || deviceToken == "" || serverAddr == "" {
-		return
-	}
-
-	status, err := api.GetDeviceAuthStatus(deviceID, deviceToken)
-	if err != nil {
-		log.Printf("startup auth: %v", err)
-		if isAuthRejectedErr(err) {
-			d.mu.Lock()
-			d.cfg.AuthExpired = false
-			d.cfg.AuthExpiresAt = nil
-			d.clearBindingLocked()
-			d.mu.Unlock()
-			return
-		}
-		// Transient errors (offline, DNS, timeout) keep the local state. The
-		// periodic bind check will retry when the device is bound.
-		d.mu.Lock()
-		if d.cfg.Bound() && !d.cfg.AuthExpired {
-			d.startBindCheckLocked()
-		}
-		d.mu.Unlock()
-		return
-	}
-
-	if status.Expired {
-		log.Printf("startup auth: authorization expired, keeping networks offline")
-		d.mu.Lock()
-		d.cfg.AuthExpired = true
-		d.cfg.AuthExpiresAt = status.ExpiresAt
-		d.clearBindingLocked()
-		d.stopAllNetworksLocked()
-		_ = d.save()
-		d.mu.Unlock()
-		return
-	}
-
-	if !status.Bound {
-		// Revocation only blocks new create/join; existing network memberships
-		// remain until the administrator removes the nodes.
-		d.mu.Lock()
-		d.cfg.AuthExpired = false
-		d.clearBindingLocked()
-		_ = d.save()
-		d.mu.Unlock()
-		return
-	}
-
-	d.mu.Lock()
-	if normalizeServer(serverAddr) != normalizeServer(d.cfg.ServerAddr) || d.cfg.DeviceToken != deviceToken {
-		// The server or token changed while the request was in flight; the
-		// newer configuration owns the next startup check.
-		d.mu.Unlock()
-		return
-	}
-	// The server still recognizes this device. Re-establish the local bound
-	// state even if an earlier expired check had cleared it, then resume the
-	// tunnels that Start skipped while expired.
-	d.cfg.BoundServer = d.cfg.ServerAddr
-	d.cfg.AuthExpired = false
-	d.cfg.AuthExpiresAt = status.ExpiresAt
-	d.startBindCheckLocked()
-	for pendingID := range d.cfg.PendingJoins {
-		d.startPendingLoopLocked(pendingID)
-	}
-	_ = d.save()
-	// Start may have skipped this while expired, so restore forwarding for
-	// networks that route allowed subnets before bringing tunnels back up.
-	for _, nc := range d.cfg.Networks {
-		if nc.Active && len(nc.AllowedSubnets) > 0 {
-			if err := enableIPForwarding(); err != nil {
-				log.Printf("startup auth: enable IP forwarding: %v (needs admin/root)", err)
-			}
-			break
-		}
-	}
-	d.bringUpAllLocked()
-	d.mu.Unlock()
-
-	// Pull networks that exist on the server but not in the local config
-	// (reinstall recovery), and refresh node tokens for existing networks.
-	if err := d.SyncNetworks(deviceToken); err != nil {
-		log.Printf("startup auth: sync networks: %v", err)
-	}
 }
 
 // stopAllNetworksLocked closes every live tunnel while keeping the configured
@@ -1751,7 +1313,7 @@ func (d *Daemon) localEndpointLocked(port int) (string, error) {
 		}
 		log.Printf("ignoring invalid SNET_LOCAL_IP %q", ip)
 	}
-	ip, err := LocalIPForServer(d.cfg.ServerAddr)
+	ip, err := LocalIPForServer(d.serverAddrLocked())
 	if err != nil {
 		return "", err
 	}
@@ -2236,20 +1798,6 @@ func (d *Daemon) pollLoop(nid string) {
 				d.mu.Unlock()
 				return
 			}
-			if errors.As(err, &se) && se.code == 401 {
-				log.Printf("poll peers %s: unauthorized; refreshing node token", nid)
-				d.mu.Lock()
-				deviceToken := d.cfg.DeviceToken
-				d.mu.Unlock()
-				if deviceToken == "" {
-					log.Printf("poll peers %s: no device token available for refresh", nid)
-					continue
-				}
-				if syncErr := d.SyncNetworks(deviceToken); syncErr != nil {
-					log.Printf("poll peers %s: token refresh failed: %v", nid, syncErr)
-				}
-				continue
-			}
 			log.Printf("poll peers %s: %v", nid, err)
 			continue
 		}
@@ -2333,7 +1881,7 @@ func (d *Daemon) pollLoop(nid string) {
 		}
 		if st.RelayV2 != nil && st.RelayV2.Enabled {
 			if rt.path == nil {
-				rt.path = NewPathManager(d.ctx, nid, nc, d.cfg.ServerAddr)
+				rt.path = NewPathManager(d.ctx, nid, nc, d.serverAddrLocked())
 				go rt.path.Run()
 			}
 			subnets := d.DetectLocalSubnets()
@@ -2455,7 +2003,7 @@ func (d *Daemon) probeLoop(nid string) {
 			d.mu.Unlock()
 			return
 		}
-		serverAddr := d.cfg.ServerAddr
+		serverAddr := d.serverAddrLocked()
 		relayAddr := d.relayEP[nid]
 		port := nc.Port
 		d.mu.Unlock()
@@ -3522,10 +3070,6 @@ func (d *Daemon) Close() {
 	d.cancel()
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.bindCheckStop != nil {
-		close(d.bindCheckStop)
-		d.bindCheckStop = nil
-	}
 	if d.retryStop != nil {
 		close(d.retryStop)
 		d.retryStop = nil
@@ -3671,16 +3215,14 @@ func (d *Daemon) Status() (map[string]any, error) {
 		})
 	}
 	return map[string]any{
-		"version":       buildinfo.Version,
-		"commit":        buildinfo.Commit,
-		"buildDate":     buildinfo.BuildDate,
-		"deviceId":      d.cfg.DeviceID,
-		"bound":         d.cfg.Bound(),
-		"authExpired":   d.cfg.AuthExpired,
-		"authExpiresAt": d.cfg.AuthExpiresAt,
-		"wgPort":        d.cfg.WireguardPort,
-		"networks":      nets,
-		"pendingJoins":  pending,
-		"natMapping":    d.nat.status(),
+		"version":      buildinfo.Version,
+		"commit":       buildinfo.Commit,
+		"buildDate":    buildinfo.BuildDate,
+		"deviceId":     d.cfg.DeviceID,
+		"serverAddr":   d.serverAddrLocked(),
+		"wgPort":       d.cfg.WireguardPort,
+		"networks":     nets,
+		"pendingJoins": pending,
+		"natMapping":   d.nat.status(),
 	}, nil
 }

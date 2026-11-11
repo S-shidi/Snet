@@ -539,7 +539,6 @@
     <button type="button" class="tab active" data-tab="overview" role="tab">总览</button>
     <button type="button" class="tab" data-tab="net" role="tab">网络<span class="cnt" id="cnt-net"></span></button>
     <button type="button" class="tab" data-tab="dev" role="tab">设备<span class="cnt" id="cnt-dev"></span></button>
-    <button type="button" class="tab" data-tab="code" role="tab">授权码<span class="cnt" id="cnt-code"></span></button>
   </nav>
 
   <!-- 总览 -->
@@ -554,7 +553,6 @@
         <div class="card-head"><h3>快速操作</h3></div>
         <div class="quick-actions">
           <button type="button" class="btn" data-act="create-net">创建网络</button>
-          <button type="button" class="btn ghost" data-act="goto-code">生成授权码</button>
           <button type="button" class="btn ghost" data-act="goto-dev">查看设备</button>
         </div>
         <p class="hint mt0" style="margin-top:14px">
@@ -603,24 +601,6 @@
     <div class="pager" id="dev-pager"></div>
   </section>
 
-  <!-- 授权码 -->
-  <section id="view-code" class="view" role="tabpanel" hidden>
-    <div class="card">
-      <div class="card-head"><h3>设备授权码</h3></div>
-      <p class="hint mt0">用于客户端「自定义服务器」模式的设备绑定。服务端开启强制校验（-require-device-auth）后，只有绑定过授权码的设备才能创建或加入网络。一个授权码可绑定多台设备（数量在生成时设定）。授权码明文可在控制台随时查看。</p>
-      <div class="flex wrap" style="align-items:center">
-        <button type="button" class="btn" data-act="gen-codes">生成授权码</button>
-        <span class="msg" id="auth-msg"></span>
-      </div>
-    </div>
-    <div class="tbl-wrap">
-      <table>
-        <thead><tr><th>授权码</th><th>创建日期</th><th>状态</th><th>绑定设备</th><th>有效期</th><th style="width:150px">操作</th></tr></thead>
-        <tbody id="code-body"><tr><td colspan="6"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
-      </table>
-    </div>
-    <div class="pager" id="code-pager"></div>
-  </section>
 </main>
 
 <!-- modal -->
@@ -3775,8 +3755,6 @@ function renderNetDetail() {
     <div class="tbl-wrap"><table><thead><tr>
       <th>Node ID</th><th>虚拟 IP</th><th>公钥</th><th>状态</th><th>Endpoint</th>
     </tr></thead><tbody>${externalRows}</tbody></table></div>
-    <p class="detail-note">设备授权码是服务器级绑定，不直接归属网络。可在「授权码」页统一生成、续期和解绑。</p>
-    <div class="detail-actions"><button type="button" class="btn ghost sm" data-detail-act="goto-codes">前往授权码</button></div>
   </section>`;
 }
 

@@ -246,7 +246,7 @@ func (n *natManager) syncPort(port int) {
 	if !n.enabled() || !n.claimedPort(port) {
 		return
 	}
-	lanIP, err := LocalIPForServer(n.cfg.ServerAddr)
+	lanIP, err := LocalIPForServer(n.cfg.EffectiveServerAddr())
 	if err != nil || lanIP == "" {
 		if err == nil {
 			err = fmt.Errorf("empty LAN IP")

@@ -140,6 +140,14 @@ func main() {
 		}
 		printJSON(out)
 
+	case "config":
+		fs := flag.NewFlagSet("config", flag.ExitOnError)
+		server := fs.String("server", "", "SnetServ address (empty = official server)")
+		fs.Parse(args[1:])
+		if err := c.do(http.MethodPost, "/ctl/config", map[string]any{"serverAddr": *server}, nil); err != nil {
+			fatal(err)
+		}
+		fmt.Println("SnetServ updated")
 	case "status":
 		var out map[string]any
 		if err := c.do(http.MethodGet, "/ctl/status", nil, &out); err != nil {
@@ -348,20 +356,6 @@ func main() {
 		}
 		fmt.Println("claimed")
 
-	case "bind":
-		fs := flag.NewFlagSet("bind", flag.ExitOnError)
-		code := fs.String("code", "", "device authorization code (required)")
-		fs.Parse(args[1:])
-		if *code == "" {
-			fmt.Fprintln(os.Stderr, "usage: snetctl bind --code CODE")
-			os.Exit(2)
-		}
-		var out map[string]any
-		if err := c.do(http.MethodPost, "/ctl/bind", map[string]any{"code": *code}, &out); err != nil {
-			fatal(err)
-		}
-		printJSON(out)
-
 	default:
 		usage()
 	}
@@ -395,7 +389,7 @@ commands:
   netinfo    --nid NID
   device-id  [--set ID]
   claim      --nid NID
-  bind       --code CODE`)
+  config     [--server URL]`)
 	os.Exit(2)
 }
 

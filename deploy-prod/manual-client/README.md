@@ -119,9 +119,6 @@ ctl-token 位置：`/etc/snet/ctl-token`（snetd 生成，0644；只在本机使
 export SNET_CTL_TOKEN_FILE=/etc/snet/ctl-token
 CTL=http://127.0.0.1:19432
 
-# 若服务器启用了 RequireDeviceAuth：
-snetctl -ctl "$CTL" bind --code <设备授权码>
-
 # 建网（owner）
 snetctl -ctl "$CTL" create --name my-net
 
@@ -135,7 +132,6 @@ snetctl -ctl "$CTL" status
 snetctl -ctl "$CTL" peers <nid>
 ```
 
-若服务器未启用 `RequireDeviceAuth`，可跳过 `bind`。
 
 ## 6. 验证
 

@@ -100,42 +100,5 @@ else
 fi
 
 echo ""
-echo "== enforced-auth phase: server2 + daemon C (gate on) =="
-CTLC=29434
-SRV2_PORT=8102
-"$BUILD/server" -addr "127.0.0.1:$SRV2_PORT" -probe-addr "127.0.0.1:8103" \
-    -admin-token e2e-token -require-device-auth >"$TEST/server2.log" 2>&1 &
-SRV2=$!
-"$BUILD/snetd" -ctl "127.0.0.1:$CTLC" -config "$TEST/c.json" -device-id-file "$TEST/device-c.id" >"$TEST/c.log" 2>&1 &
-DC=$!
-wait_ready "http://127.0.0.1:$CTLC" "daemon-C"
-
-# unbound create must be refused with the enrollment hint
-if "$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLC" create --port 51822 \
-    >/dev/null 2>"$TEST/c-gate.err"; then
-    echo "FAIL: unbound create should be refused"
-    exit 1
-fi
-grep -q "设备未授权" "$TEST/c-gate.err" || { echo "FAIL: gate message missing:"; cat "$TEST/c-gate.err"; exit 1; }
-echo "gate: unbound create refused OK"
-
-# admin generates one auth code
-AUTH="$(curl -s -X POST "http://127.0.0.1:$SRV2_PORT/admin/devices/authcodes/generate" \
-    -H "Authorization: Bearer e2e-token" -H "Content-Type: application/json" -d '{"count":1}')"
-AUTHCODE="$(echo "$AUTH" | python3 -c 'import json,sys;print(json.load(sys.stdin)["codes"][0])')"
-[ -n "$AUTHCODE" ] || { echo "FAIL: no auth code generated"; exit 1; }
-
-# bind daemon C, then create must succeed; status reports bound
-"$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLC" bind --code "$AUTHCODE"
-CREATEC="$("$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLC" create --port 51822)"
-NIDC="$(echo "$CREATEC" | "$ROOT/scripts/jsonfield.py" networkId)"
-[ -n "$NIDC" ] || { echo "FAIL: create after bind"; exit 1; }
-"$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLC" status | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d.get("bound") is True, d' \
-    || { echo "FAIL: status does not report bound"; exit 1; }
-echo "auth: bind + create OK (network $NIDC)"
-
-kill "$DC" "$SRV2" 2>/dev/null || true
-echo "enforced-auth phase OK"
-
 kill "$DA" "$DB" "$SRV" 2>/dev/null || true
 echo "== done =="

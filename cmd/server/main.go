@@ -37,7 +37,6 @@ func main() {
 	relayV2Endpoints := flag.String("relay-v2-endpoints", os.Getenv("SNET_RELAY_V2_ENDPOINTS"), "comma-separated Relay v2 endpoints for failover; overrides -relay-v2-endpoint (env SNET_RELAY_V2_ENDPOINTS)")
 	relaySecret := flag.String("relay-secret", os.Getenv("SNET_RELAY_SECRET"), "Relay v2 ticket HMAC secret (env SNET_RELAY_SECRET)")
 	relaySecretOld := flag.String("relay-secret-old", os.Getenv("SNET_RELAY_SECRET_OLD"), "previous Relay v2 secret for rotation (env SNET_RELAY_SECRET_OLD)")
-	requireDeviceAuth := flag.Bool("require-device-auth", os.Getenv("SNET_REQUIRE_DEVICE_AUTH") == "1", "only allow devices that bound an admin-generated authorization code to create/join networks (env SNET_REQUIRE_DEVICE_AUTH=1)")
 	adminReset := flag.Bool("admin-reset", false, "force-reset admin password from env/admin-pass and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -139,12 +138,11 @@ func main() {
 	httpSrv := &http.Server{
 		Addr: *addr,
 		Handler: server.NewHandler(store, server.Options{
-			AdminToken:        *adminToken,
-			AdminUser:         *adminUser,
-			AdminPass:         *adminPass,
-			ZombieTTL:         *zombieTTL,
-			TrustProxy:        *trustProxy,
-			RequireDeviceAuth: *requireDeviceAuth,
+			AdminToken: *adminToken,
+			AdminUser:  *adminUser,
+			AdminPass:  *adminPass,
+			ZombieTTL:  *zombieTTL,
+			TrustProxy: *trustProxy,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -159,7 +157,7 @@ func main() {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		log.Printf("Snet server listening on %s (db: %s, admin: %s, require-device-auth: %v)", *addr, dbPathOrMem(*dbPath), adminState(adminEnabled), *requireDeviceAuth)
+		log.Printf("Snet server listening on %s (db: %s, admin: %s)", *addr, dbPathOrMem(*dbPath), adminState(adminEnabled))
 		var err error
 		if *tlsCert != "" && *tlsKey != "" {
 			err = httpSrv.ListenAndServeTLS(*tlsCert, *tlsKey)

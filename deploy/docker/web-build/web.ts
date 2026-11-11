@@ -2,7 +2,6 @@
  * Thin adapter: provides Backend + auth flow, delegates UI to shared/ui.ts.
  */
 import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp } from "../../../shared/web/types.js";
-import { FIXED_SERVER } from "../../../shared/web/types.js";
 import { init } from "../../../shared/web/ui.js";
 
 const NS = "/ctl";
@@ -89,7 +88,7 @@ function isWailsDesktop(): boolean {
 
 /* ── Page routing ─────────────────────────────────────────────── */
 function showPage(id: string) {
-  for (const p of ["app", "login-page", "setup-page", "onboarding-page"]) {
+  for (const p of ["app", "login-page", "setup-page"]) {
     const el = document.getElementById(p);
     if (el) el.hidden = (p !== id);
   }
@@ -120,8 +119,8 @@ const backend: Backend = {
     }));
   },
 
-  async bind(params: { server: string; code: string }): Promise<void> {
-    await api("/bind", jsonPost("/bind", { server: params.server, code: params.code }));
+  async setServer(serverAddr: string): Promise<void> {
+    await api("/config", jsonPost("/config", { serverAddr }));
   },
 
   async rejoin(nid: string): Promise<void> { await api("/rejoin", jsonPost("/rejoin", { nid })); },
@@ -214,14 +213,8 @@ function startApp() {
   init(backend);
 }
 
-// After login/setup, an unbound device must be guided to bind before it can
-// reach the console. Skipping the onboarding page is still allowed.
 async function routeAfterAuth() {
-  try {
-    const st = await backend.status();
-    if (st?.bound) { startApp(); return; }
-  } catch { /* daemon unreachable: fall through to onboarding */ }
-  showPage("onboarding-page");
+  startApp();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -264,26 +257,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   document.getElementById("setup-password2")?.addEventListener("keydown", (e) => { if (e.key === "Enter") setupSubmit?.click(); });
-
-  // Onboarding bind
-  const onbBind = document.getElementById("onb-bind");
-  if (onbBind) onbBind.addEventListener("click", async () => {
-    const code = (document.getElementById("onb-code") as HTMLInputElement)?.value.trim();
-    const result = document.getElementById("onb-bind-result")!;
-    if (!code) { result.className = "msg"; result.textContent = "请输入授权码"; return; }
-    result.className = "msg"; result.textContent = "正在绑定…";
-    try {
-      await backend.bind({ server: FIXED_SERVER, code });
-      result.className = "msg ok"; result.textContent = "已绑定设备授权";
-      startApp();
-    } catch (e) { result.className = "msg"; result.textContent = "绑定失败: " + e; }
-  });
-
-  const onbSkip = document.getElementById("onb-skip");
-  if (onbSkip) onbSkip.addEventListener("click", (e) => {
-    e.preventDefault();
-    startApp();
-  });
 
   // Password visibility toggles
   document.querySelectorAll(".toggle-pw").forEach((btn) => {

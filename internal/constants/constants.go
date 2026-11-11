@@ -2,7 +2,9 @@
 // control API and UI layers.
 package constants
 
-// DefaultServerAddr is the only coordination server this product talks to. It
-// is hardcoded across all surfaces (daemon, ctl, mobile, web, desktop) so the
-// server address is never user-configurable or displayed as plaintext.
-const DefaultServerAddr = "https://snet.uizhi.eu.org:8090"
+// DefaultServer is the official SnetServ coordination server used when the
+// user has not configured a custom server address.
+const DefaultServer = "https://snet.uizhi.eu.org:8090"
+
+// DefaultServerAddr is kept as a compatibility alias for older callers.
+const DefaultServerAddr = DefaultServer

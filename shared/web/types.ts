@@ -1,7 +1,10 @@
 /* ── Shared types for SNET client UI ────────────────────────────── */
 
-/** Fixed coordination server. Not user-configurable or displayed in plaintext. */
-export const FIXED_SERVER = "https://snet.uizhi.eu.org:8090";
+/** Official coordination server used when the user leaves SnetServ empty. */
+export const DEFAULT_SERVER = "https://snet.uizhi.eu.org:8090";
+
+/** Compatibility alias for older UI code. */
+export const FIXED_SERVER = DEFAULT_SERVER;
 
 export type PeerStats = { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number };
 export type PeerDirect = {
@@ -64,9 +67,7 @@ export type NatStatus = { enabled: boolean; mappings: NatMappingInfo[]; errors: 
 
 export type DaemonStatus = {
   deviceId?: string;
-  bound?: boolean;
-  authExpired?: boolean;
-  authExpiresAt?: string;
+  serverAddr?: string;
   wgPort?: number;
   version?: string;
   networks?: NetInfo[];
@@ -102,8 +103,8 @@ export interface Backend {
   create(params: { server: string; port: number; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp>;
   /** Join a network */
   join(params: { server: string; port: number; link: string }): Promise<JoinResp>;
-  /** Bind device to server */
-  bind(params: { server: string; code: string }): Promise<void>;
+  /** Save the SnetServ address and reconnect */
+  setServer(serverAddr: string): Promise<void>;
   /** Rejoin (connect) a network */
   rejoin(nid: string): Promise<void>;
   /** Leave (disconnect) a network */

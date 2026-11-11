@@ -56,34 +56,6 @@
   </div>
 </div>
 
-<!-- Step 2: Bind server -->
-<div id="onboarding-page" class="standalone-page" hidden>
-  <div class="auth-card">
-    <div class="auth-header">
-      <div class="auth-logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="28" height="28"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-      </div>
-      <h1 class="auth-title">Snet</h1>
-      <p class="auth-subtitle">虚拟组网 · Web 控制台</p>
-    </div>
-    <div class="auth-steps">
-      <div class="step done"><span class="step-num">1</span> 设置密码</div>
-      <div class="step-line"></div>
-      <div class="step current"><span class="step-num">2</span> 绑定服务器</div>
-    </div>
-    <form id="onboarding-form" class="auth-form" autocomplete="off">
-      <p class="auth-desc">输入设备授权码完成绑定（服务器地址已固定）</p>
-      <div class="field">
-        <label>设备授权码</label>
-        <input id="onb-code" type="text" placeholder="管理端生成的设备授权码" autocomplete="off" autofocus />
-      </div>
-      <p class="msg" id="onb-bind-result"></p>
-      <button id="onb-bind" type="submit" class="btn-full">绑定并进入控制台</button>
-      <a id="onb-skip" class="skip-link">跳过，稍后绑定</a>
-    </form>
-  </div>
-</div>
-
 <!-- Login page -->
 <div id="login-page" class="standalone-page" hidden>
   <div class="auth-card">
@@ -173,10 +145,6 @@
         <div class="stat"><div class="label">设备ID</div><div class="value" id="device-id">-</div></div>
         <div class="stat"><div class="label">WireGuard 端口</div><div class="value" id="svc-wgport">-</div></div>
         <div class="stat"><div class="label">NAT 类型</div><div class="value" id="svc-nat">-</div></div>
-        <div class="card">
-          <div class="card-head"><h3>设备授权</h3></div>
-          <div id="auth-detail"></div>
-        </div>
       </div>
       <div class="card">
         <div class="card-head"><h3>原始状态 JSON</h3></div>

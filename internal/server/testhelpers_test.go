@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+	"testing"
 	"time"
 
 	"snet/internal/protocol"
@@ -104,6 +106,18 @@ func (s *Store) AdminDevices() []protocol.Device {
 	return out
 }
 
+func genOneCode(t *testing.T, s *Store) (string, error) {
+	t.Helper()
+	codes, err := s.AdminGenerateAuthCodes(1, 1, nil)
+	if err != nil {
+		return "", err
+	}
+	if len(codes) == 0 {
+		return "", errors.New("no auth code generated")
+	}
+	return codes[0].Code, nil
+}
+
 // GenerateDeviceToken creates (or rotates) a device-level bearer token that
 // the device uses to enroll without re-entering its authorization code.
 func (s *Store) GenerateDeviceToken(deviceID string) (string, error) {
@@ -122,26 +136,6 @@ func (s *Store) GenerateDeviceToken(deviceID string) (string, error) {
 		return "", err
 	}
 	return tok, nil
-}
-
-// RequireDeviceAuth reports whether the enrollment gate is on.
-func (s *Store) RequireDeviceAuth() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.requireDeviceAuth
-}
-
-// CheckDeviceAuth checks if a device is bound to a valid (non-expired) auth
-// code. Production performs this check inside CreateNetwork/Join/Bind under
-// the enrollment gate; tests call it directly.
-func (s *Store) CheckDeviceAuth(deviceID string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if !s.requireDeviceAuth {
-		return nil
-	}
-
-	return s.checkDeviceAuthLocked(deviceID)
 }
 
 // Start binds every port in the relay's assignable range up front. Production

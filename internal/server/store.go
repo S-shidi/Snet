@@ -275,11 +275,6 @@ type Store struct {
 	authCodes map[string]*authCodeRecord // key = public auth-code ID
 	netSeq    uint64                     // monotonic creation counter for networks
 
-	// requireDeviceAuth gates CreateNetwork/Join/RegisterDevice: when on, only
-	// devices that successfully bound a generated authorization code may
-	// participate. The bind endpoint itself is always open.
-	requireDeviceAuth bool
-
 	// relayHost is the public relay endpoint advertised to peers; when empty,
 	// relay mode is disabled and peers keep their self-advertised endpoints.
 	relayHost  string
@@ -2291,11 +2286,6 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 		visibility = *so.visibility
 	}
 
-	if s.requireDeviceAuth {
-		if err := s.checkDeviceAuthLocked(deviceID); err != nil {
-			return protocol.CreateNetworkResp{}, err
-		}
-	}
 	if err := validateDeviceID(deviceID); err != nil {
 		return protocol.CreateNetworkResp{}, err
 	}
@@ -2510,11 +2500,6 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.requireDeviceAuth {
-		if err := s.checkDeviceAuthLocked(deviceID); err != nil {
-			return protocol.JoinResp{}, err
-		}
-	}
 	if err := validatePublicKey(publicKey); err != nil {
 		return protocol.JoinResp{}, err
 	}
@@ -3130,11 +3115,6 @@ func (s *Store) RegisterDevice(deviceID, publicKey, name string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.requireDeviceAuth {
-		if err := s.checkDeviceAuthLocked(deviceID); err != nil {
-			return err
-		}
-	}
 	return s.upsertDeviceLocked(deviceID, publicKey, name)
 }
 
@@ -4598,15 +4578,6 @@ func (s *Store) AdminDeleteNetwork(nid string) error {
 
 // ---- device authorization codes ----
 
-// SetRequireDeviceAuth toggles the enrollment gate. When on, CreateNetwork /
-// Join / RegisterDevice are denied for devices that have not bound a generated
-// authorization code. Callers hold no locks.
-func (s *Store) SetRequireDeviceAuth(on bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.requireDeviceAuth = on
-}
-
 // DeviceBound reports whether deviceID has successfully bound an
 // authorization code.
 func (s *Store) DeviceBound(deviceID string) bool {
@@ -4755,30 +4726,6 @@ func (s *Store) AdminRenewAuthCode(codeID string, expiresAt *time.Time) error {
 
 	ac.ExpiresAt = expiresAt
 	return s.persistAuthCode(ac)
-}
-
-func (s *Store) checkDeviceAuthLocked(deviceID string) error {
-	bound := false
-	var expiresAt *time.Time
-
-	for _, ac := range s.authCodes {
-		if ac.bindingIndex(deviceID) >= 0 {
-			bound = true
-			expiresAt = ac.ExpiresAt
-			break
-		}
-	}
-
-	if !bound {
-		return ErrUnauthorized
-	}
-
-	// Check expiration
-	if expiresAt != nil && time.Now().After(*expiresAt) {
-		return ErrAuthCodeExpired
-	}
-
-	return nil
 }
 
 // GetDeviceAuthStatus returns the authentication status for a device.

@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
+	"snet/internal/constants"
 	"snet/internal/protocol"
 )
 
@@ -63,27 +63,6 @@ type Config struct {
 	// next one; both persist so a restart cannot reset the clock.
 	KeyRotationDays  int   `json:"keyRotationDays,omitempty"`
 	LastKeyRotatedAt int64 `json:"lastKeyRotatedAt,omitempty"`
-
-	// BoundServer is the normalized address this device bound to. The device
-	// is considered bound only when BoundServer is non-empty and matches the
-	// configured ServerAddr, so changing the server address does not leave a
-	// stale "bound" state behind.
-	BoundServer string `json:"boundServer,omitempty"`
-
-	// DeviceToken is the server-issued token for device-scoped API calls
-	// (network sync, auth-status). Persisted so a restart can still verify
-	// binding against the server without re-entering a code.
-	DeviceToken string `json:"deviceToken,omitempty"`
-
-	// AuthExpired records that this device's authorization code has expired on
-	// the server. Persisted so the UI can show the expired state across
-	// restarts; cleared on re-bind or revocation.
-	AuthExpired bool `json:"authExpired,omitempty"`
-
-	// AuthExpiresAt is the authorization expiry the server last reported
-	// during binding-verification polling. nil means the authorization is
-	// permanent or has not been verified yet.
-	AuthExpiresAt *time.Time `json:"authExpiresAt,omitempty"`
 
 	// WebPasswordHash is the bcrypt hash of the web console login password.
 	// Empty means no password is set (authentication disabled).
@@ -157,14 +136,6 @@ func parseConfig(data []byte) (*Config, error) {
 			},
 		}
 	}
-	// Stale-server cleanup: a legacy device that never bound to a server and
-	// holds no networks or pending joins has no meaningful server address.
-	// Drop it so the UI shows "未连接服务器" and the device is free to choose
-	// any server. Configs with networks, pending joins or an explicit binding
-	// keep their address (their networks poll that server).
-	if c.BoundServer == "" && len(c.Networks) == 0 && len(c.PendingJoins) == 0 {
-		c.ServerAddr = ""
-	}
 	return &c, nil
 }
 
@@ -174,6 +145,15 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 	return LoadConfigAt(path)
+}
+
+// EffectiveServerAddr returns the configured SnetServ address, falling back
+// to the official server when the user leaves it empty.
+func (c *Config) EffectiveServerAddr() string {
+	if strings.TrimSpace(c.ServerAddr) == "" {
+		return constants.DefaultServer
+	}
+	return strings.TrimRight(c.ServerAddr, "/")
 }
 
 func (c *Config) Save() error {
@@ -196,11 +176,4 @@ func (c *Config) SaveAt(path string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
-}
-
-// Bound reports whether this device has bound to its currently configured
-// server. The binding is tied to the exact normalized server address, so
-// changing the server address clears the effective bound state.
-func (c *Config) Bound() bool {
-	return c.BoundServer != "" && strings.EqualFold(c.BoundServer, c.ServerAddr)
 }

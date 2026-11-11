@@ -37,21 +37,13 @@ type Options struct {
 	// per client IP. Zero values use generous self-hosted defaults.
 	CreatePerHour int
 	JoinPerMinute int
-
-	// RequireDeviceAuth gates create/join/device-registration behind a device
-	// authorization code bound via POST /api/v1/devices/bind. Off by default
-	// for compatibility with existing deployments; enable it on servers that
-	// want to control exactly which devices may join.
-	RequireDeviceAuth bool
 }
 
 const (
 	defaultCreatePerHour      = 50
 	defaultJoinPerMinute      = 60
-	defaultBindPerMinute      = 20
 	defaultRegisterPerMin     = 30
 	defaultPendingPollsPerMin = 10
-	defaultAuthStatusPerMin   = 60
 	sessionTTL                = 24 * time.Hour
 	limiterPruneInterval      = time.Minute
 )
@@ -65,11 +57,9 @@ type handler struct {
 	opts         Options
 	creates      *rateLimiter
 	joins        *rateLimiter
-	binds        *rateLimiter
 	logins       *rateLimiter
 	registers    *rateLimiter
 	pendingPolls *rateLimiter
-	authStatus   *rateLimiter
 
 	// adminMu guards adminUser and adminPassHash, which are rotated while
 	// the server is serving (bootstrap wizard, password change).
@@ -102,15 +92,10 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		opts:         opts,
 		creates:      newRateLimiter(createPerHour, time.Hour),
 		joins:        newRateLimiter(joinPerMinute, time.Minute),
-		binds:        newRateLimiter(defaultBindPerMinute, time.Minute),
 		logins:       newRateLimiter(5, time.Minute),
 		registers:    newRateLimiter(defaultRegisterPerMin, time.Minute),
 		pendingPolls: newRateLimiter(defaultPendingPollsPerMin, time.Minute),
-		authStatus:   newRateLimiter(defaultAuthStatusPerMin, time.Minute),
 		sessions:     make(map[string]sessionEntry),
-	}
-	if opts.RequireDeviceAuth {
-		s.SetRequireDeviceAuth(true)
 	}
 	if opts.AdminUser != "" && opts.AdminPass != "" {
 		if hash, err := s.EnsureAdminPassword(opts.AdminUser, opts.AdminPass); err != nil {
@@ -135,7 +120,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		t := time.NewTicker(limiterPruneInterval)
 		defer t.Stop()
 		for range t.C {
-			for _, rl := range []*rateLimiter{h.creates, h.joins, h.binds, h.logins, h.registers, h.pendingPolls, h.authStatus} {
+			for _, rl := range []*rateLimiter{h.creates, h.joins, h.logins, h.registers, h.pendingPolls} {
 				rl.prune()
 			}
 		}
@@ -165,9 +150,6 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		resp, err := s.CreateNetwork(req.PublicKey, req.DeviceID, req.Name, req.Subnet, req.ApprovalRequired,
 			networkShareOpts{description: &req.Description, tags: req.Tags, visibility: &req.Visibility, allowOverlap: req.AllowOverlap})
 		if err != nil {
-			if writeEnrollmentErr(w, err) {
-				return
-			}
 			handleStoreErr(w, err)
 			return
 		}
@@ -187,7 +169,6 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		}
 		resp, err := s.Join(nid, req.Code, req.PublicKey, req.DeviceID)
 		switch {
-		case writeEnrollmentErr(w, err):
 		case errors.Is(err, ErrNotFound):
 			writeErr(w, http.StatusNotFound, err)
 		case errors.Is(err, ErrCodeLocked):
@@ -218,87 +199,10 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		if err := s.RegisterDevice(req.DeviceID, req.PublicKey, req.Name); err != nil {
-			if writeEnrollmentErr(w, err) {
-				return
-			}
 			handleStoreErr(w, err)
 			return
 		}
-		// Report the device's binding status so bound clients can detect an
-		// admin revocation even when the enrollment gate is off.
-		bound := s.DeviceBound(req.DeviceID)
-		writeJSON(w, http.StatusOK, protocol.RegisterDeviceResp{DeviceID: req.DeviceID, Bound: &bound})
-	})
-
-	// Bind consumes a device authorization code, permanently linking the
-	// presented device ID (and its WireGuard public key) to this server. No
-	// bearer token is required: the code itself is the credential. It is rate
-	// limited per IP to deter brute force (codes carry ≈80 bits of entropy).
-	mux.HandleFunc("POST /api/v1/devices/bind", func(w http.ResponseWriter, r *http.Request) {
-		if h.binds.blocked(h.clientIP(r)) {
-			writeErr(w, http.StatusTooManyRequests, errors.New("too many requests"))
-			return
-		}
-		var req protocol.BindDeviceReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, ErrBadJSON)
-			return
-		}
-		if req.Code == "" {
-			writeErr(w, http.StatusBadRequest, errors.New("缺少设备授权码"))
-			return
-		}
-		deviceToken, err := s.BindDevice(req.Code, req.DeviceID, req.PublicKey, req.Name)
-		if err != nil {
-			handleStoreErr(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, protocol.BindDeviceResp{DeviceID: req.DeviceID, DeviceToken: deviceToken})
-	})
-
-	// Device-scoped network listing: returns all networks the device holds a
-	// node in, including per-node credentials for config reconstruction after
-	// a reinstall. Authenticated by deviceToken (not a node token).
-	mux.HandleFunc("GET /api/v1/devices/{deviceId}/networks", func(w http.ResponseWriter, r *http.Request) {
-		deviceID := r.PathValue("deviceId")
-		deviceToken := deviceTokenOf(r)
-		if deviceID == "" || deviceToken == "" {
-			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
-			return
-		}
-		if !s.ValidateDeviceToken(deviceID, deviceToken) {
-			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
-			return
-		}
-		details, err := s.DeviceNetworkDetails(deviceID)
-		if err != nil {
-			handleStoreErr(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, protocol.DeviceNetworksResp{Networks: details})
-	})
-
-	// Check device authentication status (bound/expired). Used by clients to
-	// detect expired authorization codes and show appropriate warnings. A bound
-	// device must present its device token (X-Device-Token) so the endpoint no
-	// longer leaks binding state to anyone who guesses a deviceId; unbound
-	// devices have no token and receive the generic not-bound answer.
-	mux.HandleFunc("GET /api/v1/devices/auth-status", func(w http.ResponseWriter, r *http.Request) {
-		if h.authStatus.blocked(h.clientIP(r)) {
-			writeErr(w, http.StatusTooManyRequests, errors.New("too many requests"))
-			return
-		}
-		deviceID := r.URL.Query().Get("deviceId")
-		if deviceID == "" {
-			writeErr(w, http.StatusBadRequest, errors.New("missing deviceId"))
-			return
-		}
-		status := s.GetDeviceAuthStatus(deviceID)
-		if status.Bound && !s.ValidateDeviceToken(deviceID, deviceTokenOf(r)) {
-			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
-			return
-		}
-		writeJSON(w, http.StatusOK, status)
+		writeJSON(w, http.StatusOK, protocol.RegisterDeviceResp{DeviceID: req.DeviceID})
 	})
 
 	// Update a node's WireGuard public key. Used after a client reinstall
@@ -316,25 +220,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, errors.New("缺少publicKey"))
 			return
 		}
-		if deviceToken := deviceTokenOf(r); deviceToken != "" {
-			if req.DeviceID == "" {
-				writeErr(w, http.StatusBadRequest, errors.New("缺少deviceId"))
-				return
-			}
-			if !s.ValidateDeviceToken(req.DeviceID, deviceToken) {
-				writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
-				return
-			}
-			if err := s.UpdateNodePublicKey(req.DeviceID, nid, nodeID, req.PublicKey); err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		// Node-token path: the node may rotate its own public key. This is the
-		// channel periodic client-side key rotation uses, since the daemon
-		// never persists the device token.
+		// Node-token path: the node may rotate its own public key.
 		if err := s.UpdateNodePublicKeyByToken(tokenOf(r), nid, nodeID, req.PublicKey); err != nil {
 			handleStoreErr(w, err)
 			return
@@ -780,88 +666,6 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	mux.HandleFunc("GET /admin/devices/{deviceID}/networks", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, protocol.NetworksResp{Networks: s.DeviceNetworks(r.PathValue("deviceID"))})
 	}))
-	mux.HandleFunc("POST /admin/devices/authcodes/generate", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		var req protocol.AdminGenerateAuthCodesReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, ErrBadJSON)
-			return
-		}
-		if req.Count < 1 || req.Count > 100 {
-			writeErr(w, http.StatusBadRequest, errors.New("count must be between 1 and 100"))
-			return
-		}
-		if req.MaxBindings == 0 {
-			req.MaxBindings = 1 // default: one device per code
-		}
-		if req.MaxBindings < 1 || req.MaxBindings > 100 {
-			writeErr(w, http.StatusBadRequest, errors.New("maxBindings must be between 1 and 100"))
-			return
-		}
-		// Validate expiration time
-		if req.ExpiresAt != nil && req.ExpiresAt.Before(time.Now()) {
-			writeErr(w, http.StatusBadRequest, errors.New("expiration time cannot be in the past"))
-			return
-		}
-
-		codes, err := s.AdminGenerateAuthCodes(req.Count, req.MaxBindings, req.ExpiresAt)
-		if err != nil {
-			handleStoreErr(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, protocol.AdminGenerateAuthCodesResp{Codes: codes})
-	}))
-	mux.HandleFunc("GET /admin/devices/authcodes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		reqPage, pageSize := adminPageParams(r)
-		items, total, page := s.AdminAuthCodesPage(reqPage, pageSize)
-		writeJSON(w, http.StatusOK, adminPageResp[protocol.AuthCodeInfo]{Items: items, Total: total, Page: page, PageSize: pageSize})
-	}))
-	mux.HandleFunc("POST /admin/devices/authcodes/revoke", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			ID string `json:"id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
-			writeErr(w, http.StatusBadRequest, errors.New("bad request"))
-			return
-		}
-		if err := s.AdminRevokeAuthCode(req.ID); err != nil {
-			handleStoreErr(w, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	mux.HandleFunc("PATCH /admin/devices/authcodes/{codeId}/renew", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		codeID := r.PathValue("codeId")
-		var req protocol.AdminRenewAuthCodeReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, ErrBadJSON)
-			return
-		}
-		// Validate expiration time
-		if req.ExpiresAt != nil && req.ExpiresAt.Before(time.Now()) {
-			writeErr(w, http.StatusBadRequest, errors.New("expiration time cannot be in the past"))
-			return
-		}
-		if err := s.AdminRenewAuthCode(codeID, req.ExpiresAt); err != nil {
-			handleStoreErr(w, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	mux.HandleFunc("POST /admin/devices/authcodes/unbind", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			DeviceID string `json:"deviceId"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceID == "" {
-			writeErr(w, http.StatusBadRequest, errors.New("bad request"))
-			return
-		}
-		if err := s.AdminUnbindDevice(req.DeviceID); err != nil {
-			handleStoreErr(w, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
 	mux.HandleFunc("DELETE /admin/devices/{deviceID}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		deviceID := r.PathValue("deviceID")
 		if err := s.AdminDeleteDevice(deviceID); err != nil {
@@ -1339,18 +1143,6 @@ func handleStoreErr(w http.ResponseWriter, err error) {
 func writeInternalErr(w http.ResponseWriter, err error) {
 	log.Printf("internal error: %v", err)
 	writeErr(w, http.StatusInternalServerError, ErrInternal)
-}
-
-// writeEnrollmentErr renders the "device not authorized" response for the
-// create/join/register gate when RequireDeviceAuth is on. It reports whether
-// the error was the enrollment gate so callers can fall through to
-// handleStoreErr otherwise.
-func writeEnrollmentErr(w http.ResponseWriter, err error) bool {
-	if errors.Is(err, ErrUnauthorized) {
-		writeErr(w, http.StatusForbidden, errors.New("设备未授权：请先在设置中绑定本服务器（需设备授权码）"))
-		return true
-	}
-	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
