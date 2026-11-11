@@ -2,7 +2,7 @@
 
 SNET 是一个端到端加密的私有虚拟局域网：WireGuard 负责数据面，HTTPS 协调服务负责成员与网络状态，UDP Relay 负责在无法直连时保证连通性。
 
-当前版本：**v1.0.8**
+当前版本：**v1.0.9**
 
 ## 核心特性
 
@@ -64,7 +64,7 @@ docker compose --env-file .env up -d --build
 curl -fsS https://snet.uizhi.eu.org:8090/healthz
 ```
 
-预期返回 `serverVersion: "1.0.8"` 和 `status: "ok"`。
+预期返回 `serverVersion: "1.0.9"` 和 `status: "ok"`。
 
 ### 2. 客户端 Docker 镜像
 
@@ -135,6 +135,18 @@ SnetMac-v<VERSION>-<SHORT_SHA>.dmg
 ```bash
 curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install-macos.sh | bash
 ```
+
+国内网络可使用镜像或代理：
+
+```bash
+# GitHub 镜像
+curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install-macos.sh | bash
+
+# 使用本地代理
+HTTPS_PROXY=http://127.0.0.1:7890 bash -c "$(curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install-macos.sh)"
+```
+
+安装脚本会自动停止旧版 LaunchDaemon/进程，再安装新 App；首次启动 App 会安装最新守护进程。
 
 首次启动需要一次 macOS 管理员授权：客户端会安装 LaunchDaemon：
 

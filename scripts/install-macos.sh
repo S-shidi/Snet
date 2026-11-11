@@ -3,6 +3,7 @@ set -eu
 
 REPO="S-shidi/Snet"
 API="https://api.github.com/repos/${REPO}/releases/latest"
+MIRRORS="https://ghproxy.net/ https://mirror.ghproxy.com/"
 
 case "$(uname -m)" in
   arm64|aarch64) ARCH="arm64" ;;
@@ -10,8 +11,32 @@ case "$(uname -m)" in
   *) echo "不支持的 CPU 架构: $(uname -m)" >&2; exit 1 ;;
 esac
 
+# curl inherits HTTPS_PROXY / HTTP_PROXY from the caller. The mirror prefixes
+# are tried only when the direct GitHub request fails.
+fetch_github() {
+  url="$1"
+  out="$2"
+  for prefix in "" $MIRRORS; do
+    candidate="${prefix}${url}"
+    if [ -n "$prefix" ]; then
+      echo "GitHub 直连失败，尝试镜像: ${prefix}" >&2
+    fi
+    if curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 \
+      --progress-bar -o "$out" "$candidate"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 echo "正在查找最新 SnetMac 版本…"
-ASSET_URL="$(curl -fsSL "$API" | /usr/bin/python3 -c '
+ASSET_JSON="$(mktemp "${TMPDIR:-/tmp}/snetmac-release.XXXXXX")"
+trap 'rm -f "$ASSET_JSON"' EXIT
+if ! fetch_github "$API" "$ASSET_JSON" 2>/dev/null; then
+  echo "无法访问 GitHub Release API，请检查网络或设置 HTTPS_PROXY。" >&2
+  exit 1
+fi
+ASSET_URL="$(/usr/bin/python3 -c '
 import json, sys
 arch = sys.argv[1].lower()
 data = json.load(sys.stdin)
@@ -21,13 +46,26 @@ pick = (preferred or assets)
 if not pick:
     sys.exit("没有找到 SnetMac .zip 发布包")
 print(pick[0]["browser_download_url"])
-' "$ARCH")"
+' "$ARCH" < "$ASSET_JSON")"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/snetmac-install.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP" "$ASSET_JSON"' EXIT
+
+# Remove the old service and processes before replacing the App. The new App
+# installs/upgrades the LaunchDaemon on its first launch.
+PLIST="/Library/LaunchDaemons/com.snet.daemon.plist"
+if [ -f "$PLIST" ]; then
+  echo "检测到旧版 SNET 服务，正在停止…"
+  sudo launchctl bootout system "$PLIST" 2>/dev/null || true
+  sudo killall -9 snetd 2>/dev/null || true
+  sudo killall -9 SnetMac 2>/dev/null || true
+fi
 
 echo "正在下载 $ASSET_URL"
-curl -fL --retry 3 --progress-bar -o "$TMP/SnetMac.zip" "$ASSET_URL"
+if ! fetch_github "$ASSET_URL" "$TMP/SnetMac.zip"; then
+  echo "下载失败，请检查网络或设置 HTTPS_PROXY。" >&2
+  exit 1
+fi
 
 mkdir -p "$TMP/unpack"
 ditto -x -k "$TMP/SnetMac.zip" "$TMP/unpack"
