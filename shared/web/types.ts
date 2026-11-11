@@ -103,6 +103,8 @@ export interface Backend {
   create(params: { server: string; port: number; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp>;
   /** Join a network */
   join(params: { server: string; port: number; link: string }): Promise<JoinResp>;
+  /** Validate the target SnetServ before saving */
+  checkServer(serverAddr: string): Promise<void>;
   /** Save the SnetServ address and reconnect */
   setServer(serverAddr: string): Promise<void>;
   /** Rejoin (connect) a network */

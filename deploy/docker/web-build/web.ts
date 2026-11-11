@@ -106,7 +106,6 @@ const backend: Backend = {
     const r = await api("/create", jsonPost("/create", {
       name: params.name, subnet: params.subnet, port: params.port,
       approvalRequired: params.approvalRequired,
-      description: params.description ?? "", tags: params.tags ?? [], visibility: params.visibility ?? "",
     }));
     const link = `snet://join?nid=${encodeURIComponent(r.networkId)}&code=${encodeURIComponent(r.pairingCode)}` +
       (params.server ? `&server=${encodeURIComponent(params.server)}` : "");
@@ -117,6 +116,10 @@ const backend: Backend = {
     return api("/join", jsonPost("/join", {
       link: params.link, port: params.port,
     }));
+  },
+
+  async checkServer(serverAddr: string): Promise<void> {
+    await api("/check-server", jsonPost("/check-server", { serverAddr }));
   },
 
   async setServer(serverAddr: string): Promise<void> {

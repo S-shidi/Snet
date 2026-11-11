@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
@@ -469,6 +470,38 @@ func (d *Daemon) apiLocked() *apiClient {
 	d.api = newAPIClient(server, d.ctx)
 	d.apiServer = server
 	return d.api
+}
+
+// CheckServer verifies that the target SnetServ is reachable and healthy.
+func (d *Daemon) CheckServer(serverAddr string) error {
+	addr := normalizeServer(strings.TrimSpace(serverAddr))
+	if addr == "" {
+		addr = constants.DefaultServer
+	}
+	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, addr+"/healthz", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("服务端返回 HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return err
+	}
+	if body.Status != "ok" {
+		return fmt.Errorf("服务端健康检查失败")
+	}
+	return nil
 }
 
 // SetServer updates the SnetServ address and resets the API client so the

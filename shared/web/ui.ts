@@ -38,23 +38,30 @@ function currentServer(): string {
 
 /* ── Refresh ──────────────────────────────────────────────────── */
 let refreshing = false;
+let refreshAgain = false;
 let detailNid: string | null = null;
 let lastNetHTML = "";
 let lastEmptyHTML = "";
 async function refresh() {
-  if (refreshing) return;
-  refreshing = true;
-  try {
-    status = await backend.status();
-    await refreshOwnerInfo();
-    await refreshPeerSubnets();
-  } catch {
-    status = null;
+  if (refreshing) {
+    refreshAgain = true;
+    return;
   }
-  renderHeader();
-  renderNetworks();
-  renderNetworkDetail();
-  renderStatus();
+  refreshing = true;
+  do {
+    refreshAgain = false;
+    try {
+      status = await backend.status();
+      await refreshOwnerInfo();
+      await refreshPeerSubnets();
+    } catch {
+      status = null;
+    }
+    renderHeader();
+    renderNetworks();
+    renderNetworkDetail();
+    renderStatus();
+  } while (refreshAgain);
   refreshing = false;
 }
 
@@ -1083,8 +1090,6 @@ function openCreateModal() {
     body: `${hint}
       <div class="row"><label>网络名称</label><input id="m-name" type="text" placeholder="例如：家庭网络" /></div>
       <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "m-subnet", placeholder: "留空自动分配（如 10.88.0.0/24）", emptyHint: "留空自动分配，通常为 10.88.N.0/24" })}</div>
-      <div class="row"><label>描述（可选）</label><textarea id="m-desc" class="form-control" rows="2" placeholder="简短说明这个网络的用途"></textarea></div>
-      <div class="row"><label>标签（可选）</label><input id="m-tags" type="text" placeholder="逗号分隔，如 家庭, NAS" /></div>
       ${serverHint}
       <p class="msg" id="m-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn" ${hasOwner ? "disabled" : ""}>创建</button>`,
@@ -1102,12 +1107,9 @@ function openCreateModal() {
           const chk = subnetWidget.check();
           if (!chk.ok) throw new Error(`网段无效：${chk.error}`);
           const subnet = chk.value;
-          const description = (body.querySelector("#m-desc") as HTMLTextAreaElement).value.trim();
-          const tags = (body.querySelector("#m-tags") as HTMLInputElement).value
-            .split(",").map((s) => s.trim()).filter(Boolean).slice(0, 8);
           const server = currentServer();
           if (!name) throw new Error("请输入网络名称");
-          const r: CreateResp = await backend.create({ server, port: s.wgport, name, subnet, approvalRequired: false, description, tags, visibility: "" });
+          const r: CreateResp = await backend.create({ server, port: s.wgport, name, subnet, approvalRequired: false });
           const modalEl = body;
           const mBody = modalEl.querySelector<HTMLElement>(".modal-body")!;
           const mFoot = modalEl.querySelector<HTMLElement>(".modal-foot")!;
@@ -1232,7 +1234,8 @@ function natViaLabel(via: string): string {
 
 function openSettingsModal() {
   const s = loadSettings();
-  const server = status?.serverAddr || s.server || DEFAULT_SERVER;
+  const server = (status?.serverAddr || s.server || "").trim();
+  const isOfficial = !server || server.replace(/\/+$/, "") === DEFAULT_SERVER.replace(/\/+$/, "");
   const nat = status?.natMapping;
   const natEnabled = nat?.enabled !== false;
   const natLines = (nat?.mappings ?? []).map(m =>
@@ -1241,10 +1244,20 @@ function openSettingsModal() {
   const natErr = nat?.errors?.[0];
   openModal({
     title: "设置",
-    body: `<div class="settings-block">
-        <div class="row"><label>服务端地址 (SnetServ)</label><input id="s-server" type="url" value="${esc(server)}" placeholder="https://my-vps:8090" autocomplete="off" /></div>
-        <p class="hint">留空则使用官方 SnetServ，或填入你的自托管地址（如 https://my-vps:8090）</p>
-        <div class="settings-actions"><button id="s-server-save" class="btn">保存并重连</button></div>
+    body: `<div class="settings-block" id="s-server-block">
+        <div id="s-server-view">
+          <div class="row">
+            <label>协调服务</label>
+            <span class="value" id="s-server-label">${isOfficial ? "官方 (SnetServ)" : esc(server)}</span>
+            <button type="button" id="s-server-edit" class="btn icon sm" title="修改">✎</button>
+            ${isOfficial ? "" : '<button type="button" id="s-server-reset" class="btn ghost sm">恢复默认</button>'}
+          </div>
+        </div>
+        <div id="s-server-editor" hidden>
+          <div class="row"><label>服务端地址 (SnetServ)</label><input id="s-server" type="url" value="${isOfficial ? "" : esc(server)}" placeholder="https://my-vps:8090" autocomplete="off" /></div>
+          <p class="hint">留空则使用官方 SnetServ，或填入你的自托管地址（如 https://my-vps:8090）</p>
+          <div class="settings-actions"><button id="s-server-save" class="btn">保存</button><button id="s-server-cancel" class="btn ghost">取消</button></div>
+        </div>
         <p class="msg" id="s-server-result"></p>
       </div>
       <div class="row"><label>WireGuard 端口</label><input id="s-wgport" type="number" min="1024" max="65535" value="${s.wgport}" /></div>
@@ -1273,28 +1286,53 @@ function openSettingsModal() {
     footer: `<button data-close class="btn ghost">关闭</button>`,
     onBody: (body) => {
       const msg = body.querySelector<HTMLElement>("#s-msg")!;
+      const serverView = body.querySelector<HTMLElement>("#s-server-view")!;
+      const serverEditor = body.querySelector<HTMLElement>("#s-server-editor")!;
       const serverInput = body.querySelector<HTMLInputElement>("#s-server")!;
       const serverResult = body.querySelector<HTMLElement>("#s-server-result")!;
       const serverBtn = body.querySelector<HTMLButtonElement>("#s-server-save")!;
-      serverBtn.addEventListener("click", async () => {
+      const serverEdit = body.querySelector<HTMLButtonElement>("#s-server-edit");
+      const serverCancel = body.querySelector<HTMLButtonElement>("#s-server-cancel");
+      const serverReset = body.querySelector<HTMLButtonElement>("#s-server-reset");
+      const showEditor = () => {
+        serverView.hidden = true;
+        serverEditor.hidden = false;
+        serverResult.textContent = "";
+        serverInput.focus();
+      };
+      serverEdit?.addEventListener("click", showEditor);
+      serverCancel?.addEventListener("click", () => {
+        serverEditor.hidden = true;
+        serverView.hidden = false;
+        serverResult.textContent = "";
+      });
+
+      const saveServer = async (value: string) => {
         serverBtn.disabled = true;
         serverResult.className = "msg";
-        serverResult.textContent = "正在保存并重连…";
+        serverResult.textContent = "正在校验并保存…";
         try {
-          const value = serverInput.value.trim();
+          if (value) {
+            await backend.checkServer(value);
+          }
           await backend.setServer(value);
           saveSettings({ ...loadSettings(), server: value || DEFAULT_SERVER });
           serverResult.className = "msg ok";
           serverResult.textContent = "已保存，正在使用新的 SnetServ";
           toast("SnetServ 已更新");
           await refresh();
+          closeModal();
         } catch (e) {
           serverResult.className = "msg";
-          serverResult.textContent = `保存失败: ${e}`;
+          serverResult.textContent = "无法连接该服务端，请检查地址";
+          toast("无法连接该服务端，请检查地址", "err");
         } finally {
           serverBtn.disabled = false;
         }
-      });
+      };
+
+      serverBtn.addEventListener("click", () => saveServer(serverInput.value.trim()));
+      serverReset?.addEventListener("click", () => saveServer(""));
 
       const natInput = body.querySelector<HTMLInputElement>("#s-nat");
       const natState = body.querySelector<HTMLElement>("#s-nat-state");

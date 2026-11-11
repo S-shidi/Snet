@@ -489,7 +489,7 @@
       <svg width="24" height="24" viewBox="0 0 32 32" fill="none"><path d="M10 11 C16 11, 16 21, 22 21" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><circle cx="10" cy="11" r="3.5" fill="#fff"/><circle cx="16" cy="16" r="2.5" fill="#fff"/><circle cx="22" cy="21" r="3.5" fill="#fff"/></svg>
     </span>
     <div class="l-title">Snet 控制台</div>
-    <div class="l-sub">请登录以管理网络、设备与授权码</div>
+    <div class="l-sub">请登录以管理网络与设备</div>
   </div>
   <div class="row">
     <label for="user">用户名</label>
@@ -2926,12 +2926,11 @@ let pwAuth = sessionStorage.getItem('snet_admin_pw') === '1';
 let tab = 'overview';
 let netData = [];      // network summaries cache (current page)
 let deviceData = [];   // devices cache (current page)
-let codeData = [];     // auth codes cache (current page)
 const PAGE_SIZE = 20;
-let netPage = 1, devPage = 1, codePage = 1;
-let netSeq = 0, devSeq = 0, codeSeq = 0; // per-list request sequence guards
+let netPage = 1, devPage = 1;
+let netSeq = 0, devSeq = 0; // per-list request sequence guards
 let logoutTimer = null;                  // delayed 401 reload so the toast is visible
-let netTotal = 0, devTotal = 0, codeTotal = 0;
+let netTotal = 0, devTotal = 0;
 let statsData = null;  // /admin/stats cache
 let confirmState = null;
 let pollTimer = null;
@@ -3398,12 +3397,11 @@ function startApp() {
     if (uiBusy()) return;
     if (tab === 'net') loadNetworks(false);
     else if (tab === 'dev') loadDevices(false);
-    else if (tab === 'code') loadAuthCodes(false);
   }, 30000);
 }
 
 async function loadAll(showLoading) {
-  await Promise.all([loadOverview(showLoading), loadNetworks(showLoading), loadDevices(showLoading), loadAuthCodes(showLoading)]);
+  await Promise.all([loadOverview(showLoading), loadNetworks(showLoading), loadDevices(showLoading)]);
   updateCounts();
 }
 
@@ -3411,13 +3409,12 @@ function showTab(name) {
   tab = name;
   if (name !== 'net' && netDetailNid) closeNetDetail();
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
-  ['overview', 'net', 'dev', 'code'].forEach(v => {
+  ['overview', 'net', 'dev'].forEach(v => {
     $('view-' + v).hidden = v !== name;
   });
   if (name === 'overview') loadOverview(true);
   if (name === 'net') loadNetworks(true);
   if (name === 'dev') loadDevices(true);
-  if (name === 'code') loadAuthCodes(true);
 }
 
 function updateCounts() {
@@ -3425,7 +3422,6 @@ function updateCounts() {
   const set = (id, n) => { $(id).textContent = n > 0 ? String(n) : ''; };
   set('cnt-net', netTotal || (statsData ? statsData.networksTotal : 0));
   set('cnt-dev', devTotal || (statsData ? statsData.devicesTotal : 0));
-  set('cnt-code', codeTotal || (statsData ? statsData.codesTotal : 0));
   $('cnt-net').classList.toggle('hot', pending > 0);
 }
 
@@ -3447,8 +3443,6 @@ function renderOverview() {
     <div class="stat"><div class="label">在线网络</div><div class="value ok">${s.networksOnline}</div></div>
     <div class="stat"><div class="label">节点总数</div><div class="value">${s.nodesTotal}</div></div>
     <div class="stat"><div class="label">设备总数</div><div class="value">${s.devicesTotal}</div></div>
-    <div class="stat"><div class="label">授权码 · 已绑定</div><div class="value accent">${s.codesBound}</div></div>
-    <div class="stat"><div class="label">授权码 · 未绑定</div><div class="value ${s.codesFree ? 'warn' : ''}">${s.codesFree}</div></div>
     ${s.pendingTotal ? `<div class="stat"><div class="label">待批准加入</div><div class="value warn">${s.pendingTotal}</div></div>` : ''}`;
 
   const recent = s.recentNetworks || [];
@@ -3751,7 +3745,7 @@ function renderNetDetail() {
     </tr></thead><tbody>${pendingRows}</tbody></table></div>
   </section>
   <section class="card detail-section">
-    <div class="detail-section-head"><h3>外部节点 / 授权码</h3><span class="hint">外部节点 ${external.length} 个</span></div>
+    <div class="detail-section-head"><h3>外部节点</h3><span class="hint">外部节点 ${external.length} 个</span></div>
     <div class="tbl-wrap"><table><thead><tr>
       <th>Node ID</th><th>虚拟 IP</th><th>公钥</th><th>状态</th><th>Endpoint</th>
     </tr></thead><tbody>${externalRows}</tbody></table></div>
@@ -4405,7 +4399,7 @@ async function devNets(btn, deviceID) {
 async function delDev(deviceID, deviceName) {
   const ok = await confirmDlg({
     title: '删除设备',
-    message: `确定删除设备 <b class="code">${esc(deviceID)}</b>？<br>该设备将被从所有网络和授权码中移除，此操作不可恢复。`,
+    message: `确定删除设备 <b class="code">${esc(deviceID)}</b>？<br>该设备将被从所有网络中移除，此操作不可恢复。`,
     confirmText: '永久删除', danger: true, typed: deviceID,
   });
   if (!ok) return;
@@ -4415,313 +4409,6 @@ async function delDev(deviceID, deviceName) {
     loadDevices(false);
     updateCounts();
   } catch (e) { handleErr(e, '删除设备失败'); }
-}
-
-/* ── auth codes ── */
-
-async function loadAuthCodes(showLoading, page) {
-  const my = ++codeSeq;
-  const body = $('code-body');
-  if (showLoading) body.innerHTML = '<tr><td colspan="6"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr>';
-  if (page !== undefined) codePage = page;
-  try {
-    const qs = new URLSearchParams({ page: String(codePage), page_size: String(PAGE_SIZE) });
-    const data = await api('GET', '/admin/devices/authcodes?' + qs.toString());
-    if (my !== codeSeq) return;
-    codeData = (data && data.items) || [];
-    codeTotal = (data && data.total) || 0;
-    if (!codeData.length && codeTotal && codePage > 1) return loadAuthCodes(false, Math.ceil(codeTotal / PAGE_SIZE));
-    renderCodes();
-    mountPager('code-pager', codePage, PAGE_SIZE, codeTotal, p => loadAuthCodes(false, p));
-    updateCounts();
-  } catch (e) {
-    if (/^401/.test(e.message)) { handleErr(e, '加载授权码失败'); return; }
-    if (my !== codeSeq) return;
-    renderLoadError(body, friendlyErr(e), () => loadAuthCodes(false), 4);
-  }
-}
-
-function renderCodes() {
-  const body = $('code-body');
-  if (!codeData.length) {
-    body.innerHTML = '<tr><td colspan="6"><div class="empty">' + icon('empty') +
-      '<div class="t">暂无授权码</div><div class="s">点击上方「生成授权码」开始</div></div></td></tr>';
-    return;
-  }
-  let rows = '';
-  for (const c of codeData) {
-    const bound = (c.boundCount || 0) > 0;
-    const max = Math.max(1, c.maxBindings || 1);
-    const devs = c.boundDevices || [];
-    
-    // Status badge
-    let statusBadge = '';
-    if (c.status === 'expired') {
-      statusBadge = '<span class="pill expired">已过期</span>';
-    } else if (c.status === 'permanent') {
-      statusBadge = '<span class="pill permanent">永久</span>';
-    } else {
-      statusBadge = '<span class="pill active">活跃</span>';
-    }
-    
-    const bindCell = bound
-      ? `<button type="button" class="pill bound pill-toggle" data-act="toggle-bound" aria-expanded="false"><span>已绑定 ${c.boundCount}/${max}</span><span class="chev">${icon('chev')}</span></button>` +
-        `<div class="code-bound-list" hidden>${devs.map(d => {
-          const label = d.deviceName ? `${d.deviceName}（${d.deviceId}）` : d.deviceId;
-          return `<div class="code-bound-row"><span class="dev-id" title="${esc(label)}">${esc(label)}</span><span class="t">${fmtTime(d.boundAt)}</span><button type="button" class="act" data-act="unbind" data-dev="${esc(d.deviceId)}">解绑</button></div>`;
-        }).join('')}</div>`
-      : `<span class="pill free">未绑定 0/${max}</span>`;
-    
-    const expiresDisplay = c.expiresAt ? fmtDate(c.expiresAt) : '-';
-    
-    const actions = [];
-    if (c.status !== 'permanent') {
-      // 有效或已过期的授权码都可以续期（续期可延长或设为永久）。
-      actions.push(`<button type="button" class="btn sm" data-act="renew-code" data-id="${esc(c.id)}">续期</button>`);
-    }
-    actions.push(`<button type="button" class="btn danger ghost sm" data-act="revoke" data-id="${esc(c.id)}" data-code="${esc(c.code)}">吊销</button>`);
-    
-    rows += `<tr>
-      <td class="mono" style="white-space:nowrap">
-        <span class="code" style="cursor:pointer" data-act="copy" data-copy="${esc(c.code)}" title="点击复制">${esc(c.code)}</span>
-        <button type="button" class="btn icon sm" data-act="copy" data-copy="${esc(c.code)}" title="复制授权码">${icon('copy')}</button>
-      </td>
-      <td style="white-space:nowrap">${fmtTime(c.createdAt)}</td>
-      <td>${statusBadge}</td>
-      <td>${bindCell}</td>
-      <td>${expiresDisplay}</td>
-      <td style="white-space:nowrap">${actions.join(' ')}</td>
-    </tr>`;
-  }
-  body.innerHTML = rows;
-}
-
-async function genCodes() {
-  // Show generate modal
-  const modal = setModal('生成授权码', `
-    <div class="gen-form">
-      <div class="gen-grid">
-        <div class="form-group">
-          <label for="gen-count">生成数量</label>
-          <div class="input-hint-group">
-            <input type="number" id="gen-count" value="1" min="1" max="100" class="input-sm">
-            <span class="hint">一次最多生成 100 个授权码</span>
-          </div>
-        </div>
-        <div class="form-group">
-          <label for="gen-bind">每码可绑定设备数</label>
-          <div class="input-hint-group">
-            <input type="number" id="gen-bind" value="1" min="1" max="10" class="input-sm">
-            <span class="hint">每个授权码最多可绑定 10 台设备</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label>有效期限</label>
-        <div class="expire-options expire-pair">
-          <label class="radio-label">
-            <input type="radio" name="gen-expire" value="permanent" checked>
-            <span class="radio-text">
-              <strong>永久有效</strong>
-              <span class="radio-desc">授权码永不过期，除非手动吊销</span>
-            </span>
-          </label>
-          <label class="radio-label">
-            <input type="radio" name="gen-expire" value="date">
-            <span class="radio-text">
-              <strong>指定日期</strong>
-              <span class="radio-desc">授权码到期后绑定的设备将无法使用</span>
-            </span>
-          </label>
-        </div>
-        <div id="gen-date-wrapper" class="date-wrapper" style="display:none">
-          <input type="date" id="gen-expires-at" class="input-date">
-          <span class="hint">授权码将在所选日期的 23:59:59 到期</span>
-        </div>
-      </div>
-    </div>
-    
-    <div class="modal-foot">
-      <button type="button" class="btn ghost" data-act="close-modal">取消</button>
-      <button type="button" class="btn primary" id="gen-submit">
-        <span class="icon">${icon('plus')}</span> 生成授权码
-      </button>
-    </div>
-  `, true, '450px');
-  
-  // Bind radio change - toggle date input visibility
-  modal.querySelectorAll('input[name="gen-expire"]').forEach(r => {
-    r.addEventListener('change', () => {
-      const dateWrapper = $('gen-date-wrapper');
-      const dateInput = $('gen-expires-at');
-      
-      if (r.value === 'date') {
-        dateWrapper.style.display = 'block';
-        dateInput.disabled = false;
-        // Set default date to 30 days from now
-        if (!dateInput.value) {
-          const defaultDate = new Date();
-          defaultDate.setDate(defaultDate.getDate() + 30);
-          dateInput.value = toDateInput(defaultDate);
-        }
-      } else {
-        dateWrapper.style.display = 'none';
-        dateInput.disabled = true;
-      }
-    });
-  });
-  
-  // Bind submit
-  $('gen-submit').addEventListener('click', async () => {
-    const count = parseInt($('gen-count').value) || 1;
-    const maxBindings = parseInt($('gen-bind').value) || 1;
-    const expireType = modal.querySelector('input[name="gen-expire"]:checked').value;
-    
-    let expiresAt = null;
-    if (expireType === 'date') {
-      const dateVal = $('gen-expires-at').value;
-      if (!dateVal) {
-        toast('请选择过期日期', 'err');
-        return;
-      }
-      // Set to end of day in the local timezone (no trailing Z).
-      expiresAt = new Date(dateVal + 'T23:59:59').toISOString();
-    }
-    
-    try {
-      const r = await api('POST', '/admin/devices/authcodes/generate', { count, maxBindings, expiresAt });
-      closeModal();
-      
-      const codes = r.codes || [];
-      const items = codes.map(c => `
-        <div class="fresh-code">
-          <span class="code">${esc(c.code)}</span>
-          <span class="expire">${c.status === 'permanent' ? '永久有效' : '有效期至 ' + fmtDate(c.expiresAt)}</span>
-          <button type="button" class="btn sm" data-act="copy" data-copy="${esc(c.code)}">${icon('copy')} 复制</button>
-        </div>`).join('');
-      setModal('新生成的设备授权码', `
-        <p class="hint mt0">已成功生成 <b>${codes.length}</b> 个授权码，每个可绑定 <b>${maxBindings}</b> 台设备。</p>
-        <div class="fresh-codes">${items}</div>
-        <div class="modal-foot">
-          <button type="button" class="btn primary" data-act="close-modal">完成</button>
-        </div>`);
-      loadAuthCodes(false, 1);
-    } catch (e) {
-      handleErr(e, '生成失败');
-    }
-  });
-}
-
-async function revokeCode(id, code) {
-  const ok = await confirmDlg({
-    title: '吊销授权码',
-    message: `确定吊销授权码 <b class="code">${esc(code || id)}</b>？若已绑定设备，其将无法再创建/加入网络；已加入的网络成员不受影响。`,
-    confirmText: '吊销', danger: true,
-  });
-  if (!ok) return;
-  try {
-    await api('POST', '/admin/devices/authcodes/revoke', { id });
-    toast('授权码已吊销');
-    loadAuthCodes(false);
-    loadOverview(false);
-  } catch (e) { handleErr(e, '吊销失败'); }
-}
-
-async function renewCode(codeId) {
-  const modal = setModal('续期授权码', `
-    <p class="hint mt0">为授权码设置新的有效期，续期后绑定的设备可正常使用。</p>
-<div class="form-group">
-        <label>新的有效期</label>
-        <div class="expire-options expire-pair">
-          <label class="radio-label">
-            <input type="radio" name="renew-expire" value="permanent">
-            <span class="radio-text">
-              <strong>永久有效</strong>
-              <span class="radio-desc">授权码永不过期，除非手动吊销</span>
-            </span>
-          </label>
-          <label class="radio-label">
-            <input type="radio" name="renew-expire" value="date" checked>
-            <span class="radio-text">
-              <strong>指定日期</strong>
-              <span class="radio-desc">授权码到期后绑定的设备将无法使用</span>
-            </span>
-          </label>
-        </div>
-        <div id="renew-date-wrapper" class="date-wrapper">
-          <input type="date" id="renew-expires-at" class="input-date">
-          <span class="hint">授权码将在所选日期的 23:59:59 到期</span>
-        </div>
-      </div>
-    <div class="modal-foot">
-      <button type="button" class="btn ghost" data-act="close-modal">取消</button>
-      <button type="button" class="btn primary" id="renew-submit">
-        <span class="icon">${icon('check')}</span> 确认续期
-      </button>
-    </div>
-  `, true);
-  
-  // Set default date to 1 year from now
-  const defaultDate = new Date();
-  defaultDate.setFullYear(defaultDate.getFullYear() + 1);
-  $('renew-expires-at').value = toDateInput(defaultDate);
-  
-  // Bind radio change - toggle date input visibility
-  modal.querySelectorAll('input[name="renew-expire"]').forEach(r => {
-    r.addEventListener('change', () => {
-      const dateWrapper = $('renew-date-wrapper');
-      const dateInput = $('renew-expires-at');
-      
-      if (r.value === 'date') {
-        dateWrapper.style.display = 'block';
-        dateInput.disabled = false;
-      } else {
-        dateWrapper.style.display = 'none';
-        dateInput.disabled = true;
-      }
-    });
-  });
-  
-  // Bind submit
-  $('renew-submit').addEventListener('click', async () => {
-    const expireType = modal.querySelector('input[name="renew-expire"]:checked').value;
-    
-    let expiresAt = null;
-    if (expireType === 'date') {
-      const dateVal = $('renew-expires-at').value;
-      if (!dateVal) {
-        toast('请选择过期日期', 'err');
-        return;
-      }
-      // Set to end of day in the local timezone (no trailing Z).
-      expiresAt = new Date(dateVal + 'T23:59:59').toISOString();
-    }
-    
-    try {
-      await api('PATCH', `/admin/devices/authcodes/${codeId}/renew`, { expiresAt });
-      closeModal();
-      toast('续期成功');
-      loadAuthCodes(false);
-    } catch (e) {
-      handleErr(e, '续期失败');
-    }
-  });
-}
-
-async function unbindCode(deviceID) {
-  const ok = await confirmDlg({
-    title: '解除设备绑定',
-    message: `确定解除设备 <b class="code">${esc(deviceID)}</b> 的绑定？\n其所在授权码将释放一个绑定名额，设备需重新绑定后才能创建/加入网络。`,
-    confirmText: '解绑', danger: true,
-  });
-  if (!ok) return;
-  try {
-    await api('POST', '/admin/devices/authcodes/unbind', { deviceId: deviceID });
-    toast('已解除绑定');
-    loadAuthCodes(false);
-    loadOverview(false);
-  } catch (e) { handleErr(e, '解绑失败'); }
 }
 
 /* ── close menus on outside click ── */
@@ -4826,34 +4513,11 @@ document.addEventListener('click', async e => {
     case 'del-dev':
       withBusy(el, () => delDev(el.dataset.dev, el.dataset.name));
       break;
-    case 'gen-codes':
-      genCodes();
-      break;
-    case 'toggle-bound': {
-      e.stopPropagation();
-      const list = el.closest('td').querySelector('.code-bound-list');
-      list.hidden = !list.hidden;
-      el.classList.toggle('open', !list.hidden);
-      el.setAttribute('aria-expanded', String(!list.hidden));
-      break;
-    }
-    case 'revoke':
-      withBusy(el, () => revokeCode(el.dataset.id, el.dataset.code));
-      break;
-    case 'renew-code':
-      renewCode(el.dataset.id);
-      break;
-    case 'unbind':
-      withBusy(el, () => unbindCode(el.dataset.dev));
-      break;
     case 'goto-net':
       showTab('net');
       break;
     case 'goto-dev':
       showTab('dev');
-      break;
-    case 'goto-code':
-      showTab('code');
       break;
   }
 });
@@ -4880,7 +4544,6 @@ $('net-detail').addEventListener('click', async e => {
     case 'subnets': openNodeSubnets(nodeID); break;
     case 'approve': await approvePendingDetail(nid, el.dataset.pid, el); break;
     case 'deny': await denyPendingDetail(nid, el.dataset.pid, el); break;
-    case 'goto-codes': closeNetDetail(); showTab('code'); break;
   }
 });
 $('net-detail').addEventListener('change', e => {

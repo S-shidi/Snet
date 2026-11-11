@@ -151,6 +151,21 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		writeCtlJSON(w, 200, st)
 	})
 
+	mux.HandleFunc("POST /ctl/check-server", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ServerAddr string `json:"serverAddr"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.CheckServer(req.ServerAddr); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("POST /ctl/config", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ServerAddr string `json:"serverAddr"`
