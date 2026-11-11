@@ -2236,6 +2236,20 @@ func (d *Daemon) pollLoop(nid string) {
 				d.mu.Unlock()
 				return
 			}
+			if errors.As(err, &se) && se.code == 401 {
+				log.Printf("poll peers %s: unauthorized; refreshing node token", nid)
+				d.mu.Lock()
+				deviceToken := d.cfg.DeviceToken
+				d.mu.Unlock()
+				if deviceToken == "" {
+					log.Printf("poll peers %s: no device token available for refresh", nid)
+					continue
+				}
+				if syncErr := d.SyncNetworks(deviceToken); syncErr != nil {
+					log.Printf("poll peers %s: token refresh failed: %v", nid, syncErr)
+				}
+				continue
+			}
 			log.Printf("poll peers %s: %v", nid, err)
 			continue
 		}

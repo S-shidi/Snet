@@ -2,7 +2,9 @@ package main
 
 import (
 	"embed"
+	"io"
 	"log"
+	"os"
 	"os/exec"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -16,6 +18,8 @@ var assets embed.FS
 var trayIcon []byte
 
 func main() {
+	initLogging()
+	log.Printf("SnetMac: starting")
 	svc := &SnetService{}
 	app := application.New(application.Options{
 		Name:        "SnetMac",
@@ -29,7 +33,10 @@ func main() {
 		},
 	})
 	app.RegisterService(application.NewService(svc))
-	app.OnShutdown(svc.ShutdownDaemon)
+	app.OnShutdown(func() {
+		log.Printf("SnetMac: shutdown requested")
+		svc.ShutdownDaemon()
+	})
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Snet",
@@ -45,22 +52,35 @@ func main() {
 			Appearance: application.NSAppearanceNameDarkAqua,
 		},
 	})
-	window.OnWindowEvent(events.Common.WindowClosing, func(e *application.WindowEvent) {
+	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		log.Printf("SnetMac: window closing, hiding instead")
 		e.Cancel()
 		window.Hide()
 	})
 	setupSystray(app, window, svc)
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		log.Printf("SnetMac: application started")
 		showWindow(app, window)
 	})
 
+	log.Printf("SnetMac: starting snetd")
 	if err := svc.StartDaemon(); err != nil {
 		log.Printf("snetd: %v", err)
 	}
 
+	log.Printf("SnetMac: entering app.Run")
 	if err := app.Run(); err != nil {
-		log.Fatal(err)
+		log.Fatalf("SnetMac: app.Run failed: %v", err)
 	}
+	log.Printf("SnetMac: app.Run returned without error")
+}
+
+func initLogging() {
+	f, err := os.OpenFile("/tmp/SnetMac-startup.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
 }
 
 func showWindow(app *application.App, window *application.WebviewWindow) {
@@ -72,7 +92,11 @@ func showWindow(app *application.App, window *application.WebviewWindow) {
 
 func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) {
 	tray := app.SystemTray.New()
-	tray.SetTemplateIcon(trayIcon)
+	if len(trayIcon) == 0 {
+		log.Printf("SnetMac: tray icon is empty; continuing without template icon")
+	} else {
+		tray.SetTemplateIcon(trayIcon)
+	}
 	tray.SetTooltip("SNET 虚拟组网")
 
 	menu := app.NewMenu()
@@ -80,6 +104,7 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 		showWindow(app, window)
 	})
 	menu.Add("退出 SNET").OnClick(func(*application.Context) {
+		log.Printf("SnetMac: quit requested from tray")
 		svc.ShutdownDaemon()
 		app.Quit()
 	})

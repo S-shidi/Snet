@@ -56,7 +56,9 @@ PLIST_EOF
 chown root:wheel "$PLIST"
 chmod 0644 "$PLIST"
 
+launchctl bootout "system/$LABEL" 2>/dev/null || launchctl bootout system "$PLIST" 2>/dev/null || true
 launchctl unload "$PLIST" 2>/dev/null || true
+pkill -f "$SNETD_DST" 2>/dev/null || true
 if ! launchctl load -w "$PLIST"; then
   launchctl bootstrap system "$PLIST"
   launchctl enable "system/$LABEL" 2>/dev/null || true

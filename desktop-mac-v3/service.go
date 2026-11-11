@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -30,6 +31,7 @@ func (s *SnetService) StartDaemon() error { return s.ensureDaemon() }
 
 func (s *SnetService) ShutdownDaemon() {
 	s.shutdownOnce.Do(func() {
+		log.Printf("snetd: shutting down")
 		if token, err := readCtlToken(); err == nil {
 			req, reqErr := http.NewRequest(http.MethodPost, "http://"+ctlAddr+"/ctl/shutdown", nil)
 			if reqErr == nil {
@@ -42,6 +44,7 @@ func (s *SnetService) ShutdownDaemon() {
 		}
 		_ = exec.Command("launchctl", "kill", "SIGTERM", "system/"+daemonLabel).Run()
 		_ = exec.Command("pkill", "-f", "/usr/local/bin/snetd").Run()
+		log.Printf("snetd: shutdown cleanup complete")
 	})
 }
 

@@ -77,6 +77,14 @@ Taskfile 的 `build-only` 会：
 bin/SnetMac.app
 ```
 
+## 彻底卸载 LaunchDaemon
+
+```bash
+sudo launchctl bootout system /Library/LaunchDaemons/com.snet.daemon.plist 2>/dev/null || true
+sudo rm -f /Library/LaunchDaemons/com.snet.daemon.plist
+sudo killall -9 snetd 2>/dev/null || true
+```
+
 ## 开发
 
 ```bash
