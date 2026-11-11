@@ -2,7 +2,7 @@
 
 SNET 是一个端到端加密的私有虚拟局域网：WireGuard 负责数据面，HTTPS 协调服务负责成员与网络状态，UDP Relay 负责在无法直连时保证连通性。
 
-当前版本：**v1.0.12**
+当前版本：**v1.0.13**
 
 ## 核心特性
 
@@ -13,6 +13,8 @@ SNET 是一个端到端加密的私有虚拟局域网：WireGuard 负责数据�
 - **Docker 客户端**：一个镜像包含 `snetd`、nginx 和 Web UI，适合 Docker 主机与群晖 NAS。
 - **服务端管理台**：网络、节点、待审批和网络详情运维。
 - **可观测性**：`/ctl/status` 暴露 `relayPath`、`peerDirect`、NAT 类型和路径状态。
+- **一键 Ping 诊断**：在网络详情页的成员列表中，点击“📡 诊断”即可测试到该节点的延迟与丢包率。
+- **导出诊断日志**：在“设置”页面底部点击“导出诊断日志”，即可下载 `snet-diagnostic.log`，方便排查网络异常。
 - **安全默认值**：HTTPS、鉴权、限流、安全头和设备身份持久化。
 
 ## 架构简介
@@ -64,7 +66,7 @@ docker compose --env-file .env up -d --build
 curl -fsS https://snet.uizhi.eu.org:8090/healthz
 ```
 
-预期返回 `serverVersion: "1.0.12"` 和 `status: "ok"`。
+预期返回 `serverVersion: "1.0.13"` 和 `status: "ok"`。
 
 ### 2. 客户端 Docker 镜像
 
