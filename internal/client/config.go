@@ -74,6 +74,33 @@ type Config struct {
 	// a stable direct endpoint with no user action. Set to false to opt out
 	// (security-sensitive deployments).
 	NATMapping *bool `json:"natMapping,omitempty"`
+
+	// AllowRelay makes this device act as a relay gateway for the networks
+	// it belongs to: it forwards traffic for the subnets the network owner
+	// delegated to it. Default false — a device only becomes a gateway when
+	// the user explicitly allows it.
+	//
+	// Enabling it also requires the local gateway setup (IP forwarding plus
+	// NAT masquerading) to succeed; when it fails the daemon reports the
+	// error instead of silently advertising a gateway that cannot forward.
+	AllowRelay bool `json:"allowRelay,omitempty"`
+
+	// UseRelay makes this device route traffic for delegated subnets through
+	// the network's relay gateways. nil means enabled (default true): the
+	// network's routing decisions are honoured unless the user opts out.
+	UseRelay *bool `json:"useRelay,omitempty"`
+}
+
+// RelayAllowed reports whether this device may act as a relay gateway.
+func (c *Config) RelayAllowed() bool {
+	return c != nil && c.AllowRelay
+}
+
+// RelayUsed reports whether this device honours the network's delegated
+// relay routes. Disabled by default means "used"; only an explicit false
+// turns it off.
+func (c *Config) RelayUsed() bool {
+	return c != nil && (c.UseRelay == nil || *c.UseRelay)
 }
 
 func ConfigPath() (string, error) {

@@ -184,6 +184,22 @@ func (c *apiClient) UpdateSubnets(nid, token string, subnets []string) error {
 		protocol.UpdateSubnetsReq{Subnets: subnets}, nil)
 }
 
+// SetRoutes replaces the network's delegated relay routes. Only the network
+// owner may call it; the server keeps every route pending until its target
+// node confirms it can act as the gateway.
+func (c *apiClient) SetRoutes(nid, token string, routes []protocol.Route) error {
+	return c.do(http.MethodPut, "/api/v1/networks/"+nid+"/routes", token,
+		protocol.SetRoutesReq{Routes: routes}, nil)
+}
+
+// SetRelayCapability reports whether this node is able to act as a relay
+// gateway for the network. relayErr carries the reason when the local
+// gateway setup failed.
+func (c *apiClient) SetRelayCapability(nid, token string, allowRelay bool, relayErr string) error {
+	return c.do(http.MethodPut, "/api/v1/networks/"+nid+"/relay-capability", token,
+		protocol.UpdateRelayCapabilityReq{AllowRelay: allowRelay, RelayError: relayErr}, nil)
+}
+
 func (c *apiClient) ApprovePending(nid, token, pendingID string) error {
 	return c.do(http.MethodPost, "/api/v1/networks/"+nid+"/pending/"+pendingID+"/approve", token, nil, nil)
 }

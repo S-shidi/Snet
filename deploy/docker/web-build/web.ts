@@ -1,7 +1,7 @@
 /* ── Web adapter: fetch HTTP → shared UI ────────────────────────
  * Thin adapter: provides Backend + auth flow, delegates UI to shared/ui.ts.
  */
-import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp } from "../../../shared/web/types.js";
+import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute } from "../../../shared/web/types.js";
 import { DEFAULT_SERVER } from "../../../shared/web/types.js";
 import { init } from "../../../shared/web/ui.js";
 
@@ -153,6 +153,14 @@ const backend: Backend = {
 
   async updateSubnets(params: { nid: string; subnets: string[] }): Promise<void> {
     await api("/subnets", jsonPost("/subnets", { nid: params.nid, subnets: params.subnets }));
+  },
+
+  async setRelayOptions(params: { allowRelay: boolean; useRelay: boolean }): Promise<void> {
+    await api("/relay", jsonPost("/relay", { allowRelay: params.allowRelay, useRelay: params.useRelay }));
+  },
+
+  async setRoutes(params: { nid: string; routes: RelayRoute[] }): Promise<void> {
+    await api("/routes", jsonPost("/routes", { nid: params.nid, routes: params.routes }));
   },
 
   async kick(params: { nid: string; nodeId: string }): Promise<void> {

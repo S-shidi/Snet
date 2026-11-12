@@ -3,7 +3,7 @@
  * Platform adapters (Desktop/Web/Android) provide a Backend implementation
  * and call init() to wire everything up.
  */
-import { DEFAULT_SERVER, type Backend, type DaemonStatus, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode } from "./types.js";
+import { DEFAULT_SERVER, type Backend, type DaemonStatus, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode, type RelayRoute } from "./types.js";
 import { $, esc, SPIN, fmtBytes, onlineCount, toast, copyText, renderQR, loadQR, openModal, closeModal, confirmDialog, initTabs } from "./utils.js";
 import { subnetCheck, subnetWidgetHTML, subnetWidgetInit } from "./subnet.js";
 
@@ -669,15 +669,82 @@ async function openSubnetRouteModal(nid: string) {
   const st = await backend.status();
   const net = (st?.networks ?? []).find((n) => n.networkId === nid);
   const curSubnets: string[] = net?.allowedSubnets ?? [];
+  const canManage = !!net && canManageNetwork(net);
+
+  // Owner view: the delegated relay routes of the network plus the nodes
+  // that can be picked as the gateway for a delegated subnet.
+  let routes: RelayRoute[] = [];
+  let nodes: NetNode[] = [];
+  if (canManage) {
+    try {
+      const info = await backend.netinfo(nid);
+      ownerInfo[nid] = info;
+      routes = info.routes ?? [];
+      nodes = (info.nodes ?? []) as unknown as NetNode[];
+    } catch {
+      /* fall back to the peer snapshot below */
+    }
+  }
+  if (!nodes.length) {
+    const r = peerDetails[nid];
+    nodes = r ? [...(r.peers ?? []), ...(r.self ? [r.self] : [])] : [];
+  }
+  const selfID = net?.networkId ? (peerDetails[nid]?.self?.id ?? "") : "";
+  // A node is never picked as its own gateway: the gateway has to forward
+  // the delegated traffic towards the LAN, not back into the tunnel.
+  const targets = nodes.filter((n) => n.id && n.id !== selfID);
 
   const renderTags = (tags: string[]) =>
     tags.length
       ? tags.map((s) => `<span class="chip chip-active">${esc(s)}<button data-del="${esc(s)}" class="chip-del" title="移除">&times;</button></span>`).join("")
       : `<span class="muted">暂无生效子网</span>`;
 
+  const renderRoutes = (list: RelayRoute[]) => {
+    if (!list.length) return `<span class="muted">尚未委派任何路由</span>`;
+    return list
+      .map((rt) => {
+        const node = nodes.find((n) => n.id === rt.targetNodeId);
+        const who = node ? deviceLabel(node) : rt.targetNodeId.slice(0, 8);
+        const active = rt.status === "active";
+        const badge = active
+          ? `<span class="pill ok">已生效</span>`
+          : `<span class="pill off">待确认</span>`;
+        const why = node && node.relayError
+          ? `<span class="muted"> · ${esc(node.relayError)}</span>`
+          : "";
+        return `<span class="chip chip-active" title="${esc(rt.cidr)} → ${esc(who)}">${esc(who)} → ${esc(rt.cidr)} ${badge}${why}<button data-del-route="${esc(rt.targetNodeId)}|${esc(rt.cidr)}" class="chip-del" title="移除">&times;</button></span>`;
+      })
+      .join("");
+  };
+
+  const ownerSection = canManage
+    ? `<div class="subnet-section subnet-section-manual">
+        <div class="subnet-section-title">委派中继路由</div>
+        <p class="hint">选择一台节点作为该网段的网关。目标节点需开启「允许本设备作为中继网关」，确认后路由才会生效。</p>
+        <div id="sr-routes" class="subnet-tags subnet-tags-active">${renderRoutes(routes)}</div>
+        <div class="subnet-add-row">
+          <select id="sr-target" aria-label="目标节点">
+            ${targets.length
+              ? targets
+                  .map((n) => {
+                    const relay = n.allowRelay ? "（已开启中继）" : n.relayError ? "（网关不可用）" : "（未开启中继）";
+                    return `<option value="${esc(n.id)}">${esc(deviceLabel(n))} · ${esc(n.ip || "-")}${esc(relay)}</option>`;
+                  })
+                  .join("")
+              : `<option value="">（无可选节点）</option>`}
+          </select>
+          <input type="text" id="sr-cidr" placeholder="如 192.168.3.0/24" />
+          <button id="sr-route-add" class="btn ghost sm">委派</button>
+        </div>
+        <div class="settings-actions"><button id="sr-route-save" class="btn" type="button">保存委派路由</button></div>
+        <p class="msg" id="sr-route-result"></p>
+      </div>`
+    : "";
+
   openModal({
     title: `子网路由 · ${nid}`,
     body: `
+      ${ownerSection}
       <p class="hint">宣告本设备的局域网子网，其他成员可通过 VPN 访问。</p>
       <div class="subnet-section subnet-section-active">
         <div class="subnet-section-title">当前生效的子网</div>
@@ -696,7 +763,7 @@ async function openSubnetRouteModal(nid: string) {
       </div>
       <p class="msg" style="margin-top:8px">IP 转发将由后台服务自动开启，无需手动配置。</p>
       <p class="msg" id="sr-result"></p>`,
-    footer: `<button data-close class="btn ghost">取消</button><button id="sr-save" class="btn">保存</button>`,
+    footer: `<button data-close class="btn ghost">关闭</button><button id="sr-save" class="btn">保存本机子网</button>`,
     onBody: (body) => {
       const tags = [...curSubnets];
       const tagsEl = body.querySelector<HTMLElement>("#sr-tags")!;
@@ -705,6 +772,73 @@ async function openSubnetRouteModal(nid: string) {
       const result = body.querySelector<HTMLElement>("#sr-result")!;
 
       const rerender = () => { tagsEl.innerHTML = renderTags(tags); };
+
+      /* ── delegated relay routes (owner) ─────────────────────── */
+      const routesEl = body.querySelector<HTMLElement>("#sr-routes");
+      const targetEl = body.querySelector<HTMLSelectElement>("#sr-target");
+      const cidrEl = body.querySelector<HTMLInputElement>("#sr-cidr");
+      const routeResult = body.querySelector<HTMLElement>("#sr-route-result");
+      const draft: RelayRoute[] = routes.map((r) => ({ ...r }));
+
+      const rerenderRoutes = () => {
+        if (routesEl) routesEl.innerHTML = renderRoutes(draft);
+      };
+
+      if (routesEl && targetEl && cidrEl) {
+        body.querySelector("#sr-route-add")!.addEventListener("click", () => {
+          const target = targetEl.value;
+          if (!target) { if (routeResult) routeResult.textContent = "请选择目标节点"; return; }
+          const raw = cidrEl.value.trim();
+          if (!raw) return;
+          const chk = subnetCheck(raw, 24);
+          if (!chk.ok) {
+            if (routeResult) { routeResult.className = "msg"; routeResult.textContent = `无效: ${chk.error}`; }
+            return;
+          }
+          const cidr = chk.value;
+          if (draft.some((r) => r.targetNodeId === target && r.cidr === cidr)) {
+            if (routeResult) routeResult.textContent = "该路由已存在";
+            return;
+          }
+          draft.push({ targetNodeId: target, cidr, status: "pending" });
+          cidrEl.value = "";
+          if (routeResult) { routeResult.className = "msg"; routeResult.textContent = ""; }
+          rerenderRoutes();
+        });
+        cidrEl.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); (body.querySelector("#sr-route-add") as HTMLElement).click(); }
+        });
+        routesEl.addEventListener("click", (e) => {
+          const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-del-route]");
+          if (!btn) return;
+          const [nodeId, cidr] = (btn.dataset.delRoute ?? "").split("|");
+          const idx = draft.findIndex((r) => r.targetNodeId === nodeId && r.cidr === cidr);
+          if (idx >= 0) draft.splice(idx, 1);
+          rerenderRoutes();
+        });
+        body.querySelector("#sr-route-save")!.addEventListener("click", async () => {
+          const saveBtn = body.querySelector<HTMLButtonElement>("#sr-route-save")!;
+          saveBtn.disabled = true;
+          if (routeResult) { routeResult.className = "msg"; routeResult.textContent = "保存中…"; }
+          try {
+            const r = await ctlOrClean(nid, "委派路由", async () => {
+              await backend.setRoutes({
+                nid,
+                routes: draft.map((x) => ({ targetNodeId: x.targetNodeId, cidr: x.cidr })),
+              });
+              return true;
+            });
+            if (r === null) return;
+            if (routeResult) { routeResult.className = "msg ok"; routeResult.textContent = "已保存，等待目标节点确认"; }
+            toast("委派路由已更新");
+            await refreshOwnerInfo(true);
+          } catch (e) {
+            if (routeResult) { routeResult.className = "msg"; routeResult.textContent = `保存失败: ${e}`; }
+          } finally {
+            saveBtn.disabled = false;
+          }
+        });
+      }
 
       const refreshSuggest = (localSubnets: string[]) => {
         const suggestions = localSubnets.filter((s) => !tags.includes(s));
@@ -773,8 +907,7 @@ async function openSubnetRouteModal(nid: string) {
           if (r === null) return;
           result.className = "msg ok";
           result.textContent = "已保存";
-          toast("子网路由已更新");
-          closeModal();
+          toast("本机宣告的子网已更新");
         } catch (e) {
           result.className = "msg";
           result.textContent = `保存失败: ${e}`;
@@ -1255,6 +1388,11 @@ function openSettingsModal() {
     `UDP ${m.port} → ${m.externalIp}:${m.externalPort} · ${natViaLabel(m.via)}`
   );
   const natErr = nat?.errors?.[0];
+  // Relay switches: whether this device may act as a gateway, and whether it
+  // honours the network's delegated routes (enabled by default).
+  const allowRelay = status?.allowRelay === true;
+  const useRelay = status?.useRelay !== false;
+  const relayErr = status?.relayError || "";
   openModal({
     title: "信息",
     body: `<div class="info-status">
@@ -1293,6 +1431,32 @@ function openSettingsModal() {
         </div>
         <p class="msg" id="s-nat-state">${!status ? "后台服务未运行" : !natEnabled ? "已关闭" : natLines.length ? `已映射 ${natLines.length} 个端口` : "正在等待路由器分配映射…"}</p>
         <div class="hint" id="s-nat-list">${natLines.map(esc).join("<br>")}${natErr ? `<div style="color:var(--err)">端口 ${natErr.port}: ${esc(natErr.error)}</div>` : ""}</div>
+      </div>
+      <div class="settings-block">
+        <div class="row" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px">
+          <div>
+            <label style="margin-bottom:2px">允许本设备作为中继网关转发流量</label>
+            <div class="hint">开启后本设备可为网络转发流量，需要 IP 转发与 NAT 权限，默认关闭</div>
+          </div>
+          <label class="switch">
+            <input id="s-allow-relay" type="checkbox" ${allowRelay ? "checked" : ""} ${!status ? "disabled" : ""} />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <p class="msg" id="s-allow-relay-state">${relayErr ? esc(relayErr) : allowRelay ? "已开启，等待目标节点确认路由" : "已关闭"}</p>
+      </div>
+      <div class="settings-block">
+        <div class="row" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px">
+          <div>
+            <label style="margin-bottom:2px">使用网络内的中继网关访问其他子网</label>
+            <div class="hint">按网络创建者委派的路由访问其他子网，默认开启</div>
+          </div>
+          <label class="switch">
+            <input id="s-use-relay" type="checkbox" ${useRelay ? "checked" : ""} ${!status ? "disabled" : ""} />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <p class="msg" id="s-use-relay-state">${useRelay ? "已开启" : "已关闭：忽略网络中所有已生效的中继路由"}</p>
       </div>
       <div class="settings-actions">
         <button id="s-logs" class="btn ghost" type="button">导出诊断日志</button>
@@ -1380,8 +1544,50 @@ function openSettingsModal() {
         }
       });
 
-      body.querySelector("#s-logs")?.addEventListener("click", async (e) => {
-        const btn = e.currentTarget as HTMLButtonElement;
+      // The two relay switches are saved together: the daemon keeps them in
+      // one device-wide configuration and reports the gateway status back.
+      const allowRelayInput = body.querySelector<HTMLInputElement>("#s-allow-relay");
+      const allowRelayState = body.querySelector<HTMLElement>("#s-allow-relay-state");
+      const useRelayInput = body.querySelector<HTMLInputElement>("#s-use-relay");
+      const useRelayState = body.querySelector<HTMLElement>("#s-use-relay-state");
+
+      const saveRelayOptions = async () => {
+        const wantAllow = allowRelayInput?.checked ?? false;
+        const wantUse = useRelayInput?.checked ?? true;
+        if (allowRelayState) {
+          allowRelayState.className = "msg";
+          allowRelayState.textContent = wantAllow ? "正在开启中继网关…" : "正在关闭中继网关…";
+        }
+        if (allowRelayInput) allowRelayInput.disabled = true;
+        if (useRelayInput) useRelayInput.disabled = true;
+        try {
+          await backend.setRelayOptions({ allowRelay: wantAllow, useRelay: wantUse });
+          await refresh();
+          if (allowRelayState) {
+            allowRelayState.className = "msg ok";
+            allowRelayState.textContent = wantAllow ? "已开启中继网关" : "已关闭中继网关";
+          }
+          if (useRelayState) {
+            useRelayState.className = "msg ok";
+            useRelayState.textContent = wantUse ? "已开启" : "已关闭：忽略网络中所有已生效的中继路由";
+          }
+          toast("中继设置已保存");
+        } catch (e) {
+          if (allowRelayInput) allowRelayInput.checked = !wantAllow;
+          if (useRelayInput) useRelayInput.checked = !wantUse;
+          if (allowRelayState) {
+            allowRelayState.className = "msg";
+            allowRelayState.textContent = `保存失败: ${e}`;
+          }
+        } finally {
+          if (allowRelayInput) allowRelayInput.disabled = false;
+          if (useRelayInput) useRelayInput.disabled = false;
+        }
+      };
+      allowRelayInput?.addEventListener("change", () => { void saveRelayOptions(); });
+      useRelayInput?.addEventListener("change", () => { void saveRelayOptions(); });
+
+      body.querySelector("#s-logs")?.addEventListener("click", async (e) => {        const btn = e.currentTarget as HTMLButtonElement;
         btn.disabled = true;
         try {
           const text = await backend.logs();
@@ -1595,6 +1801,13 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const rolePill = role === "owner"
       ? `<span class="pill accent">${roleLabel(role)}</span>`
       : `<span class="pill off">${roleLabel(role)}</span>`;
+    // Relay gateway capability: the owner picks a gateway for a delegated
+    // subnet, so the table shows which nodes can actually forward.
+    const relay = nd.allowRelay
+      ? `<span class="pill ok" title="该节点已开启中继网关">中继</span>`
+      : nd.relayError
+        ? `<span class="pill warn" title="${esc(nd.relayError)}">不可用</span>`
+        : '<span class="muted">-</span>';
     const diag = isSelf
       ? '<td><span class="muted">-</span></td>'
       : `<td class="ping-cell"><button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">📡 诊断</button><span class="ping-result" data-ping-result="${esc(nd.id)}"></span></td>`;
@@ -1606,13 +1819,14 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       <td class="mono">${esc(nd.ip || "-")}</td>
       <td>${online}</td>
       <td>${subnets}</td>
+      <td>${relay}</td>
       <td>${rolePill}</td>
       ${diag}
       ${op}
     </tr>`;
   }).join("");
   return `<div class="tbl-wrap"><table class="members"><thead><tr>
-    <th>设备名 / 设备ID</th><th>虚拟 IP</th><th>状态</th><th>子网路由</th><th>角色</th><th>诊断</th>${canManage ? "<th>操作</th>" : ""}
+    <th>设备名 / 设备ID</th><th>虚拟 IP</th><th>状态</th><th>子网路由</th><th>中继网关</th><th>角色</th><th>诊断</th>${canManage ? "<th>操作</th>" : ""}
   </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
