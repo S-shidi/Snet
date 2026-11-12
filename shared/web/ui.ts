@@ -323,7 +323,7 @@ function renderNetworkTabs(nets: NetInfo[]) {
   const tabs = $("#network-tabs");
   if (!tabs) return;
   const pending = status?.pendingJoins ?? [];
-  const html = nets.map((n) => {
+  const html = nets.filter((n) => n.serverState !== "gone").map((n) => {
     const active = n.networkId === detailNid ? " active" : "";
     const dot = n.interface ? "ok" : "off";
     return `<button type="button" class="network-tab${active}" data-nid="${esc(n.networkId)}" title="${esc(n.name || n.networkId)}"><span class="network-dot ${dot}"></span>${esc(n.name || n.networkId)}</button>`;
@@ -367,7 +367,7 @@ function openNetworkChooser() {
 }
 
 function renderNetworks() {
-  const nets = sortedNetworks();
+  const nets = sortedNetworks().filter((n) => n.serverState !== "gone");
   const pending = status?.pendingJoins ?? [];
   const hasContent = !!status && (nets.length > 0 || pending.length > 0);
   const empty = $("#empty-state");

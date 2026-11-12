@@ -1585,6 +1585,33 @@ func TestPingServerStateRetriesRotatedToken(t *testing.T) {
 	}
 }
 
+// TestPingServerStateRemovesRevokedNetwork ensures a deleted network or a
+// revoked node token does not leave a stale tab or block the owner limit.
+func TestPingServerStateRemovesRevokedNetwork(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer ts.Close()
+
+	d, _ := newTestDaemon(t)
+	d.mu.Lock()
+	d.cfg.ServerAddr = ts.URL
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"n1": {NodeID: "node1", IP: "10.88.1.5", Token: "revoked", Subnet: "10.88.1.0/24", Active: true},
+	}
+	d.mu.Unlock()
+
+	d.pingServerState("n1")
+
+	d.mu.Lock()
+	_, exists := d.cfg.Networks["n1"]
+	_, stateExists := d.serverState["n1"]
+	d.mu.Unlock()
+	if exists || stateExists {
+		t.Fatalf("revoked network was not removed: cfg=%v state=%v", exists, stateExists)
+	}
+}
+
 // TestSyncNetworksRefreshesExistingToken covers the reinstall/startup path:
 // DeviceNetworkDetails rotates the node token, and the client must persist it
 // even when the network itself is already in the local config.

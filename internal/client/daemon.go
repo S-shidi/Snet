@@ -1824,7 +1824,7 @@ func (d *Daemon) pollLoop(nid string) {
 		st, err := api.PeersState(nid, token, true)
 		if err != nil {
 			var se *httpStatusErr
-			if errors.As(err, &se) && se.code == 404 {
+			if errors.As(err, &se) && (se.code == 404 || se.code == 401) {
 				log.Printf("poll peers %s: network gone; removing local config", nid)
 				d.mu.Lock()
 				d.leaveLocked(nid)
@@ -3015,7 +3015,7 @@ var (
 func (d *Daemon) pingServerState(nid string) {
 	// The server rotates node tokens during device sync. If a probe raced
 	// with that rotation, its 404 is stale: retry once with the token now in
-	// the config instead of marking a live network as deleted.
+	// the config instead of removing a live network.
 	for attempt := 0; attempt < 2; attempt++ {
 		d.mu.Lock()
 		nc := d.cfg.Networks[nid]
@@ -3029,7 +3029,11 @@ func (d *Daemon) pingServerState(nid string) {
 
 		_, err := api.NetworkExists(nid, token)
 		var se *httpStatusErr
-		gone := errors.As(err, &se) && se.code == 404
+		// 404 means the network was deleted. 401 means this node's token is no
+		// longer valid (the network was deleted or the node was kicked); either
+		// way the local record is stale and must not keep occupying a tab or
+		// blocking the per-device owner limit.
+		gone := errors.As(err, &se) && (se.code == 404 || se.code == 401)
 		if !gone && err != nil {
 			return
 		}
@@ -3047,14 +3051,21 @@ func (d *Daemon) pingServerState(nid string) {
 			d.mu.Unlock()
 			continue
 		}
+		if gone {
+			log.Printf("network %s: server record gone; removing local config", nid)
+			d.leaveLocked(nid)
+			delete(d.cfg.Networks, nid)
+			delete(d.serverState, nid)
+			if saveErr := d.save(); saveErr != nil {
+				log.Printf("remove gone network %s: save: %v", nid, saveErr)
+			}
+			d.mu.Unlock()
+			return
+		}
 		if d.serverState == nil {
 			d.serverState = make(map[string]*string)
 		}
-		if gone {
-			d.serverState[nid] = &stateGone
-		} else {
-			d.serverState[nid] = &stateOK
-		}
+		d.serverState[nid] = &stateOK
 		d.mu.Unlock()
 		return
 	}

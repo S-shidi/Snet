@@ -98,6 +98,26 @@ func TestCreateAndJoinFlow(t *testing.T) {
 	}
 }
 
+func TestCreateNetworkDeviceLimitReturnsConflict(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
+		protocol.CreateNetworkReq{PublicKey: testKey(70), DeviceID: "dev-owner-1"}, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first create = %d, want 201", resp.StatusCode)
+	}
+
+	var errResp protocol.ErrResp
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
+		protocol.CreateNetworkReq{PublicKey: testKey(71), DeviceID: "dev-owner-1"}, &errResp)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("second create = %d, want 409", resp.StatusCode)
+	}
+	if errResp.Error != ErrDeviceNetworkExists.Error() {
+		t.Fatalf("error = %q, want %q", errResp.Error, ErrDeviceNetworkExists.Error())
+	}
+}
+
 func TestPairingCodeSecurity(t *testing.T) {
 	ts, _ := newTestServer(t)
 

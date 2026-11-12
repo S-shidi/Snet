@@ -36,6 +36,7 @@ var (
 	ErrInvalidRole         = errors.New("invalid role (must be owner or member)")
 	ErrUnauthorized        = errors.New("unauthorized")
 	ErrManagedNetwork      = errors.New("服务端管理的网络不可认领")
+	ErrDeviceNetworkExists = errors.New("该设备已创建网络（每设备仅能创建一个）")
 	ErrRelayV2Disabled     = errors.New("relay v2 is not configured")
 	// ErrAuthCodeInvalid is returned when a presented device authorization
 	// code does not match any generated code. Unlike pairing codes there is no
@@ -2310,7 +2311,7 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 	if deviceID != "" {
 		for _, other := range s.networks {
 			if other.n.OwnerDeviceID == deviceID {
-				return protocol.CreateNetworkResp{}, errors.New("该设备已创建网络（每设备仅能创建一个）")
+				return protocol.CreateNetworkResp{}, ErrDeviceNetworkExists
 			}
 		}
 	}

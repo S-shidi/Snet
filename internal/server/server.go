@@ -1138,6 +1138,8 @@ func handleStoreErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusBadRequest, err)
 	case errors.Is(err, ErrManagedNetwork):
 		writeErr(w, http.StatusForbidden, err)
+	case errors.Is(err, ErrDeviceNetworkExists):
+		writeErr(w, http.StatusConflict, err)
 	case errors.Is(err, ErrAuthCodeInvalid):
 		writeErr(w, http.StatusNotFound, errors.New("无效的设备授权码"))
 	case errors.Is(err, ErrAuthCodeExpired):
