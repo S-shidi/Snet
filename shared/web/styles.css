@@ -68,7 +68,7 @@ header {
 .network-tabs {
   display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0;
   margin: 10px auto 0; padding: 0 24px; overflow-x: auto; white-space: nowrap;
-  border-bottom: 1px solid var(--border); scrollbar-width: none;
+  scrollbar-width: none;
 }
 .network-tabs::-webkit-scrollbar { display: none; }
 .network-tab {
@@ -388,6 +388,7 @@ header {
 }
 .detail-more-menu button:hover { background: rgba(255,255,255,.06); }
 .detail-more-menu button.danger { color: var(--err); }
+.info-status { margin-bottom: 14px; }
 .detail-title { font-size: 17px; font-weight: 700; word-break: break-all; }
 .detail-sub { margin-top: 2px; color: var(--dim); font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .detail-section { margin-bottom: 14px; }

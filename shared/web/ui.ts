@@ -1243,6 +1243,7 @@ function natViaLabel(via: string): string {
 
 function openSettingsModal() {
   const s = loadSettings();
+  const statusHTML = document.getElementById("status-source")?.innerHTML || "";
   const server = (status?.serverAddr || s.server || "").trim();
   const isOfficial = !server || server.replace(/\/+$/, "") === DEFAULT_SERVER.replace(/\/+$/, "");
   const nat = status?.natMapping;
@@ -1252,8 +1253,12 @@ function openSettingsModal() {
   );
   const natErr = nat?.errors?.[0];
   openModal({
-    title: "设置",
-    body: `<div class="settings-block" id="s-server-block">
+    title: "信息",
+    body: `<div class="info-status">
+        <div class="detail-section-head"><h3>运行状态</h3></div>
+        ${statusHTML}
+      </div>
+      <div class="settings-block" id="s-server-block">
         <div id="s-server-view">
           <div class="row">
             <label>协调服务</label>
@@ -1697,6 +1702,18 @@ async function leaveNetworkFromDetail(nid: string) {
   }
 }
 
+async function resetPairingCode(nid: string) {
+  if (!(await confirmDialog("重置配对码", "作废旧配对码并生成新码？旧码立即失效，已加入成员不受影响。", true))) return;
+  try {
+    const r = await ctlOrClean(nid, "重置配对码", () => backend.resetCode(nid));
+    if (r === null) return;
+    toast("已生成新配对码");
+    await refresh();
+  } catch (e) {
+    toast(String(e), "err");
+  }
+}
+
 async function deleteNetworkFromDetail(nid: string, btn: HTMLButtonElement) {
   if (!(await confirmDialog("删除网络", "删除将断开所有成员并释放网段，不可恢复。确定？", true))) return;
   const orig = btn.textContent;
@@ -1726,25 +1743,13 @@ function networkDetailHTML(n: NetInfo): string {
   const linkCls = linked ? "ok" : n.active ? "warn" : "off";
   const path = pathMonitorHTML(n, r, false);
   const members = r ? `${(r.peers ?? []).length + 1} 位成员` : "加载中";
-  const copyActions = canManage
-    ? `<div class="detail-actions">
-        <button type="button" class="btn ghost sm" data-detail-act="copy-invite">复制邀请链接</button>
-        <button type="button" class="btn ghost sm" data-detail-act="copy-code">复制配对码</button>
-      </div>`
-    : `<p class="hint">仅创建者可生成邀请链接和配对码。</p>`;
-  const settings = canManage
-    ? `<section class="card detail-section detail-danger">
-        <div class="detail-section-head"><h3>网络设置</h3><span class="hint">仅创建者</span></div>
-        <div class="detail-actions">
-          <button type="button" class="btn ghost sm" data-detail-act="subnets">子网路由管理</button>
-        </div>
-      </section>`
-    : "";
   const more = `<div class="detail-more">
     <button type="button" class="btn ghost sm" id="detail-more-btn">更多</button>
     <div class="detail-more-menu" id="detail-more-menu" hidden>
       ${canManage ? '<button type="button" data-detail-act="settings">编辑网络</button>' : ""}
-      <button type="button" data-detail-act="leave">退出网络</button>
+      ${canManage ? '<button type="button" data-detail-act="subnets">子网路由管理</button>' : ""}
+      ${canManage ? '<button type="button" data-detail-act="reset-code">重置配对码</button>' : ""}
+      ${canManage ? "" : '<button type="button" data-detail-act="leave">退出网络</button>'}
       ${canManage ? '<button type="button" class="danger" data-detail-act="delete">删除网络</button>' : ""}
     </div>
   </div>`;
@@ -1753,6 +1758,7 @@ function networkDetailHTML(n: NetInfo): string {
       <div class="detail-title">${esc(n.name || n.networkId)}</div>
       <div class="detail-sub">网络详情 · ${esc(n.networkId)}</div>
     </div>
+    ${canManage ? '<button type="button" class="btn ghost sm" id="detail-invite" data-detail-act="invite">邀请</button>' : ""}
     ${more}
   </div>
   <section class="card detail-section">
@@ -1765,7 +1771,6 @@ function networkDetailHTML(n: NetInfo): string {
       <div class="detail-kv"><span>连接/断开</span><label class="switch"><input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} /><span class="slider"></span></label></div>
       <div class="detail-kv"><span>实时速率</span><code>↑ ${fmtSpeed(status?.txSpeed)} ↓ ${fmtSpeed(status?.rxSpeed)}</code></div>
     </div>
-    ${copyActions}
   </section>
   <section class="card detail-section">
     <div class="detail-section-head">
@@ -1777,8 +1782,7 @@ function networkDetailHTML(n: NetInfo): string {
   <section class="card detail-section">
     <div class="detail-section-head"><h3>成员列表</h3><span class="hint">${members}</span></div>
     ${memberTableHTML(n, r, canManage, role)}
-  </section>
-  ${settings}`;
+  </section>`;
 }
 
 function pendingDetailHTML(p: NonNullable<DaemonStatus["pendingJoins"]>[number]): string {
@@ -1935,10 +1939,10 @@ function bindNetworkDetailEvents() {
       return;
     }
     switch (el.dataset.detailAct) {
-      case "copy-invite": await copyInviteLink(nid, el as HTMLButtonElement); break;
-      case "copy-code": await copyPairingCode(nid, el as HTMLButtonElement); break;
+      case "invite": await openInviteModal(nid); break;
       case "settings": await openNetworkSettings(nid); break;
       case "subnets": await openSubnetRouteModal(nid); break;
+      case "reset-code": await resetPairingCode(nid); break;
       case "leave": await leaveNetworkFromDetail(nid); break;
       case "delete": await deleteNetworkFromDetail(nid, el as HTMLButtonElement); break;
     }
@@ -1993,16 +1997,6 @@ function renderStatus() {
   }
 }
 
-function openStatusModal() {
-  const src = document.getElementById("status-source");
-  openModal({
-    title: "状态",
-    wide: true,
-    body: src ? `<div class="status-modal">${src.innerHTML}</div>` : `<p class="muted">暂无状态数据</p>`,
-    footer: `<button data-close class="btn ghost">关闭</button>`,
-  });
-}
-
 /* ── Ensure daemon ────────────────────────────────────────────── */
 async function ensureDaemon() {
   const btn = $("#header-svc-btn") as HTMLButtonElement;
@@ -2020,8 +2014,7 @@ async function ensureDaemon() {
 
 /* ── Event bindings ───────────────────────────────────────────── */
 function bindEvents() {
-  $("#btn-status")?.addEventListener("click", openStatusModal);
-  $("#btn-settings")?.addEventListener("click", openSettingsModal);
+  $("#btn-info")?.addEventListener("click", openSettingsModal);
   $("#empty-create")?.addEventListener("click", openCreateModal);
   $("#empty-join")?.addEventListener("click", openJoinModal);
   $("#network-tabs")?.addEventListener("click", (e) => {
@@ -2065,8 +2058,7 @@ function bindEvents() {
         dropdown.hidden = true;
         const action = item.dataset.action;
         if (action === "refresh") void refresh();
-        else if (action === "status") openStatusModal();
-        else if (action === "settings") openSettingsModal();
+        else if (action === "info") openSettingsModal();
         else if (action === "logout") { /* logout handled in adapter */ window.dispatchEvent(new Event("snet-logout")); }
       });
     });
