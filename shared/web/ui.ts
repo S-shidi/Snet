@@ -691,118 +691,147 @@ async function openSubnetRouteModal(nid: string) {
   // traffic through the owner's tunnel).
   const targets = nodes.filter((n) => n.id);
 
-  const renderRoutes = (list: RelayRoute[]) => {
-    if (!list.length) return `<span class="muted">尚未委派任何路由</span>`;
+  const renderRows = (list: RelayRoute[]) => {
+    if (!list.length) {
+      return `<tr><td colspan="4" class="route-empty">暂无委派路由</td></tr>`;
+    }
     return list
       .map((rt) => {
         const node = nodes.find((n) => n.id === rt.targetNodeId);
-        const whoHTML = node ? deviceLabel(node) : esc(rt.targetNodeId.slice(0, 8));
-        const whoText = node ? deviceLabelText(node) : rt.targetNodeId.slice(0, 8);
-        const active = rt.status === "active";
-        const badge = active
-          ? `<span class="pill ok">已生效</span>`
-          : `<span class="pill off">待确认</span>`;
-        const why = node && node.relayError
-          ? `<span class="muted"> · ${esc(node.relayError)}</span>`
+        const target = node ? deviceLabel(node) : `<span class="mono">${esc(rt.targetNodeId.slice(0, 8))}</span>`;
+        const failed = !!node?.relayError;
+        const active = rt.status === "active" && !failed;
+        const badgeClass = failed ? "err" : active ? "ok" : "pending";
+        const badgeText = failed ? "配置失败" : active ? "已生效" : "待确认";
+        const why = failed
+          ? `<div class="route-row-error">${esc(node?.relayError ?? "")}</div>`
           : "";
-        return `<span class="chip chip-active" title="${esc(rt.cidr)} → ${esc(whoText)}">${whoHTML} → ${esc(rt.cidr)} ${badge}${why}<button data-del-route="${esc(rt.targetNodeId)}|${esc(rt.cidr)}" class="chip-del" title="移除">&times;</button></span>`;
+        return `<tr>
+          <td class="route-target">${target}</td>
+          <td><code class="route-cidr">${esc(rt.cidr)}</code>${why}</td>
+          <td><span class="route-badge ${badgeClass}">${badgeText}</span></td>
+          <td class="route-actions"><button type="button" class="route-del" data-del-route="${esc(rt.targetNodeId)}|${esc(rt.cidr)}" title="删除该路由" aria-label="删除该路由">🗑️</button></td>
+        </tr>`;
       })
       .join("");
   };
 
   const ownerSection = canManage
-    ? `<div class="subnet-section subnet-section-manual">
-        <div class="subnet-section-title">委派中继路由</div>
-        <p class="hint">选择一台节点作为该网段的网关。目标节点需开启「允许本设备作为中继网关」，确认后路由才会生效。</p>
-        <div id="sr-routes" class="subnet-tags subnet-tags-active">${renderRoutes(routes)}</div>
-        <div class="subnet-add-row">
-          <select id="sr-target" aria-label="目标节点">
-            ${targets.length
-              ? targets
-                  .map((n) => {
-                    const relay = n.allowRelay ? "（已开启中继）" : n.relayError ? "（网关不可用）" : "（未开启中继）";
-                    const who = n.id === selfID ? "本机" : "";
-                    return `<option value="${esc(n.id)}">${esc(who ? who + " · " : "")}${esc(deviceLabelText(n))} · ${esc(n.ip || "-")}${esc(relay)}</option>`;
-                  })
-                  .join("")
-              : `<option value="">（无可选节点）</option>`}
-          </select>
-          <input type="text" id="sr-cidr" placeholder="如 192.168.3.0/24" />
-          <button id="sr-route-add" class="btn ghost sm">委派</button>
+    ? `<div class="route-config">
+        <div class="route-form">
+          <div class="route-field route-field-node">
+            <label for="sr-target">目标节点</label>
+            <select id="sr-target" class="form-control" ${targets.length ? "" : "disabled"}>
+              ${targets.length
+                ? targets
+                    .map((n) => {
+                      const relay = n.allowRelay ? "（已开启中继）" : n.relayError ? "（网关不可用）" : "（未开启中继）";
+                      const who = n.id === selfID ? "本机" : "";
+                      return `<option value="${esc(n.id)}">${esc(who ? who + " · " : "")}${esc(deviceLabelText(n))} · ${esc(n.ip || "-")}${esc(relay)}</option>`;
+                    })
+                    .join("")
+                : `<option value="">（无可选节点）</option>`}
+            </select>
+          </div>
+          <div class="route-field route-field-cidr">
+            <label for="sr-cidr">委派网段 (CIDR)</label>
+            <input type="text" id="sr-cidr" class="form-control" placeholder="例如: 192.168.50.0/24" autocomplete="off" spellcheck="false" />
+          </div>
+          <button id="sr-route-add" class="btn route-add-btn" type="button" ${targets.length ? "" : "disabled"}><span class="route-add-plus">+</span> 添加委派</button>
         </div>
-        <div class="settings-actions"><button id="sr-route-save" class="btn" type="button">保存委派路由</button></div>
         <p class="msg" id="sr-route-result"></p>
+        <div class="route-list-head">已委派路由</div>
+        <div class="route-table-wrap">
+          <table class="route-table">
+            <thead><tr><th>目标节点</th><th>委派网段</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="sr-route-rows">${renderRows(routes)}</tbody>
+          </table>
+        </div>
       </div>`
     : `<p class="hint">仅创建者可以委派子网路由。</p>`;
 
   openModal({
     title: `子网路由 · ${nid}`,
+    wide: true,
     body: ownerSection,
     footer: `<button data-close class="btn ghost">关闭</button>`,
     onBody: (body) => {
-      const routesEl = body.querySelector<HTMLElement>("#sr-routes");
+      const rowsEl = body.querySelector<HTMLElement>("#sr-route-rows");
       const targetEl = body.querySelector<HTMLSelectElement>("#sr-target");
       const cidrEl = body.querySelector<HTMLInputElement>("#sr-cidr");
+      const addBtn = body.querySelector<HTMLButtonElement>("#sr-route-add");
       const routeResult = body.querySelector<HTMLElement>("#sr-route-result");
-      const draft: RelayRoute[] = routes.map((r) => ({ ...r }));
+      let draft: RelayRoute[] = routes.map((r) => ({ ...r }));
 
-      const rerenderRoutes = () => {
-        if (routesEl) routesEl.innerHTML = renderRoutes(draft);
+      const rerender = () => {
+        if (rowsEl) rowsEl.innerHTML = renderRows(draft);
       };
 
-      if (routesEl && targetEl && cidrEl) {
-        body.querySelector("#sr-route-add")!.addEventListener("click", () => {
+      const syncFromServer = async () => {
+        const info = await backend.netinfo(nid);
+        ownerInfo[nid] = info;
+        routes = info.routes ?? [];
+        nodes = (info.nodes ?? []) as unknown as NetNode[];
+        draft = routes.map((r) => ({ ...r }));
+        rerender();
+      };
+
+      const persist = async (list: RelayRoute[], okText: string): Promise<boolean> => {
+        if (!addBtn) return false;
+        addBtn.disabled = true;
+        if (routeResult) { routeResult.className = "msg"; routeResult.textContent = "保存中…"; }
+        try {
+          const r = await ctlOrClean(nid, "委派路由", async () => {
+            await backend.setRoutes({
+              nid,
+              routes: list.map((x) => ({ targetNodeId: x.targetNodeId, cidr: x.cidr })),
+            });
+            return true;
+          });
+          if (r === null) return false;
+          await syncFromServer();
+          if (routeResult) { routeResult.className = "msg ok"; routeResult.textContent = okText; }
+          toast("委派路由已更新");
+          return true;
+        } catch (e) {
+          if (routeResult) { routeResult.className = "msg"; routeResult.textContent = `保存失败: ${e}`; }
+          return false;
+        } finally {
+          addBtn.disabled = targets.length === 0;
+        }
+      };
+
+      if (rowsEl && targetEl && cidrEl && addBtn) {
+        const addRoute = async () => {
           const target = targetEl.value;
           if (!target) { if (routeResult) routeResult.textContent = "请选择目标节点"; return; }
           const raw = cidrEl.value.trim();
-          if (!raw) return;
+          if (!raw) { if (routeResult) routeResult.textContent = "请输入委派网段"; return; }
           const chk = subnetCheck(raw, 24);
           if (!chk.ok) {
             if (routeResult) { routeResult.className = "msg"; routeResult.textContent = `无效: ${chk.error}`; }
             return;
           }
           const cidr = chk.value;
-          if (draft.some((r) => r.targetNodeId === target && r.cidr === cidr)) {
-            if (routeResult) routeResult.textContent = "该路由已存在";
+          if (draft.some((r) => r.cidr === cidr)) {
+            if (routeResult) { routeResult.className = "msg"; routeResult.textContent = "该网段已被其他节点委派，不可重复添加"; }
             return;
           }
-          draft.push({ targetNodeId: target, cidr, status: "pending" });
-          cidrEl.value = "";
-          if (routeResult) { routeResult.className = "msg"; routeResult.textContent = ""; }
-          rerenderRoutes();
-        });
+          const ok = await persist([...draft, { targetNodeId: target, cidr, status: "pending" }], "委派已添加，等待目标节点确认");
+          if (ok) cidrEl.value = "";
+        };
+
+        addBtn.addEventListener("click", () => void addRoute());
         cidrEl.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") { e.preventDefault(); (body.querySelector("#sr-route-add") as HTMLElement).click(); }
+          if (e.key === "Enter") { e.preventDefault(); void addRoute(); }
         });
-        routesEl.addEventListener("click", (e) => {
+        rowsEl.addEventListener("click", async (e) => {
           const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-del-route]");
           if (!btn) return;
           const [nodeId, cidr] = (btn.dataset.delRoute ?? "").split("|");
-          const idx = draft.findIndex((r) => r.targetNodeId === nodeId && r.cidr === cidr);
-          if (idx >= 0) draft.splice(idx, 1);
-          rerenderRoutes();
-        });
-        body.querySelector("#sr-route-save")!.addEventListener("click", async () => {
-          const saveBtn = body.querySelector<HTMLButtonElement>("#sr-route-save")!;
-          saveBtn.disabled = true;
-          if (routeResult) { routeResult.className = "msg"; routeResult.textContent = "保存中…"; }
-          try {
-            const r = await ctlOrClean(nid, "委派路由", async () => {
-              await backend.setRoutes({
-                nid,
-                routes: draft.map((x) => ({ targetNodeId: x.targetNodeId, cidr: x.cidr })),
-              });
-              return true;
-            });
-            if (r === null) return;
-            if (routeResult) { routeResult.className = "msg ok"; routeResult.textContent = "已保存，等待目标节点确认"; }
-            toast("委派路由已更新");
-            await refreshOwnerInfo(true);
-          } catch (e) {
-            if (routeResult) { routeResult.className = "msg"; routeResult.textContent = `保存失败: ${e}`; }
-          } finally {
-            saveBtn.disabled = false;
-          }
+          const next = draft.filter((r) => !(r.targetNodeId === nodeId && r.cidr === cidr));
+          if (next.length === draft.length) return;
+          await persist(next, "委派路由已删除");
         });
       }
     },

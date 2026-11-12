@@ -163,20 +163,30 @@ func normalizeDarwinDest(dest string) string {
 	return ""
 }
 
-// checkLANConflict rejects a virtual subnet that overlaps a real local subnet.
-// Advanced users can bypass it with SNET_IGNORE_LAN_CONFLICT=1.
-func checkLANConflict(subnet string) error {
-	if subnet == "" {
-		return nil
+// localLANConflict reports whether cidr overlaps a real local subnet. The
+// explicit SNET_IGNORE_LAN_CONFLICT escape hatch applies here too so a user
+// who deliberately wants an overlapping route can still get it.
+func localLANConflict(cidr string) bool {
+	if cidr == "" {
+		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("SNET_IGNORE_LAN_CONFLICT"))) {
 	case "1", "true", "yes":
-		return nil
+		return false
 	}
 	for _, lan := range physicalSubnetsFn() {
-		if subnetsOverlap(subnet, lan) {
-			return fmt.Errorf("网段 %s 与本机物理局域网冲突，无法加入", subnet)
+		if subnetsOverlap(cidr, lan) {
+			return true
 		}
+	}
+	return false
+}
+
+// checkLANConflict rejects a virtual subnet that overlaps a real local subnet.
+// Advanced users can bypass it with SNET_IGNORE_LAN_CONFLICT=1.
+func checkLANConflict(subnet string) error {
+	if localLANConflict(subnet) {
+		return fmt.Errorf("网段 %s 与本机物理局域网冲突，无法加入", subnet)
 	}
 	return nil
 }

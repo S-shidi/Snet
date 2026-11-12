@@ -18,6 +18,36 @@ func TestAddPeerRoutesReportsRouteConflict(t *testing.T) {
 	}
 }
 
+func TestNoteSkippedRoutesMarksNetworkError(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"NET1": {
+			Name:   "home",
+			NodeID: "node1",
+			IP:     "10.88.0.2",
+			Token:  "tok",
+			Subnet: "10.88.0.0/24",
+			Active: true,
+		},
+	}
+
+	d.mu.Lock()
+	d.noteSkippedRoutesLocked("NET1", []string{"192.168.1.0/24"})
+	d.mu.Unlock()
+
+	status, err := d.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nets, _ := status["networks"].([]map[string]any)
+	if len(nets) != 1 || nets[0]["state"] != "error" {
+		t.Fatalf("network status = %+v, want error", nets)
+	}
+	if nets[0]["error"] != "与本地局域网冲突，已跳过: 192.168.1.0/24" {
+		t.Fatalf("error = %v", nets[0]["error"])
+	}
+}
+
 func TestNoteApplyErrMarksNetworkError(t *testing.T) {
 	d, _ := newTestDaemon(t)
 	d.cfg.Networks = map[string]*NetworkCfg{

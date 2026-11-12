@@ -37,6 +37,7 @@ var (
 	ErrUnauthorized        = errors.New("unauthorized")
 	ErrManagedNetwork      = errors.New("服务端管理的网络不可认领")
 	ErrDeviceNetworkExists = errors.New("该设备已创建网络（每设备仅能创建一个）")
+	ErrRouteCIDRConflict   = errors.New("该网段已被其他节点委派，不可重复添加")
 	ErrRelayV2Disabled     = errors.New("relay v2 is not configured")
 	// ErrAuthCodeInvalid is returned when a presented device authorization
 	// code does not match any generated code. Unlike pairing codes there is no
@@ -5387,6 +5388,7 @@ func (s *Store) setRoutesLocked(ns *networkState, routes []protocol.Route) error
 	}
 	out := make([]protocol.Route, 0, len(routes))
 	seen := map[string]struct{}{}
+	seenCIDR := map[string]struct{}{}
 	for _, r := range routes {
 		cidr, err := validateSubnet(r.CIDR)
 		if err != nil {
@@ -5398,6 +5400,14 @@ func (s *Store) setRoutesLocked(ns *networkState, routes []protocol.Route) error
 		if _, ok := ns.nodes[r.TargetNodeID]; !ok {
 			return fmt.Errorf("目标节点 %s 不在本网络中", r.TargetNodeID)
 		}
+		// A CIDR may only be delegated once per network, regardless of which
+		// node receives it or whether the existing delegation is pending or
+		// active. Two gateways claiming the same prefix would make routing
+		// ambiguous for every member.
+		if _, dup := seenCIDR[cidr]; dup {
+			return ErrRouteCIDRConflict
+		}
+		seenCIDR[cidr] = struct{}{}
 		key := routeKey(r.TargetNodeID, cidr)
 		if _, dup := seen[key]; dup {
 			return fmt.Errorf("重复的委派路由 %s → %s", r.TargetNodeID, cidr)

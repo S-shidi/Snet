@@ -1958,12 +1958,13 @@ func (d *Daemon) pollLoop(nid string) {
 			peers := rt.path.PreparePeers(st.Peers)
 			// Inject the network's delegated relay routes: the CIDR an owner
 			// delegated to a node must travel through that node's tunnel.
-			peers = d.planRelayRoutesLocked(nc, st.Routes, peers)
+			peers, skipped := d.planRelayRoutesLocked(nc, st.Routes, peers)
 			if err := rt.tun.ApplyPeers(peers, nc.Subnet, ""); err != nil {
 				log.Printf("apply relay-v2 peers %s: %v", nid, err)
 				d.noteApplyErrLocked(nid, err)
 			} else {
 				d.noteApplyErrLocked(nid, nil)
+				d.noteSkippedRoutesLocked(nid, skipped)
 			}
 			pm := rt.path
 			nodeID := nc.NodeID
@@ -1984,7 +1985,7 @@ func (d *Daemon) pollLoop(nid string) {
 		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnets(), observed)
 		// Inject the network's delegated relay routes into the peer routing
 		// entries so the delegated CIDRs travel through their gateway node.
-		peers = d.planRelayRoutesLocked(nc, st.Routes, peers)
+		peers, skipped := d.planRelayRoutesLocked(nc, st.Routes, peers)
 		// Per-peer WireGuard tunnel stats straight from the engine, so the
 		// poll line distinguishes a real data-plane handshake from the
 		// relay-group "online" guess (Cc, CJEB, KAYS... consumers poll peers
@@ -2008,6 +2009,7 @@ func (d *Daemon) pollLoop(nid string) {
 			d.noteApplyErrLocked(nid, err)
 		} else {
 			d.noteApplyErrLocked(nid, nil)
+			d.noteSkippedRoutesLocked(nid, skipped)
 		}
 		d.mu.Unlock()
 	}
@@ -2964,9 +2966,9 @@ func (d *Daemon) SetRoutes(nid string, routes []protocol.Route) error {
 // When the device opted out of using the network's relay gateways
 // (use_relay = false) every delegated route is ignored and the peers are
 // returned untouched.
-func (d *Daemon) planRelayRoutesLocked(nc *NetworkCfg, routes []protocol.Route, peers []protocol.Node) []protocol.Node {
+func (d *Daemon) planRelayRoutesLocked(nc *NetworkCfg, routes []protocol.Route, peers []protocol.Node) ([]protocol.Node, []string) {
 	if len(routes) == 0 || !d.cfg.RelayUsed() {
-		return peers
+		return peers, nil
 	}
 	selfID := ""
 	if nc != nil {
@@ -2974,7 +2976,19 @@ func (d *Daemon) planRelayRoutesLocked(nc *NetworkCfg, routes []protocol.Route, 
 	}
 	planner := NewRoutePlanner(selfID, true)
 	d.logRelayGatewayRolesLocked(nc, planner.ServedBySelf(routes))
-	return planner.Apply(peers, routes)
+	return planner.Apply(peers, routes), planner.Skipped()
+}
+
+// noteSkippedRoutesLocked records a network-level warning when one or more
+// delegated routes were deliberately not installed because they overlap the
+// host's physical LAN. Caller must hold d.mu.
+func (d *Daemon) noteSkippedRoutesLocked(nid string, skipped []string) {
+	if len(skipped) == 0 {
+		return
+	}
+	msg := "与本地局域网冲突，已跳过: " + strings.Join(skipped, ", ")
+	d.netErrs[nid] = msg
+	log.Printf("network %s: %s", nid, msg)
 }
 
 // logRelayGatewayRolesLocked reports the subnets this node forwards as the

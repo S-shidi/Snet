@@ -23,6 +23,10 @@ type RoutePlanner struct {
 	selfID string
 	// useRelay mirrors the local "use relay gateways" switch.
 	useRelay bool
+	// skipped holds delegated CIDRs that were not injected because they
+	// overlap this machine's physical LAN. The caller surfaces these in the
+	// network status so the user knows a route was deliberately ignored.
+	skipped []string
 }
 
 // NewRoutePlanner returns a planner for the given node and switch state.
@@ -37,7 +41,11 @@ func NewRoutePlanner(selfID string, useRelay bool) *RoutePlanner {
 // working gateway yet (the target node has not confirmed it can forward), so
 // installing it would blackhole the delegated subnet.
 func (p *RoutePlanner) Apply(peers []protocol.Node, routes []protocol.Route) []protocol.Node {
-	if p == nil || !p.useRelay || len(routes) == 0 || len(peers) == 0 {
+	if p == nil {
+		return peers
+	}
+	p.skipped = nil
+	if !p.useRelay || len(routes) == 0 || len(peers) == 0 {
 		return peers
 	}
 	byTarget := make(map[string][]string)
@@ -49,6 +57,10 @@ func (p *RoutePlanner) Apply(peers []protocol.Node, routes []protocol.Route) []p
 			continue
 		}
 		if r.TargetNodeID == p.selfID {
+			continue
+		}
+		if localLANConflict(r.CIDR) {
+			p.skipped = append(p.skipped, r.CIDR)
 			continue
 		}
 		byTarget[r.TargetNodeID] = append(byTarget[r.TargetNodeID], r.CIDR)
@@ -74,6 +86,15 @@ func (p *RoutePlanner) Apply(peers []protocol.Node, routes []protocol.Route) []p
 		return peers
 	}
 	return out
+}
+
+// Skipped returns the delegated CIDRs that were rejected because they overlap
+// this machine's physical LAN. It is only populated by the most recent Apply.
+func (p *RoutePlanner) Skipped() []string {
+	if p == nil {
+		return nil
+	}
+	return p.skipped
 }
 
 // ServedBySelf returns the CIDRs that are delegated to this node itself. The

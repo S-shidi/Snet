@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -215,6 +216,22 @@ func TestSetRoutesValidation(t *testing.T) {
 	}
 }
 
+func TestSetRoutesRejectsDuplicateCIDROnDifferentNodes(t *testing.T) {
+	s, created, joined := relayRouteFixture(t)
+	other, err := s.Join(created.NetworkID, created.PairingCode, testKey(33), "dev-member-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.SetRoutes(created.Token, []protocol.Route{
+		{TargetNodeID: joined.NodeID, CIDR: "192.168.9.0/24"},
+		{TargetNodeID: other.NodeID, CIDR: "192.168.9.0/24"},
+	})
+	if !errors.Is(err, ErrRouteCIDRConflict) {
+		t.Fatalf("duplicate CIDR err = %v, want ErrRouteCIDRConflict", err)
+	}
+}
+
 func TestSetRoutesKeepsActiveRoutesAcrossUpdates(t *testing.T) {
 	s, created, joined := relayRouteFixture(t)
 
@@ -284,6 +301,19 @@ func TestRoutesHTTPRoutes(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("owner PUT routes = %d, want 204 (%s)", rec.Code, rec.Body.String())
+	}
+
+	// The same CIDR may only be delegated once in the network.
+	dupBody := `{"routes":[{"targetNodeId":"` + joined.NodeID + `","cidr":"192.168.9.0/24"},{"targetNodeId":"` + joined.NodeID + `","cidr":"192.168.9.0/24"}]}`
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/networks/"+created.NetworkID+"/routes", strings.NewReader(dupBody))
+	req.Header.Set("Authorization", "Bearer "+created.Token)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate CIDR PUT = %d, want 400 (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), ErrRouteCIDRConflict.Error()) {
+		t.Fatalf("duplicate CIDR body = %s", rec.Body.String())
 	}
 
 	// The node reports its gateway capability.

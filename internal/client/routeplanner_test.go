@@ -28,6 +28,28 @@ func TestRoutePlannerInjectsDelegatedCIDRIntoTargetPeer(t *testing.T) {
 	}
 }
 
+func TestRoutePlannerSkipsRoutesOverlappingLocalLAN(t *testing.T) {
+	orig := physicalSubnetsFn
+	physicalSubnetsFn = func() []string { return []string{"192.168.1.0/24"} }
+	t.Cleanup(func() { physicalSubnetsFn = orig })
+
+	peers := []protocol.Node{{ID: "node-b", IP: "10.88.1.3"}}
+	routes := []protocol.Route{
+		{TargetNodeID: "node-b", CIDR: "192.168.0.0/16", Status: protocol.RouteStatusActive},
+		{TargetNodeID: "node-b", CIDR: "192.168.1.0/24", Status: protocol.RouteStatusActive},
+		{TargetNodeID: "node-b", CIDR: "192.168.50.0/24", Status: protocol.RouteStatusActive},
+	}
+	p := NewRoutePlanner("node-self", true)
+	out := p.Apply(peers, routes)
+	if len(out[0].AllowedSubnets) != 1 || out[0].AllowedSubnets[0] != "192.168.50.0/24" {
+		t.Fatalf("allowed subnets = %+v, want only the non-conflicting route", out[0].AllowedSubnets)
+	}
+	skipped := p.Skipped()
+	if len(skipped) != 2 || skipped[0] != "192.168.0.0/16" || skipped[1] != "192.168.1.0/24" {
+		t.Fatalf("skipped = %+v, want both overlapping routes", skipped)
+	}
+}
+
 func TestRoutePlannerIgnoresRoutesWhenRelayDisabled(t *testing.T) {
 	peers := []protocol.Node{{ID: "node-b", IP: "10.88.1.3"}}
 	routes := []protocol.Route{
