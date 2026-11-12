@@ -312,3 +312,60 @@ func TestRoutesHTTPRoutes(t *testing.T) {
 		t.Fatalf("routes = %+v, want one active route", peers.Routes)
 	}
 }
+
+// TestAdminRoutesHTTPCoversRoutesAndDelete verifies the admin surface: the
+// network detail carries the delegated routes, the node list no longer
+// carries the legacy advertised subnets, and an admin can revoke a route.
+func TestAdminRoutesHTTPCoversRoutesAndDelete(t *testing.T) {
+	s, created, joined := relayRouteFixture(t)
+	ts := httptest.NewServer(NewHandler(s, Options{AdminToken: "adm"}))
+	defer ts.Close()
+
+	// The legacy advertisement is accepted by the API but never exposed.
+	if err := s.UpdateAllowedSubnets(joined.Token, []string{"192.168.77.0/24"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRoutes(created.Token, []protocol.Route{
+		{TargetNodeID: joined.NodeID, CIDR: "192.168.9.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The network detail exposes the delegated routes.
+	req := httptest.NewRequest(http.MethodGet, "/admin/networks/"+created.NetworkID, nil)
+	req.Header.Set("Authorization", "Bearer adm")
+	rec := httptest.NewRecorder()
+	ts.Config.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin network info = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var info protocol.NetworkInfoResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Routes) != 1 || info.Routes[0].CIDR != "192.168.9.0/24" {
+		t.Fatalf("admin routes = %+v, want the delegated route", info.Routes)
+	}
+	for _, n := range info.Nodes {
+		if len(n.AllowedSubnets) != 0 {
+			t.Fatalf("legacy allowedSubnets leaked in the admin view: %+v", n)
+		}
+	}
+
+	// An admin can revoke the route.
+	req = httptest.NewRequest(http.MethodDelete,
+		"/admin/networks/"+created.NetworkID+"/routes?target="+joined.NodeID+"&cidr=192.168.9.0/24", nil)
+	req.Header.Set("Authorization", "Bearer adm")
+	rec = httptest.NewRecorder()
+	ts.Config.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("admin delete route = %d, want 204 (%s)", rec.Code, rec.Body.String())
+	}
+	after, err := s.AdminNetworkInfo(created.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Routes) != 0 {
+		t.Fatalf("routes after admin delete = %+v, want empty", after.Routes)
+	}
+}

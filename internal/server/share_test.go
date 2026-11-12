@@ -214,10 +214,11 @@ func TestSetNodeRoleHTTP(t *testing.T) {
 	}
 }
 
-// TestListPeersRoleScoping verifies members see peer device/online info and
-// advertised subnets (needed for routing) but never peer role (publicKey is
-// kept so members can build WireGuard tunnels), while the owner sees full
-// peer details.
+// TestListPeersRoleScoping verifies members see peer device/online info but
+// never peer role (publicKey is kept so members can build WireGuard tunnels),
+// while the owner sees full peer details. The legacy per-node subnet
+// advertisement is no longer shared: subnets are delegated by the network
+// owner and confirmed by the gateway node.
 func TestListPeersRoleScoping(t *testing.T) {
 	s := NewStore()
 	created, err := s.CreateNetwork(testKey(1), "dev-owner", "office", "192.168.63.0/24", false)
@@ -245,9 +246,9 @@ func TestListPeersRoleScoping(t *testing.T) {
 	}
 
 	// plain member's view of peers: role scrubbed, but deviceId, deviceName
-	// (from the device registry), live online status and advertised subnets
-	// are shown. The WireGuard publicKey must remain so the member can build
-	// tunnels (hidden keys would make every peer unreachable by WG).
+	// (from the device registry) and live online status are shown. The
+	// WireGuard publicKey must remain so the member can build tunnels
+	// (hidden keys would make every peer unreachable by WG).
 	peers, err := s.ListPeers(member.Token)
 	if err != nil {
 		t.Fatal(err)
@@ -258,12 +259,11 @@ func TestListPeersRoleScoping(t *testing.T) {
 		if p.Role != "" {
 			t.Fatalf("member peer leaked role: %+v", p)
 		}
-		if p.DeviceID == "dev-owner" {
-			if len(p.AllowedSubnets) != 1 || p.AllowedSubnets[0] != "10.7.86.0/24" {
-				t.Fatalf("member cannot see owner allowedSubnets: %+v", p)
-			}
-		} else if len(p.AllowedSubnets) != 0 {
-			t.Fatalf("member peer has unexpected subnets: %+v", p)
+		// The legacy per-node subnet advertisement is retired: subnets are
+		// delegated by the network owner and confirmed by the gateway, so
+		// they travel in the network's route list, not on the node.
+		if len(p.AllowedSubnets) != 0 {
+			t.Fatalf("member peer must not carry the legacy advertised subnets: %+v", p)
 		}
 		if p.PublicKey == "" {
 			t.Fatalf("member peer missing publicKey (must be able to build tunnels): %+v", p)

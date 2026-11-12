@@ -2962,12 +2962,14 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 			n2 := *n
 			// 普通成员只看到对端设备名、IP、在线状态与设备 ID，不暴露角色。
 			// 注意：publicKey 必须保留——WireGuard 直连/中继都依赖对端公钥建立
-			// 隧道，隐藏它会让成员端无法配置任何 peer。AllowedSubnets 同样必须
-			// 保留：成员需要它来安装 WireGuard AllowedIPs 和系统路由，否则
-			// ownerless/managed 网络中的子网共享永远不可达。
+			// 隧道，隐藏它会让成员端无法配置任何 peer。
 			if !isOwner {
 				n2.Role = ""
 			}
+			// 节点自行宣告的子网（AllowedSubnets）已被网络级的委派路由取代：
+			// 网段由创建者指派给网关节点，网关确认后路由才生效。旧的宣告
+			// 数据不再下发，避免成员继续按旧模型安装路由。
+			n2.AllowedSubnets = nil
 			fillNodeView(&n2)
 			// Keep the peer's self-advertised direct endpoint; the caller
 			// decides whether to use it or fall back to the relay endpoint.
@@ -2977,6 +2979,7 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 	var self *protocol.Node
 	if me != nil {
 		m2 := *me
+		m2.AllowedSubnets = nil
 		fillNodeView(&m2)
 		self = &m2
 	}
