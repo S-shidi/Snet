@@ -94,7 +94,6 @@ async function refreshOwnerInfo(force = false) {
 }
 
 /* ── Peer advertised subnets (any member) ─────────────────────── */
-const peerAllowed: Record<string, string[]> = {};
 // Full peer snapshots are kept for the path monitor so it can show names,
 // virtual IPs and direct-path details without issuing another request.
 const peerDetails: Record<string, PeersResp> = {};
@@ -133,12 +132,7 @@ async function refreshPeerSubnets(force = false) {
           online: list.filter((p) => p.online).length + (selfOnline ? 1 : 0),
           total: list.length + 1,
         };
-        const set = new Set<string>();
-        for (const p of list) (p.allowedSubnets ?? []).forEach((s) => set.add(s));
-        for (const s of n.allowedSubnets ?? []) set.add(s);
-        peerAllowed[n.networkId] = [...set].sort();
       } catch (e) {
-        delete peerAllowed[n.networkId];
         delete peerSummary[n.networkId];
         delete peerDetails[n.networkId];
         peerErrors[n.networkId] = "该网络已失效或加载失败";
@@ -187,7 +181,7 @@ function renderHeader() {
 }
 
 /* ── Network cards ────────────────────────────────────────────── */
-function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; state?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; allowedSubnets?: string[]; visibility?: string; description?: string; tags?: string[]; role?: string }): string {
+function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; state?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; visibility?: string; description?: string; tags?: string[]; role?: string }): string {
   const gone = n.serverState === "gone";
   const linked = !!n.interface;
   const hasErr = !!n.error && !gone;
@@ -212,7 +206,6 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
   const rx = Object.values(peers).reduce((a, p) => a + (p.RxBytes ?? 0), 0);
   const pendingPill = !gone && pendingCount > 0 ? `<button class="pill pending" data-act="show-pending" title="点击查看待批准请求">待批准 (${pendingCount})</button>` : "";
   const err = gone ? `<p class="msg">${esc(n.error || "该网络已在服务端被删除")}</p>` : n.error ? `<p class="msg">${esc(n.error)}</p>` : "";
-  const allSubnets = peerAllowed[n.networkId] ?? n.allowedSubnets ?? [];
   return `
   <div class="net" data-nid="${esc(n.networkId)}" data-owner="${n.owner ? "1" : "0"}" ${gone ? 'data-gone="1"' : ""}>
     <div class="net-row">
@@ -222,7 +215,6 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
           <span>IP <code>${esc(n.ip ?? "-")}</code></span>
           <span>网段 <code>${esc(n.subnet ?? "-")}</code></span>
           <span>ID <code>${esc(n.networkId)}</code></span>
-          ${allSubnets.length > 0 ? `<span class="pill subnet-route" title="可路由：${esc(allSubnets.join(", "))}">路由 ${allSubnets.length} 个子网</span>` : ""}
         </div>
         <div class="net-stats">${memberLine}<span>收 <b>${fmtBytes(rx)}</b></span><span>发 <b>${fmtBytes(tx)}</b></span></div>
       </div>
@@ -989,6 +981,17 @@ function deviceLabelText(nd: { deviceName?: string; deviceId?: string }): string
   return "-";
 }
 
+function nodeRouteCell(routes: RelayRoute[] | undefined, nodeID: string): string {
+  const mine = (routes ?? []).filter((r) => r.targetNodeId === nodeID);
+  if (!mine.length) return '<span class="muted">-</span>';
+  return mine
+    .map((r) => {
+      const active = r.status === "active";
+      return `<span class="pill ${active ? "ok" : "warn"} subnet-route" title="${active ? "已生效" : "待节点确认"}">${esc(r.cidr)}</span>`;
+    })
+    .join(" ");
+}
+
 async function showMembers(nid: string) {
   const mine = (status?.networks ?? []).find((n) => n.networkId === nid);
   if (mine?.serverState === "gone") {
@@ -1010,10 +1013,8 @@ async function showMembers(nid: string) {
              <option value="member" ${role === "member" ? "selected" : ""}>成员</option>
              <option value="owner" ${role === "owner" ? "selected" : ""}>创建者（转交所有权）</option>
            </select>`;
-      const subnets = (nd.allowedSubnets?.length ?? 0) > 0
-        ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
-        : `<span class="muted">-</span>`;
-      return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${roleCtl}</td><td>${subnets}</td><td>${kick}</td></tr>`;
+      const routeCell = nodeRouteCell(r.routes, nd.id);
+      return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${roleCtl}</td><td>${routeCell}</td><td>${kick}</td></tr>`;
     }).join("");
     const pendingRows = (r.pending ?? []).map((p) => {
       return `<tr><td colspan="2"><span class="muted">设备</span> <code>${p.deviceId ? esc(p.deviceId.slice(0, 8)) + "…" : "-"}</code><span class="muted"> 公钥</span> <code>${esc(p.publicKey.slice(0, 12))}…</code></td><td><span class="pill warn">待批准</span></td><td>-</td><td><button data-pend="${esc(p.id)}" class="btn sm" style="background:var(--ok)">批准</button> <button data-pend="${esc(p.id)}" class="btn danger sm">拒绝</button></td></tr>`;
@@ -1099,15 +1100,13 @@ async function showMembers(nid: string) {
     return;
   }
   // Non-owner: read-only peers view
-  const r = await backend.peers(nid);
+  const [r, info] = await Promise.all([backend.peers(nid), backend.netinfo(nid)]);
   const all = r.self ? [r.self, ...(r.peers ?? [])] : (r.peers ?? []);
   const rows = all.map((nd) => {
     const isSelf = nd.ip === myIp;
     const online = nd.online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>';
-    const subnets = (nd.allowedSubnets?.length ?? 0) > 0
-        ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
-        : `<span class="muted">-</span>`;
-    return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${subnets}</td><td>${isSelf ? `<span class="muted">自己</span>` : ""}</td></tr>`;
+    const routeCell = nodeRouteCell(info.routes, nd.id);
+    return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${routeCell}</td><td>${isSelf ? `<span class="muted">自己</span>` : ""}</td></tr>`;
   }).join("");
   openModal({
     title: `成员 · ${nid}`,
@@ -1617,7 +1616,6 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
   const self = r?.self;
   const selfIp = n.ip || self?.ip || "-";
   const nat = n.relayPath?.natType || self?.natType || "unknown";
-  const subnets = (n.allowedSubnets?.length ? n.allowedSubnets : self?.allowedSubnets) ?? [];
   const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
   const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
   const peers = r?.peers ?? [];
@@ -1630,9 +1628,6 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
     else if (path === "relay") relay++;
     else probing++;
   }
-  const subnetHTML = subnets.length
-    ? subnets.map((s) => `<span class="path-subnet">${esc(s)}</span>`).join("")
-    : `<span class="muted">未宣告子网</span>`;
   const p2p = direct > 0
     ? `<div class="path-p2p-banner"><span class="path-p2p-icon">↯</span><div><b>当前已建立 P2P 直连</b><span>${direct} 个节点正在通过直连传输，延迟更低。</span></div></div>`
     : "";
@@ -1663,7 +1658,6 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
           <code class="path-ip">${esc(selfIp)}</code>
           <span class="path-nat">NAT 类型 <b>${esc(nat)}</b></span>
         </div>
-        <div class="path-subnets"><span class="path-label">宣告子网</span>${subnetHTML}</div>
       </div>
       ${p2p}
       <div class="path-peers">${peerHTML}</div>
@@ -1688,7 +1682,7 @@ function canManageNetwork(n: NetInfo): boolean {
   return networkRole(n) === "owner" || !!n.owner;
 }
 
-function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string): string {
+function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string, routes: RelayRoute[] | undefined): string {
   if (!r) return `<p class="hint">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
   const list: NetNode[] = self ? [self, ...(r.peers ?? [])] : (r.peers ?? []);
@@ -1699,9 +1693,7 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const online = nd.online
       ? '<span class="pill ok">在线</span>'
       : '<span class="pill off">离线</span>';
-    const subnets = (nd.allowedSubnets?.length ?? 0) > 0
-      ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
-      : '<span class="muted">-</span>';
+    const routeCell = nodeRouteCell(routes, nd.id);
     const rolePill = role === "owner"
       ? `<span class="pill accent">${roleLabel(role)}</span>`
       : `<span class="pill off">${roleLabel(role)}</span>`;
@@ -1722,7 +1714,7 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       <td>${deviceLabel(nd)}</td>
       <td class="mono">${esc(nd.ip || "-")}</td>
       <td>${online}</td>
-      <td>${subnets}</td>
+      <td>${routeCell}</td>
       <td>${relay}</td>
       <td>${rolePill}</td>
       ${diag}
@@ -1908,7 +1900,7 @@ function networkDetailHTML(n: NetInfo): string {
   </section>
   <section class="card detail-section">
     <div class="detail-section-head"><h3>成员列表</h3><span class="hint">${members}</span></div>
-    ${memberTableHTML(n, r, canManage, role)}
+    ${memberTableHTML(n, r, canManage, role, ownerInfo[n.networkId]?.routes)}
   </section>`;
 }
 
@@ -1977,7 +1969,12 @@ async function openNetworkDetail(nid: string) {
   if (detail) detail.hidden = false;
   renderNetworkDetail();
   try {
-    peerDetails[nid] = await withTimeout(backend.peers(nid), 5000, "成员信息加载超时");
+    const [peers, info] = await Promise.all([
+      withTimeout(backend.peers(nid), 5000, "成员信息加载超时"),
+      backend.netinfo(nid),
+    ]);
+    peerDetails[nid] = peers;
+    ownerInfo[nid] = info;
     delete peerErrors[nid];
     renderNetworkDetail();
   } catch {

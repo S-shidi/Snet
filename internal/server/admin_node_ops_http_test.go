@@ -63,9 +63,9 @@ func TestAdminNodeRoleAndSubnetsHTTP(t *testing.T) {
 		if n["id"] != nodeID {
 			continue
 		}
-		subnets, _ := n["allowedSubnets"].([]any)
-		if len(subnets) != 1 || subnets[0] != "192.168.50.0/24" {
-			t.Fatalf("allowedSubnets = %v", n["allowedSubnets"])
+		// AllowedSubnets is legacy; the admin node response must not expose it.
+		if subnets, ok := n["allowedSubnets"].([]any); ok && len(subnets) > 0 {
+			t.Fatalf("legacy allowedSubnets leaked: %v", n["allowedSubnets"])
 		}
 	}
 

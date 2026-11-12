@@ -611,6 +611,19 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, info)
 	}))
+	mux.HandleFunc("DELETE /admin/networks/{nid}/routes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		target := r.URL.Query().Get("target")
+		cidr := r.URL.Query().Get("cidr")
+		if target == "" || cidr == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("target and cidr are required"))
+			return
+		}
+		if err := s.AdminDeleteRoute(r.PathValue("nid"), target, cidr); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	mux.HandleFunc("PATCH /admin/networks/{nid}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.NetworkSettingsReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

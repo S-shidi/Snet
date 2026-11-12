@@ -3681,6 +3681,9 @@ func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
 		if d := s.devices[c.DeviceID]; d != nil {
 			c.DeviceName = d.Name
 		}
+		// Subnet advertisement is superseded by delegated network routes.
+		// Never expose stale AllowedSubnets to clients or the admin console.
+		c.AllowedSubnets = nil
 		nodes = append(nodes, c)
 	}
 	pending := make([]protocol.PendingNode, 0, len(ns.pending))
@@ -4491,6 +4494,9 @@ func (s *Store) AdminNodes(nid string) ([]protocol.Node, error) {
 		if d := s.devices[n.DeviceID]; d != nil {
 			node.DeviceName = d.Name
 		}
+		// Delegated routes are network-level; node subnet advertisement is
+		// legacy and must not be shown in the admin console.
+		node.AllowedSubnets = nil
 		// Enrich node with IPv6 and public IP information
 		enrichNodeWithIPInfo(&node, ns.n.Subnet)
 		nodes = append(nodes, node)
@@ -5570,6 +5576,36 @@ func (s *Store) AdminSetNodeAllowedSubnets(nid, nodeID string, subnets []string)
 	}
 	n.AllowedSubnets = subnets
 	return s.persistNode(nid, n)
+}
+
+// AdminDeleteRoute removes one delegated relay route from a network. Admins can
+// revoke a route even when the owner is unavailable.
+func (s *Store) AdminDeleteRoute(nid, targetNodeID, cidr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return ErrNotFound
+	}
+	norm, err := validateSubnet(cidr)
+	if err != nil {
+		return err
+	}
+	key := routeKey(targetNodeID, norm)
+	out := make([]protocol.Route, 0, len(ns.n.Routes))
+	found := false
+	for _, r := range ns.n.Routes {
+		if routeKey(r.TargetNodeID, r.CIDR) == key {
+			found = true
+			continue
+		}
+		out = append(out, r)
+	}
+	if !found {
+		return ErrNotFound
+	}
+	ns.n.Routes = out
+	return s.persistNetwork(ns)
 }
 
 // AdminSetNodeRole changes a node's role from the admin console. Setting a

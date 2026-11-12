@@ -102,6 +102,29 @@ func TestSetRoutesStartsPendingAndActivatesOnConfirmation(t *testing.T) {
 	}
 }
 
+func TestAdminDeleteRoute(t *testing.T) {
+	s, created, joined := relayRouteFixture(t)
+	if err := s.SetRoutes(created.Token, []protocol.Route{
+		{TargetNodeID: joined.NodeID, CIDR: "192.168.9.0/24"},
+	}); err != nil {
+		t.Fatalf("SetRoutes: %v", err)
+	}
+
+	if err := s.AdminDeleteRoute(created.NetworkID, joined.NodeID, "192.168.9.0/24"); err != nil {
+		t.Fatalf("AdminDeleteRoute: %v", err)
+	}
+	info, err := s.AdminNetworkInfo(created.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Routes) != 0 {
+		t.Fatalf("routes after delete = %+v, want empty", info.Routes)
+	}
+	if err := s.AdminDeleteRoute(created.NetworkID, joined.NodeID, "192.168.9.0/24"); err != ErrNotFound {
+		t.Fatalf("second delete err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestRelayCapabilityErrorKeepsRoutePending(t *testing.T) {
 	s, created, joined := relayRouteFixture(t)
 
