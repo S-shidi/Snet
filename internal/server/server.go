@@ -312,6 +312,33 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
+	// A node reports whether it is willing and able to act as a relay gateway
+	// for this network. The report is node-scoped (the caller is identified by
+	// its bearer token) and drives the route state machine: routes delegated
+	// to this node become active only after a successful report.
+	mux.HandleFunc("PUT /api/v1/networks/{nid}/relay-capability", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		token := tokenOf(r)
+		nid, _, ok := nodeTokenIDs(s, token)
+		if !ok {
+			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+			return
+		}
+		if nid != r.PathValue("nid") {
+			writeErr(w, http.StatusNotFound, ErrNotFound)
+			return
+		}
+		var req protocol.UpdateRelayCapabilityReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.UpdateRelayCapability(token, req.AllowRelay, req.RelayError); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
 	mux.HandleFunc("DELETE /api/v1/networks/{nid}/nodes/{nodeID}", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		token := tokenOf(r)
 		nid, nodeID, ok := nodeTokenIDs(s, token)
@@ -510,6 +537,25 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
+	// Delegate relay routes to nodes in the network. Owner-only: the route
+	// table is the owner's decision, and every route stays "pending" until
+	// the target node confirms it can act as the gateway.
+	mux.HandleFunc("PUT /api/v1/networks/{nid}/routes", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if !ownerNID(w, r) {
+			return
+		}
+		var req protocol.SetRoutesReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.SetRoutes(tokenOf(r), req.Routes); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
 	// ---- admin surface ----
 	// The page, login and bootstrap routes are always served so a fresh
 	// deployment can initialize the admin account from the web UI; every
@@ -564,6 +610,19 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, info)
+	}))
+	mux.HandleFunc("DELETE /admin/networks/{nid}/routes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		target := r.URL.Query().Get("target")
+		cidr := r.URL.Query().Get("cidr")
+		if target == "" || cidr == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("target and cidr are required"))
+			return
+		}
+		if err := s.AdminDeleteRoute(r.PathValue("nid"), target, cidr); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	mux.HandleFunc("PATCH /admin/networks/{nid}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.NetworkSettingsReq

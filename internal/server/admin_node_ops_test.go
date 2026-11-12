@@ -72,8 +72,8 @@ func TestAdminSetNodeAllowedSubnets(t *testing.T) {
 	}
 	for _, n := range nodes {
 		if n.ID == joined.NodeID {
-			if len(n.AllowedSubnets) != 1 || n.AllowedSubnets[0] != "192.168.50.0/24" {
-				t.Fatalf("AllowedSubnets = %v", n.AllowedSubnets)
+			if len(n.AllowedSubnets) != 0 {
+				t.Fatalf("legacy AllowedSubnets leaked: %v", n.AllowedSubnets)
 			}
 			return
 		}

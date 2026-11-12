@@ -685,6 +685,23 @@ select.form-control option { background: var(--bg); color: var(--text); }
 .chip-add { color: var(--accent2); font-weight: 700; }
 .subnet-add-row { display: flex; gap: 8px; align-items: stretch; }
 .subnet-add-row input { flex: 1; }
+.subnet-add-row select {
+  flex: 0 0 auto; min-width: 190px; max-width: 55%;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-s);
+  color: var(--text); padding: 8px 11px; font-size: 13px; font-family: inherit;
+  outline: none; cursor: pointer; appearance: none; -webkit-appearance: none;
+  color-scheme: dark;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M2 2l4 4 4-4' fill='none' stroke='%239aa3b2' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+.subnet-add-row select:focus { border-color: var(--accent); box-shadow: var(--ring); }
+.subnet-add-row select option { background: var(--bg); color: var(--text); }
+@media (max-width: 520px) {
+  .subnet-add-row { flex-wrap: wrap; }
+  .subnet-add-row select { max-width: 100%; width: 100%; }
+  .subnet-add-row input { flex: 1 1 100%; }
+}
 
 /* ── subnet suggestions ─────────────────── */
 .subnet-suggestions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 8px; }

@@ -65,6 +65,14 @@ export type NatMappingInfo = {
 export type NatErrorInfo = { port: number; error: string; lastTry?: string };
 export type NatStatus = { enabled: boolean; mappings: NatMappingInfo[]; errors: NatErrorInfo[] };
 
+/** A delegated relay route: the owner assigns a CIDR to a node that acts as
+ *  the gateway for it. "pending" until the target node confirms. */
+export type RelayRoute = {
+  targetNodeId: string;
+  cidr: string;
+  status?: "pending" | "active";
+};
+
 export type DaemonStatus = {
   deviceId?: string;
   serverAddr?: string;
@@ -75,6 +83,12 @@ export type DaemonStatus = {
   networks?: NetInfo[];
   pendingJoins?: PendingJoin[];
   natMapping?: NatStatus;
+  /** Whether this device may act as a relay gateway for the network. */
+  allowRelay?: boolean;
+  /** Whether this device honours the network's delegated relay routes. */
+  useRelay?: boolean;
+  /** Why the local relay gateway setup failed (empty when healthy). */
+  relayError?: string;
 };
 export type NetInfoDetail = {
   id?: string;
@@ -88,10 +102,11 @@ export type NetInfoDetail = {
   description?: string;
   tags?: string[];
   visibility?: string;
+  routes?: RelayRoute[];
   pending?: Array<{ id: string; publicKey: string; deviceId?: string; createdAt?: string; deviceName?: string }>;
-  nodes?: Array<{ id: string; ip: string; deviceId?: string; online?: boolean; allowedSubnets?: string[]; role?: string; publicKey?: string }>;
+  nodes?: Array<{ id: string; ip: string; deviceId?: string; deviceName?: string; online?: boolean; allowedSubnets?: string[]; role?: string; publicKey?: string; allowRelay?: boolean; relayError?: string }>;
 };
-export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; deviceName?: string; online?: boolean; allowedSubnets?: string[]; role?: string; natType?: string };
+export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; deviceName?: string; online?: boolean; allowedSubnets?: string[]; role?: string; natType?: string; allowRelay?: boolean; relayError?: string };
 export type PeersResp = { peers?: NetNode[]; self?: NetNode; subnet?: string; approvalRequired?: boolean };
 export type CreateResp = { networkId: string; ip: string; pairingCode: string; link: string };  
 export type JoinResp = { ip?: string; networkId?: string; status?: string; pendingId?: string };
@@ -129,6 +144,10 @@ export interface Backend {
   setRole?(params: { nid: string; nodeId: string; role: string }): Promise<void>;
   /** Update subnets for a network */
   updateSubnets(params: { nid: string; subnets: string[] }): Promise<void>;
+  /** Set the device's relay switches: act as a gateway, and use the network's gateways */
+  setRelayOptions(params: { allowRelay: boolean; useRelay: boolean }): Promise<void>;
+  /** Replace the network's delegated relay routes (owner only) */
+  setRoutes(params: { nid: string; routes: RelayRoute[] }): Promise<void>;
   /** Kick a node from a network */
   kick(params: { nid: string; nodeId: string }): Promise<void>;
   /** Approve a pending join request */

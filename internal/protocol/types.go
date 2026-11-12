@@ -60,7 +60,31 @@ type Network struct {
 	Tags []string `json:"tags,omitempty"`
 	// Visibility 标记网络的公开性："shareable" 表示可在社区目录中被发现。
 	Visibility string `json:"visibility,omitempty"`
+	// Routes 是网络所有者委派出去的中继路由（双向确认）。
+	// 每条路由必须由目标节点确认开启 allow_relay 后才会生效。
+	Routes []Route `json:"routes,omitempty"`
 }
+
+// Route 是一条由网络所有者委派的中继路由：目标节点（TargetNodeID）被要求
+// 充当该 CIDR 的网关，其他成员把到该 CIDR 的流量经由目标节点转发。
+//
+// 状态机：
+//   - pending：所有者已委派，但目标节点尚未开启 allow_relay（或网关配置失败）。
+//   - active：目标节点已上报 allow_relay，路由生效并下发全网络。
+type Route struct {
+	// TargetNodeID 是承担网关角色的节点 ID。
+	TargetNodeID string `json:"targetNodeId"`
+	// CIDR 是被委派给目标节点的网段，例如 "192.168.3.0/24"。
+	CIDR string `json:"cidr"`
+	// Status 是 "pending" 或 "active"。
+	Status string `json:"status"`
+}
+
+// 中继路由状态常量。
+const (
+	RouteStatusPending = "pending"
+	RouteStatusActive  = "active"
+)
 
 type Node struct {
 	ID        string `json:"id"`
@@ -132,6 +156,13 @@ type Node struct {
 	// PublicIPv6 is the node's public IPv6 address (without port), extracted
 	// from EndpointV6. Shown in the admin console for diagnostics.
 	PublicIPv6 string `json:"publicIPv6,omitempty"`
+	// AllowRelay 为 true 表示该节点已开启"允许作为中继网关"，并已成功完成
+	// 网关配置（IP 转发 + NAT）。只有上报 true 的节点才能让委派给它的
+	// 中继路由从 pending 变为 active。
+	AllowRelay bool `json:"allowRelay,omitempty"`
+	// RelayError 描述网关配置失败的原因（例如缺少 iptables 权限）。
+	// 非空表示节点虽然想当网关但实际不可用，路由会一直保持 pending。
+	RelayError string `json:"relayError,omitempty"`
 }
 
 type CreateNetworkReq struct {
@@ -249,6 +280,9 @@ type PeersResp struct {
 	// or the server has a single relay (in which case RelayEndpoint alone is
 	// set).
 	RelayEndpoints []string `json:"relayEndpoints,omitempty"`
+	// Routes 是本网络已生效（active）的中继路由。所有成员都会收到，用于把
+	// 委派网段的流量注入到目标节点的隧道上。
+	Routes []Route `json:"routes,omitempty"`
 }
 
 // ClaimReq claims ownership of a legacy network. Requires the calling device
@@ -276,6 +310,22 @@ type NetworkSettingsReq struct {
 // Other peers will route traffic for these subnets through this node.
 type UpdateSubnetsReq struct {
 	Subnets []string `json:"subnets"`
+}
+
+// SetRoutesReq replaces the network's delegated relay routes. Only the
+// network owner may call it. Every route is stored as "pending"; it becomes
+// "active" once the target node reports allow_relay.
+type SetRoutesReq struct {
+	Routes []Route `json:"routes"`
+}
+
+// UpdateRelayCapabilityReq reports whether the calling node is willing and
+// able to act as a relay gateway for the network. RelayError carries the
+// reason the gateway setup failed; a non-empty error keeps the node's
+// delegated routes pending.
+type UpdateRelayCapabilityReq struct {
+	AllowRelay bool   `json:"allowRelay"`
+	RelayError string `json:"relayError,omitempty"`
 }
 
 type NetworkInfoResp struct {

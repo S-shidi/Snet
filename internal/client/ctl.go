@@ -337,6 +337,25 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		w.WriteHeader(204)
 	})
 
+	// Relay switches are device-wide: allowRelay makes this device a relay
+	// gateway for the networks it belongs to, useRelay controls whether it
+	// honours the network's delegated routes.
+	mux.HandleFunc("POST /ctl/relay", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			AllowRelay bool `json:"allowRelay"`
+			UseRelay   bool `json:"useRelay"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.SetRelayOptions(req.AllowRelay, req.UseRelay); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
 	mux.HandleFunc("POST /ctl/settings", func(w http.ResponseWriter, r *http.Request) {
 		var req CtlReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -441,6 +460,24 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			return
 		}
 		if err := d.UpdateSubnets(req.Nid, req.Subnets); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
+	// Delegated relay routes. The network owner assigns a CIDR to a node; the
+	// route stays pending until that node confirms it can act as the gateway.
+	mux.HandleFunc("POST /ctl/routes", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Nid    string           `json:"nid"`
+			Routes []protocol.Route `json:"routes"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.SetRoutes(req.Nid, req.Routes); err != nil {
 			writeCtlErr(w, 500, err)
 			return
 		}

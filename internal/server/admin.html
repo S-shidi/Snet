@@ -297,7 +297,6 @@
   th { color:var(--dim); font-weight:600; font-size:11.5px; letter-spacing:.3px; background:var(--card2); white-space:nowrap; }
   tbody tr:hover { background:rgba(255,255,255,.025); }
   td.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
-  .subnet-route { display:inline-block; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; background:rgba(16,185,129,.12); color:var(--ok); border-radius:4px; padding:1px 6px; font-size:11.5px; cursor:default; }
 
   /* ── auth-code bound devices: expandable list in status cell ── */
   .pill-toggle { cursor:pointer; border:none; font:inherit; }
@@ -3644,6 +3643,7 @@ function renderNetDetail() {
   const external = nodes.filter(n => !n.deviceId);
   const online = nodes.filter(n => n.lastSeen && (now - n.lastSeen) < 60).length;
   const ownerID = info.ownerNodeId || '';
+  const routes = info.routes || [];
 
   let memberRows = '';
   for (const nd of nodes) {
@@ -3652,9 +3652,7 @@ function renderNetDetail() {
     const isOnline = nd.lastSeen ? (now - nd.lastSeen) < 60 : false;
     const endpoint = nd.endpoint || nd.directEndpoint || '-';
     const publicIP = nd.publicIPv4 || nd.publicIPv6 || (nd.directEndpointV6 ? 'IPv6直连' : '-');
-    const subnets = (nd.allowedSubnets && nd.allowedSubnets.length)
-      ? nd.allowedSubnets.map(x => `<span class="subnet-route" title="${esc(x)}">${esc(x)}</span>`).join(' ')
-      : '<span class="hint">-</span>';
+    const routeCell = routeCellHTML(nd.id, routes);
     const roleCell = isOwner
       ? '<span class="pill managed">Owner</span>'
       : `<select class="role-select" data-detail-role data-nid="${esc(info.id)}" data-node="${esc(nd.id)}" data-cur="${esc(role)}">
@@ -3669,13 +3667,13 @@ function renderNetDetail() {
       <td><span class="pill ${isOnline ? 'online' : 'offline'}">${isOnline ? '在线' : '离线'}</span></td>
       <td class="mono">${relSec(nd.lastSeen)}</td>
       <td><div class="mono">${esc(endpoint)}</div><div class="hint">${esc(publicIP)}</div></td>
+      <td>${routeCell}</td>
       <td style="white-space:nowrap">
-        <button type="button" class="btn ghost sm" data-detail-act="subnets" data-node="${esc(nd.id)}">子网路由</button>
         <button type="button" class="btn danger ghost sm" data-detail-act="kick" data-node="${esc(nd.id)}">踢出</button>
       </td>
     </tr>`;
   }
-  if (!memberRows) memberRows = '<tr><td colspan="8"><div class="detail-empty">暂无成员节点</div></td></tr>';
+  if (!memberRows) memberRows = '<tr><td colspan="9"><div class="detail-empty">暂无成员节点</div></td></tr>';
 
   let pendingRows = '';
   for (const p of pending) {
@@ -3730,9 +3728,25 @@ function renderNetDetail() {
     </div>
   </section>
   <section class="card detail-section">
+    <div class="detail-section-head"><h3>中继路由（委派）</h3><span class="hint">${routes.length} 条</span></div>
+    ${routes.length ? `<div class="tbl-wrap"><table><thead><tr>
+      <th>目标节点</th><th>委派网段 (CIDR)</th><th>状态</th><th>操作</th>
+    </tr></thead><tbody>${routes.map(r => {
+      const target = nodes.find(n => n.id === r.targetNodeId);
+      const targetLabel = target ? deviceLabel(target.deviceName, target.deviceId) : r.targetNodeId;
+      const active = r.status === 'active';
+      return `<tr>
+        <td><div>${esc(targetLabel)}</div><div class="hint mono">${esc(r.targetNodeId)}</div></td>
+        <td class="mono">${esc(r.cidr)}</td>
+        <td><span class="pill ${active ? 'active' : 'pending'}">${active ? '已生效' : '待节点确认'}</span></td>
+        <td><button type="button" class="btn danger ghost sm" data-detail-act="delete-route" data-target="${esc(r.targetNodeId)}" data-cidr="${esc(r.cidr)}">删除</button></td>
+      </tr>`;
+    }).join('')}</tbody></table></div>` : '<div class="detail-empty">暂无委派路由</div>'}
+  </section>
+  <section class="card detail-section">
     <div class="detail-section-head"><h3>成员与节点管理</h3><span class="hint">${nodes.length} 个节点</span></div>
     <div class="tbl-wrap"><table><thead><tr>
-      <th>Node ID</th><th>设备名 / 设备ID</th><th>虚拟 IP</th><th>角色</th><th>状态</th><th>最后活跃</th><th>Endpoint / 公网 IP</th><th>操作</th>
+      <th>Node ID</th><th>设备名 / 设备ID</th><th>虚拟 IP</th><th>角色</th><th>状态</th><th>最后活跃</th><th>Endpoint / 公网 IP</th><th>路由</th><th>操作</th>
     </tr></thead><tbody>${memberRows}</tbody></table></div>
   </section>
   <section class="card detail-section">
@@ -3747,37 +3761,6 @@ function renderNetDetail() {
       <th>Node ID</th><th>虚拟 IP</th><th>公钥</th><th>状态</th><th>Endpoint</th>
     </tr></thead><tbody>${externalRows}</tbody></table></div>
   </section>`;
-}
-
-function openNodeSubnets(nodeID) {
-  if (!netDetailNid) return;
-  const node = netDetailNodes.find(n => n.id === nodeID);
-  if (!node) return;
-  const name = node.deviceName || node.deviceId || nodeID;
-  setModal('编辑子网路由 · ' + name, `
-    <div class="row"><label for="ns-subnets">Allowed Subnets</label>
-      <textarea id="ns-subnets" rows="5" placeholder="每行一个 CIDR，例如：&#10;192.168.1.0/24">${esc((node.allowedSubnets || []).join('\n'))}</textarea>
-    </div>
-    <p class="hint">每行一个 CIDR；留空表示不宣告子网。子网不能与网络 VPN 网段或其他节点冲突。</p>
-    <p class="msg" id="ns-msg"></p>
-    <div class="modal-foot">
-      <button type="button" class="btn ghost" data-act="close-modal">取消</button>
-      <button type="button" class="btn" data-act="do-save-subnets" data-node="${esc(nodeID)}">保存</button>
-    </div>`);
-}
-
-async function saveNodeSubnets(nodeID) {
-  const nid = netDetailNid;
-  if (!nid) return;
-  const raw = $('ns-subnets').value;
-  const subnets = raw.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
-  const msg = $('ns-msg');
-  try {
-    await api('PATCH', `/admin/networks/${encodeURIComponent(nid)}/nodes/${encodeURIComponent(nodeID)}/subnets`, { subnets });
-    closeModal();
-    toast('子网路由已更新');
-    await openNetDetail(nid);
-  } catch (e) { msg.textContent = '保存失败：' + e.message.replace(/^\d+\s*/, ''); }
 }
 
 async function setNodeRole(nid, nodeID, role, select) {
@@ -3884,12 +3867,24 @@ function deviceLabel(name, id) {
   return name ? `${name}（${id}）` : id;
 }
 
+// routeCellHTML renders the delegated-route badge for one node.
+function routeCellHTML(nodeID, routes) {
+  const mine = (routes || []).filter(r => r.targetNodeId === nodeID);
+  if (!mine.length) return '<span class="hint">-</span>';
+  const active = mine.some(r => r.status === 'active');
+  const title = mine.map(r => `${r.cidr}：${r.status === 'active' ? '已生效' : '待节点确认'}`).join('\n');
+  return `<span class="pill ${active ? 'active' : 'pending'}" title="${esc(title)}">作为网关</span> <span class="hint mono">${esc(mine.map(r => r.cidr).join(', '))}</span>`;
+}
+
 async function renderMembersModal(nid) {
   const box = $('modal-body');
   box.innerHTML = '<div class="loading"><span class="spinner"></span>加载中…</div>';
   try {
-    const nodes = await api('GET', '/admin/networks/' + nid + '/nodes') || [];
-    if (!nodes.length) {
+    const [nodes, info] = await Promise.all([
+      api('GET', '/admin/networks/' + nid + '/nodes'),
+      api('GET', '/admin/networks/' + nid),
+    ]);
+    if (!nodes || !nodes.length) {
       box.innerHTML = '<p class="hint mb0">暂无成员节点</p>';
       return;
     }
@@ -3897,7 +3892,7 @@ async function renderMembersModal(nid) {
     let rows = '';
     for (const nd of nodes) {
       const online = nd.lastSeen ? (now - nd.lastSeen) < 60 : false;
-      const subnets = (nd.allowedSubnets && nd.allowedSubnets.length) ? nd.allowedSubnets.join(', ') : '';
+      const routeCell = routeCellHTML(nd.id, info.routes || []);
       
       // Build virtual IP cell (IPv4 + IPv6)
       const virtualIP = nd.ipv6 
@@ -3930,12 +3925,12 @@ async function renderMembersModal(nid) {
         <td class="mono" title="${esc(deviceLabel(nd.deviceName, nd.deviceId))}">${esc(deviceLabel(nd.deviceName, nd.deviceId))}</td>
         <td class="mono">${virtualIP}</td>
         <td><span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : (nd.lastSeen ? '离线' : '活跃（网络级）')}</span></td>
-        <td class="mono">${subnets ? `<span class="subnet-route" title="子网路由：${esc(subnets)}">${esc(subnets)}</span>` : '<span class="hint">-</span>'}</td>
+        <td>${routeCell}</td>
         <td class="mono">${publicIP}</td>
         <td><button type="button" class="btn danger ghost sm" data-act="kick-node" data-nid="${esc(nid)}" data-node="${esc(nd.id)}">踢出</button></td>
       </tr>`;
     }
-    box.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>设备</th><th>虚拟 IP</th><th>状态</th><th>子网路由</th><th>公网 IP</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    box.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>设备</th><th>虚拟 IP</th><th>状态</th><th>路由</th><th>公网 IP</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
   } catch (e) {
     box.innerHTML = '<p class="msg mb0">加载失败：' + esc(friendlyErr(e)) +
       '</p><div class="modal-foot"><button type="button" class="btn ghost" data-act="view-members" data-nid="' + esc(nid) + '">重试</button></div>';
@@ -3945,6 +3940,20 @@ async function renderMembersModal(nid) {
 // True when the members modal is open for the given network.
 function membersModalOpenFor(nid) {
   return !$('modal').hidden && $('modal-body').dataset.membersNid === nid;
+}
+
+async function deleteRouteFromDetail(nid, target, cidr) {
+  const ok = await confirmDlg({
+    title: '删除委派路由',
+    message: `确定撤销 <b class="code">${esc(target)}</b> 的委派网段 <b class="code">${esc(cidr)}</b>？`,
+    confirmText: '删除', danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api('DELETE', `/admin/networks/${encodeURIComponent(nid)}/routes?target=${encodeURIComponent(target)}&cidr=${encodeURIComponent(cidr)}`);
+    toast('委派路由已删除');
+    await openNetDetail(nid);
+  } catch (e) { handleErr(e, '删除委派路由失败'); }
 }
 
 async function kickNode(nid, nodeID) {
@@ -4416,9 +4425,6 @@ document.addEventListener('click', async e => {
     case 'do-chpass':
       withBusy(el, () => doChpass());
       break;
-    case 'do-save-subnets':
-      withBusy(el, () => saveNodeSubnets(el.dataset.node));
-      break;
     case 'dev-nets':
       devNets(el, el.dataset.dev);
       break;
@@ -4455,7 +4461,7 @@ $('net-detail').addEventListener('click', async e => {
     case 'toggle-approval': await toggleNetApproval(); break;
     case 'delete': await deleteNetFromDetail(); break;
     case 'kick': await kickNodeFromDetail(nid, nodeID, el); break;
-    case 'subnets': openNodeSubnets(nodeID); break;
+    case 'delete-route': await deleteRouteFromDetail(nid, el.dataset.target, el.dataset.cidr); break;
     case 'approve': await approvePendingDetail(nid, el.dataset.pid, el); break;
     case 'deny': await denyPendingDetail(nid, el.dataset.pid, el); break;
   }

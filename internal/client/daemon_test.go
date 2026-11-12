@@ -1612,6 +1612,49 @@ func TestPingServerStateRemovesRevokedNetwork(t *testing.T) {
 	}
 }
 
+func TestSetRoutesDistinguishesMissingEndpointFromDeletedNetwork(t *testing.T) {
+	tests := []struct {
+		name       string
+		infoStatus int
+		want       string
+	}{
+		{name: "old server without routes endpoint", infoStatus: http.StatusOK, want: "服务端不支持该功能"},
+		{name: "network deleted", infoStatus: http.StatusNotFound, want: netGoneErr.Error()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPut && r.URL.Path == "/api/v1/networks/n1/routes" {
+					http.NotFound(w, r)
+					return
+				}
+				if r.Method == http.MethodGet && r.URL.Path == "/api/v1/networks/n1" {
+					w.WriteHeader(tc.infoStatus)
+					if tc.infoStatus == http.StatusOK {
+						_, _ = w.Write([]byte(`{}`))
+					}
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer ts.Close()
+
+			d, _ := newTestDaemon(t)
+			d.mu.Lock()
+			d.cfg.ServerAddr = ts.URL
+			d.cfg.Networks = map[string]*NetworkCfg{
+				"n1": {NodeID: "node1", Token: "tok", Subnet: "10.88.1.0/24", Owner: true},
+			}
+			d.mu.Unlock()
+
+			err := d.SetRoutes("n1", nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("SetRoutes error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // TestSyncNetworksRefreshesExistingToken covers the reinstall/startup path:
 // DeviceNetworkDetails rotates the node token, and the client must persist it
 // even when the network itself is already in the local config.

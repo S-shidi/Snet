@@ -16,7 +16,23 @@ RUN npx --yes esbuild@0.25.12 deploy/docker/web-build/web.ts \
 
 # Stage 2: runtime with snetd + nginx + supervisor.
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates nginx supervisor
+# iptables is required by the relay gateway mode (NAT masquerading for the
+# delegated subnets). The container runs with NET_ADMIN and host networking,
+# so the rules apply to the host's network namespace. ip6tables covers the
+# IPv6 side of the same rules.
+#
+# iptables-legacy is the fallback backend: the nf_tables backend needs kernel
+# support that older NAS kernels (Synology DSM) lack, and it then fails on
+# every command with "Table does not exist". The legacy xtables backend talks
+# to the same classic ip_tables modules the host firewall uses.
+RUN apk add --no-cache ca-certificates nginx supervisor iptables iptables-legacy ip6tables
+# Alpine keeps the binaries in /sbin while tooling and checklists often look
+# for the Debian-style /usr/sbin path. Expose both so the binary is found
+# regardless of the PATH the daemon inherits.
+RUN ln -sf /sbin/iptables /usr/sbin/iptables \
+ && ln -sf /sbin/iptables-legacy /usr/sbin/iptables-legacy \
+ && ln -sf /sbin/ip6tables /usr/sbin/ip6tables \
+ && ln -sf /sbin/ip6tables-legacy /usr/sbin/ip6tables-legacy
 
 # Never bake a machine-id into the image. Every container built from it would
 # otherwise derive the same device identity. The daemon persists its own ID in

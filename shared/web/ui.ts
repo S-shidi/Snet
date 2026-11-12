@@ -3,7 +3,7 @@
  * Platform adapters (Desktop/Web/Android) provide a Backend implementation
  * and call init() to wire everything up.
  */
-import { DEFAULT_SERVER, type Backend, type DaemonStatus, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode } from "./types.js";
+import { DEFAULT_SERVER, type Backend, type DaemonStatus, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode, type RelayRoute } from "./types.js";
 import { $, esc, SPIN, fmtBytes, onlineCount, toast, copyText, renderQR, loadQR, openModal, closeModal, confirmDialog, initTabs } from "./utils.js";
 import { subnetCheck, subnetWidgetHTML, subnetWidgetInit } from "./subnet.js";
 
@@ -94,7 +94,6 @@ async function refreshOwnerInfo(force = false) {
 }
 
 /* ── Peer advertised subnets (any member) ─────────────────────── */
-const peerAllowed: Record<string, string[]> = {};
 // Full peer snapshots are kept for the path monitor so it can show names,
 // virtual IPs and direct-path details without issuing another request.
 const peerDetails: Record<string, PeersResp> = {};
@@ -133,12 +132,7 @@ async function refreshPeerSubnets(force = false) {
           online: list.filter((p) => p.online).length + (selfOnline ? 1 : 0),
           total: list.length + 1,
         };
-        const set = new Set<string>();
-        for (const p of list) (p.allowedSubnets ?? []).forEach((s) => set.add(s));
-        for (const s of n.allowedSubnets ?? []) set.add(s);
-        peerAllowed[n.networkId] = [...set].sort();
       } catch (e) {
-        delete peerAllowed[n.networkId];
         delete peerSummary[n.networkId];
         delete peerDetails[n.networkId];
         peerErrors[n.networkId] = "该网络已失效或加载失败";
@@ -187,7 +181,7 @@ function renderHeader() {
 }
 
 /* ── Network cards ────────────────────────────────────────────── */
-function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; state?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; allowedSubnets?: string[]; visibility?: string; description?: string; tags?: string[]; role?: string }): string {
+function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; state?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; visibility?: string; description?: string; tags?: string[]; role?: string }): string {
   const gone = n.serverState === "gone";
   const linked = !!n.interface;
   const hasErr = !!n.error && !gone;
@@ -212,7 +206,6 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
   const rx = Object.values(peers).reduce((a, p) => a + (p.RxBytes ?? 0), 0);
   const pendingPill = !gone && pendingCount > 0 ? `<button class="pill pending" data-act="show-pending" title="点击查看待批准请求">待批准 (${pendingCount})</button>` : "";
   const err = gone ? `<p class="msg">${esc(n.error || "该网络已在服务端被删除")}</p>` : n.error ? `<p class="msg">${esc(n.error)}</p>` : "";
-  const allSubnets = peerAllowed[n.networkId] ?? n.allowedSubnets ?? [];
   return `
   <div class="net" data-nid="${esc(n.networkId)}" data-owner="${n.owner ? "1" : "0"}" ${gone ? 'data-gone="1"' : ""}>
     <div class="net-row">
@@ -222,7 +215,6 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
           <span>IP <code>${esc(n.ip ?? "-")}</code></span>
           <span>网段 <code>${esc(n.subnet ?? "-")}</code></span>
           <span>ID <code>${esc(n.networkId)}</code></span>
-          ${allSubnets.length > 0 ? `<span class="pill subnet-route" title="可路由：${esc(allSubnets.join(", "))}">路由 ${allSubnets.length} 个子网</span>` : ""}
         </div>
         <div class="net-stats">${memberLine}<span>收 <b>${fmtBytes(rx)}</b></span><span>发 <b>${fmtBytes(tx)}</b></span></div>
       </div>
@@ -671,120 +663,148 @@ async function openNetworkSettings(nid: string) {
 async function openSubnetRouteModal(nid: string) {
   const st = await backend.status();
   const net = (st?.networks ?? []).find((n) => n.networkId === nid);
-  const curSubnets: string[] = net?.allowedSubnets ?? [];
+  const canManage = !!net && canManageNetwork(net);
 
-  const renderTags = (tags: string[]) =>
-    tags.length
-      ? tags.map((s) => `<span class="chip chip-active">${esc(s)}<button data-del="${esc(s)}" class="chip-del" title="移除">&times;</button></span>`).join("")
-      : `<span class="muted">暂无生效子网</span>`;
+  // Owner view: the delegated relay routes of the network plus the nodes
+  // that can be picked as the gateway for a delegated subnet.
+  let routes: RelayRoute[] = [];
+  let nodes: NetNode[] = [];
+  if (canManage) {
+    try {
+      const info = await backend.netinfo(nid);
+      ownerInfo[nid] = info;
+      routes = info.routes ?? [];
+      nodes = (info.nodes ?? []) as unknown as NetNode[];
+    } catch {
+      /* fall back to the peer snapshot below */
+    }
+  }
+  if (!nodes.length) {
+    const r = peerDetails[nid];
+    nodes = r ? [...(r.peers ?? []), ...(r.self ? [r.self] : [])] : [];
+  }
+  const selfID = net?.networkId ? (peerDetails[nid]?.self?.id ?? "") : "";
+  // Every node of the network can be the gateway, including this one: the
+  // owner often is the machine that reaches the delegated LAN. A route
+  // delegated to the owner is honoured by the gateway itself (it forwards
+  // the traffic towards the LAN) and by the other members (they send the
+  // traffic through the owner's tunnel).
+  const targets = nodes.filter((n) => n.id);
+
+  const renderRoutes = (list: RelayRoute[]) => {
+    if (!list.length) return `<span class="muted">尚未委派任何路由</span>`;
+    return list
+      .map((rt) => {
+        const node = nodes.find((n) => n.id === rt.targetNodeId);
+        const whoHTML = node ? deviceLabel(node) : esc(rt.targetNodeId.slice(0, 8));
+        const whoText = node ? deviceLabelText(node) : rt.targetNodeId.slice(0, 8);
+        const active = rt.status === "active";
+        const badge = active
+          ? `<span class="pill ok">已生效</span>`
+          : `<span class="pill off">待确认</span>`;
+        const why = node && node.relayError
+          ? `<span class="muted"> · ${esc(node.relayError)}</span>`
+          : "";
+        return `<span class="chip chip-active" title="${esc(rt.cidr)} → ${esc(whoText)}">${whoHTML} → ${esc(rt.cidr)} ${badge}${why}<button data-del-route="${esc(rt.targetNodeId)}|${esc(rt.cidr)}" class="chip-del" title="移除">&times;</button></span>`;
+      })
+      .join("");
+  };
+
+  const ownerSection = canManage
+    ? `<div class="subnet-section subnet-section-manual">
+        <div class="subnet-section-title">委派中继路由</div>
+        <p class="hint">选择一台节点作为该网段的网关。目标节点需开启「允许本设备作为中继网关」，确认后路由才会生效。</p>
+        <div id="sr-routes" class="subnet-tags subnet-tags-active">${renderRoutes(routes)}</div>
+        <div class="subnet-add-row">
+          <select id="sr-target" aria-label="目标节点">
+            ${targets.length
+              ? targets
+                  .map((n) => {
+                    const relay = n.allowRelay ? "（已开启中继）" : n.relayError ? "（网关不可用）" : "（未开启中继）";
+                    const who = n.id === selfID ? "本机" : "";
+                    return `<option value="${esc(n.id)}">${esc(who ? who + " · " : "")}${esc(deviceLabelText(n))} · ${esc(n.ip || "-")}${esc(relay)}</option>`;
+                  })
+                  .join("")
+              : `<option value="">（无可选节点）</option>`}
+          </select>
+          <input type="text" id="sr-cidr" placeholder="如 192.168.3.0/24" />
+          <button id="sr-route-add" class="btn ghost sm">委派</button>
+        </div>
+        <div class="settings-actions"><button id="sr-route-save" class="btn" type="button">保存委派路由</button></div>
+        <p class="msg" id="sr-route-result"></p>
+      </div>`
+    : `<p class="hint">仅创建者可以委派子网路由。</p>`;
 
   openModal({
     title: `子网路由 · ${nid}`,
-    body: `
-      <p class="hint">宣告本设备的局域网子网，其他成员可通过 VPN 访问。</p>
-      <div class="subnet-section subnet-section-active">
-        <div class="subnet-section-title">当前生效的子网</div>
-        <div id="sr-tags" class="subnet-tags subnet-tags-active">${renderTags(curSubnets)}</div>
-      </div>
-      <div class="subnet-section subnet-section-detected">
-        <div class="subnet-section-title">检测到的本地子网</div>
-        <div id="sr-suggest" class="subnet-tags subnet-tags-detected"><span class="muted">正在检测…</span></div>
-      </div>
-      <div class="subnet-section subnet-section-manual">
-        <div class="subnet-section-title">手动添加</div>
-        <div class="subnet-add-row">
-          <input type="text" id="sr-input" placeholder="如 192.168.3.0/24" />
-          <button id="sr-add" class="btn ghost sm">添加</button>
-        </div>
-      </div>
-      <p class="msg" style="margin-top:8px">IP 转发将由后台服务自动开启，无需手动配置。</p>
-      <p class="msg" id="sr-result"></p>`,
-    footer: `<button data-close class="btn ghost">取消</button><button id="sr-save" class="btn">保存</button>`,
+    body: ownerSection,
+    footer: `<button data-close class="btn ghost">关闭</button>`,
     onBody: (body) => {
-      const tags = [...curSubnets];
-      const tagsEl = body.querySelector<HTMLElement>("#sr-tags")!;
-      const suggestEl = body.querySelector<HTMLElement>("#sr-suggest")!;
-      const input = body.querySelector<HTMLInputElement>("#sr-input")!;
-      const result = body.querySelector<HTMLElement>("#sr-result")!;
+      const routesEl = body.querySelector<HTMLElement>("#sr-routes");
+      const targetEl = body.querySelector<HTMLSelectElement>("#sr-target");
+      const cidrEl = body.querySelector<HTMLInputElement>("#sr-cidr");
+      const routeResult = body.querySelector<HTMLElement>("#sr-route-result");
+      const draft: RelayRoute[] = routes.map((r) => ({ ...r }));
 
-      const rerender = () => { tagsEl.innerHTML = renderTags(tags); };
-
-      const refreshSuggest = (localSubnets: string[]) => {
-        const suggestions = localSubnets.filter((s) => !tags.includes(s));
-        if (!suggestions.length) {
-          suggestEl.innerHTML = `<span class="muted">未发现其他可用的本地子网</span>`;
-          return;
-        }
-        suggestEl.innerHTML = suggestions
-          .map((s) => `<span class="chip chip-candidate" data-add="${esc(s)}" title="添加 ${esc(s)}">${esc(s)} <span class="chip-add">+</span></span>`)
-          .join("");
+      const rerenderRoutes = () => {
+        if (routesEl) routesEl.innerHTML = renderRoutes(draft);
       };
 
-      let localSubnets: string[] = [];
-      backend.detectLocalSubnets()
-        .then((arr) => { localSubnets = arr; refreshSuggest(arr); })
-        .catch(() => { refreshSuggest([]); });
-
-      suggestEl.addEventListener("click", (e) => {
-        const chip = (e.target as HTMLElement).closest<HTMLElement>("[data-add]");
-        if (!chip) return;
-        const cidr = chip.dataset.add!;
-        if (tags.includes(cidr)) return;
-        tags.push(cidr);
-        rerender();
-        refreshSuggest(localSubnets);
-      });
-
-      body.querySelector("#sr-add")!.addEventListener("click", () => {
-        const raw = input.value.trim();
-        if (!raw) return;
-        if (tags.includes(raw)) { result.textContent = "该子网已添加"; return; }
-        const chk = subnetCheck(raw, 24);
-        if (!chk.ok) { result.className = "msg"; result.textContent = `无效: ${chk.error}`; return; }
-        const cidr = chk.value;
-        if (tags.includes(cidr)) { result.textContent = "该子网已添加"; return; }
-        tags.push(cidr);
-        input.value = "";
-        result.textContent = "";
-        rerender();
-        refreshSuggest(localSubnets);
-      });
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") { e.preventDefault(); (body.querySelector("#sr-add") as HTMLElement).click(); }
-      });
-      tagsEl.addEventListener("click", (e) => {
-        const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-del]");
-        if (!btn) return;
-        const val = btn.dataset.del!;
-        const idx = tags.indexOf(val);
-        if (idx >= 0) tags.splice(idx, 1);
-        rerender();
-        refreshSuggest(localSubnets);
-      });
-
-      body.querySelector("#sr-save")!.addEventListener("click", async () => {
-        const saveBtn = body.querySelector<HTMLButtonElement>("#sr-save")!;
-        const origText = saveBtn.textContent;
-        saveBtn.disabled = true;
-        result.className = "msg";
-        result.textContent = "保存中…";
-        try {
-          const r = await ctlOrClean(nid, "子网路由", async () => {
-            await backend.updateSubnets({ nid, subnets: tags });
-            return true;
-          });
-          if (r === null) return;
-          result.className = "msg ok";
-          result.textContent = "已保存";
-          toast("子网路由已更新");
-          closeModal();
-        } catch (e) {
-          result.className = "msg";
-          result.textContent = `保存失败: ${e}`;
-          saveBtn.disabled = false;
-          saveBtn.textContent = origText;
-        }
-      });
+      if (routesEl && targetEl && cidrEl) {
+        body.querySelector("#sr-route-add")!.addEventListener("click", () => {
+          const target = targetEl.value;
+          if (!target) { if (routeResult) routeResult.textContent = "请选择目标节点"; return; }
+          const raw = cidrEl.value.trim();
+          if (!raw) return;
+          const chk = subnetCheck(raw, 24);
+          if (!chk.ok) {
+            if (routeResult) { routeResult.className = "msg"; routeResult.textContent = `无效: ${chk.error}`; }
+            return;
+          }
+          const cidr = chk.value;
+          if (draft.some((r) => r.targetNodeId === target && r.cidr === cidr)) {
+            if (routeResult) routeResult.textContent = "该路由已存在";
+            return;
+          }
+          draft.push({ targetNodeId: target, cidr, status: "pending" });
+          cidrEl.value = "";
+          if (routeResult) { routeResult.className = "msg"; routeResult.textContent = ""; }
+          rerenderRoutes();
+        });
+        cidrEl.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); (body.querySelector("#sr-route-add") as HTMLElement).click(); }
+        });
+        routesEl.addEventListener("click", (e) => {
+          const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-del-route]");
+          if (!btn) return;
+          const [nodeId, cidr] = (btn.dataset.delRoute ?? "").split("|");
+          const idx = draft.findIndex((r) => r.targetNodeId === nodeId && r.cidr === cidr);
+          if (idx >= 0) draft.splice(idx, 1);
+          rerenderRoutes();
+        });
+        body.querySelector("#sr-route-save")!.addEventListener("click", async () => {
+          const saveBtn = body.querySelector<HTMLButtonElement>("#sr-route-save")!;
+          saveBtn.disabled = true;
+          if (routeResult) { routeResult.className = "msg"; routeResult.textContent = "保存中…"; }
+          try {
+            const r = await ctlOrClean(nid, "委派路由", async () => {
+              await backend.setRoutes({
+                nid,
+                routes: draft.map((x) => ({ targetNodeId: x.targetNodeId, cidr: x.cidr })),
+              });
+              return true;
+            });
+            if (r === null) return;
+            if (routeResult) { routeResult.className = "msg ok"; routeResult.textContent = "已保存，等待目标节点确认"; }
+            toast("委派路由已更新");
+            await refreshOwnerInfo(true);
+          } catch (e) {
+            if (routeResult) { routeResult.className = "msg"; routeResult.textContent = `保存失败: ${e}`; }
+          } finally {
+            saveBtn.disabled = false;
+          }
+        });
+      }
     },
   });
 }
@@ -955,6 +975,26 @@ function deviceLabel(nd: { deviceName?: string; deviceId?: string }): string {
   return "-";
 }
 
+function deviceLabelText(nd: { deviceName?: string; deviceId?: string }): string {
+  const name = nd.deviceName?.trim();
+  const id = nd.deviceId ? nd.deviceId.slice(0, 8) : "";
+  if (name && id) return `${name} (${id})`;
+  if (name) return name;
+  if (id) return id;
+  return "-";
+}
+
+function nodeRouteCell(routes: RelayRoute[] | undefined, nodeID: string): string {
+  const mine = (routes ?? []).filter((r) => r.targetNodeId === nodeID);
+  if (!mine.length) return '<span class="muted">-</span>';
+  return mine
+    .map((r) => {
+      const active = r.status === "active";
+      return `<span class="pill ${active ? "ok" : "warn"} subnet-route" title="${active ? "已生效" : "待节点确认"}">${esc(r.cidr)}</span>`;
+    })
+    .join(" ");
+}
+
 async function showMembers(nid: string) {
   const mine = (status?.networks ?? []).find((n) => n.networkId === nid);
   if (mine?.serverState === "gone") {
@@ -976,10 +1016,8 @@ async function showMembers(nid: string) {
              <option value="member" ${role === "member" ? "selected" : ""}>成员</option>
              <option value="owner" ${role === "owner" ? "selected" : ""}>创建者（转交所有权）</option>
            </select>`;
-      const subnets = (nd.allowedSubnets?.length ?? 0) > 0
-        ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
-        : `<span class="muted">-</span>`;
-      return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${roleCtl}</td><td>${subnets}</td><td>${kick}</td></tr>`;
+      const routeCell = nodeRouteCell(r.routes, nd.id);
+      return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${roleCtl}</td><td>${routeCell}</td><td>${kick}</td></tr>`;
     }).join("");
     const pendingRows = (r.pending ?? []).map((p) => {
       return `<tr><td colspan="2"><span class="muted">设备</span> <code>${p.deviceId ? esc(p.deviceId.slice(0, 8)) + "…" : "-"}</code><span class="muted"> 公钥</span> <code>${esc(p.publicKey.slice(0, 12))}…</code></td><td><span class="pill warn">待批准</span></td><td>-</td><td><button data-pend="${esc(p.id)}" class="btn sm" style="background:var(--ok)">批准</button> <button data-pend="${esc(p.id)}" class="btn danger sm">拒绝</button></td></tr>`;
@@ -1065,15 +1103,13 @@ async function showMembers(nid: string) {
     return;
   }
   // Non-owner: read-only peers view
-  const r = await backend.peers(nid);
+  const [r, info] = await Promise.all([backend.peers(nid), backend.netinfo(nid)]);
   const all = r.self ? [r.self, ...(r.peers ?? [])] : (r.peers ?? []);
   const rows = all.map((nd) => {
     const isSelf = nd.ip === myIp;
     const online = nd.online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>';
-    const subnets = (nd.allowedSubnets?.length ?? 0) > 0
-        ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
-        : `<span class="muted">-</span>`;
-    return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${subnets}</td><td>${isSelf ? `<span class="muted">自己</span>` : ""}</td></tr>`;
+    const routeCell = nodeRouteCell(info.routes, nd.id);
+    return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${routeCell}</td><td>${isSelf ? `<span class="muted">自己</span>` : ""}</td></tr>`;
   }).join("");
   openModal({
     title: `成员 · ${nid}`,
@@ -1258,6 +1294,11 @@ function openSettingsModal() {
     `UDP ${m.port} → ${m.externalIp}:${m.externalPort} · ${natViaLabel(m.via)}`
   );
   const natErr = nat?.errors?.[0];
+  // Relay switches: whether this device may act as a gateway, and whether it
+  // honours the network's delegated routes (enabled by default).
+  const allowRelay = status?.allowRelay === true;
+  const useRelay = status?.useRelay !== false;
+  const relayErr = status?.relayError || "";
   openModal({
     title: "信息",
     body: `<div class="info-status">
@@ -1296,6 +1337,32 @@ function openSettingsModal() {
         </div>
         <p class="msg" id="s-nat-state">${!status ? "后台服务未运行" : !natEnabled ? "已关闭" : natLines.length ? `已映射 ${natLines.length} 个端口` : "正在等待路由器分配映射…"}</p>
         <div class="hint" id="s-nat-list">${natLines.map(esc).join("<br>")}${natErr ? `<div style="color:var(--err)">端口 ${natErr.port}: ${esc(natErr.error)}</div>` : ""}</div>
+      </div>
+      <div class="settings-block">
+        <div class="row" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px">
+          <div>
+            <label style="margin-bottom:2px">允许本设备作为中继网关转发流量</label>
+            <div class="hint">开启后本设备可为网络转发流量，需要 IP 转发与 NAT 权限，默认关闭</div>
+          </div>
+          <label class="switch">
+            <input id="s-allow-relay" type="checkbox" ${allowRelay ? "checked" : ""} ${!status ? "disabled" : ""} />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <p class="msg" id="s-allow-relay-state">${relayErr ? esc(relayErr) : allowRelay ? "已开启，等待目标节点确认路由" : "已关闭"}</p>
+      </div>
+      <div class="settings-block">
+        <div class="row" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px">
+          <div>
+            <label style="margin-bottom:2px">使用网络内的中继网关访问其他子网</label>
+            <div class="hint">按网络创建者委派的路由访问其他子网，默认开启</div>
+          </div>
+          <label class="switch">
+            <input id="s-use-relay" type="checkbox" ${useRelay ? "checked" : ""} ${!status ? "disabled" : ""} />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <p class="msg" id="s-use-relay-state">${useRelay ? "已开启" : "已关闭：忽略网络中所有已生效的中继路由"}</p>
       </div>
       <div class="settings-actions">
         <button id="s-logs" class="btn ghost" type="button">导出诊断日志</button>
@@ -1383,8 +1450,50 @@ function openSettingsModal() {
         }
       });
 
-      body.querySelector("#s-logs")?.addEventListener("click", async (e) => {
-        const btn = e.currentTarget as HTMLButtonElement;
+      // The two relay switches are saved together: the daemon keeps them in
+      // one device-wide configuration and reports the gateway status back.
+      const allowRelayInput = body.querySelector<HTMLInputElement>("#s-allow-relay");
+      const allowRelayState = body.querySelector<HTMLElement>("#s-allow-relay-state");
+      const useRelayInput = body.querySelector<HTMLInputElement>("#s-use-relay");
+      const useRelayState = body.querySelector<HTMLElement>("#s-use-relay-state");
+
+      const saveRelayOptions = async () => {
+        const wantAllow = allowRelayInput?.checked ?? false;
+        const wantUse = useRelayInput?.checked ?? true;
+        if (allowRelayState) {
+          allowRelayState.className = "msg";
+          allowRelayState.textContent = wantAllow ? "正在开启中继网关…" : "正在关闭中继网关…";
+        }
+        if (allowRelayInput) allowRelayInput.disabled = true;
+        if (useRelayInput) useRelayInput.disabled = true;
+        try {
+          await backend.setRelayOptions({ allowRelay: wantAllow, useRelay: wantUse });
+          await refresh();
+          if (allowRelayState) {
+            allowRelayState.className = "msg ok";
+            allowRelayState.textContent = wantAllow ? "已开启中继网关" : "已关闭中继网关";
+          }
+          if (useRelayState) {
+            useRelayState.className = "msg ok";
+            useRelayState.textContent = wantUse ? "已开启" : "已关闭：忽略网络中所有已生效的中继路由";
+          }
+          toast("中继设置已保存");
+        } catch (e) {
+          if (allowRelayInput) allowRelayInput.checked = !wantAllow;
+          if (useRelayInput) useRelayInput.checked = !wantUse;
+          if (allowRelayState) {
+            allowRelayState.className = "msg";
+            allowRelayState.textContent = `保存失败: ${e}`;
+          }
+        } finally {
+          if (allowRelayInput) allowRelayInput.disabled = false;
+          if (useRelayInput) useRelayInput.disabled = false;
+        }
+      };
+      allowRelayInput?.addEventListener("change", () => { void saveRelayOptions(); });
+      useRelayInput?.addEventListener("change", () => { void saveRelayOptions(); });
+
+      body.querySelector("#s-logs")?.addEventListener("click", async (e) => {        const btn = e.currentTarget as HTMLButtonElement;
         btn.disabled = true;
         try {
           const text = await backend.logs();
@@ -1510,7 +1619,6 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
   const self = r?.self;
   const selfIp = n.ip || self?.ip || "-";
   const nat = n.relayPath?.natType || self?.natType || "unknown";
-  const subnets = (n.allowedSubnets?.length ? n.allowedSubnets : self?.allowedSubnets) ?? [];
   const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
   const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
   const peers = r?.peers ?? [];
@@ -1523,9 +1631,6 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
     else if (path === "relay") relay++;
     else probing++;
   }
-  const subnetHTML = subnets.length
-    ? subnets.map((s) => `<span class="path-subnet">${esc(s)}</span>`).join("")
-    : `<span class="muted">未宣告子网</span>`;
   const p2p = direct > 0
     ? `<div class="path-p2p-banner"><span class="path-p2p-icon">↯</span><div><b>当前已建立 P2P 直连</b><span>${direct} 个节点正在通过直连传输，延迟更低。</span></div></div>`
     : "";
@@ -1556,7 +1661,6 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
           <code class="path-ip">${esc(selfIp)}</code>
           <span class="path-nat">NAT 类型 <b>${esc(nat)}</b></span>
         </div>
-        <div class="path-subnets"><span class="path-label">宣告子网</span>${subnetHTML}</div>
       </div>
       ${p2p}
       <div class="path-peers">${peerHTML}</div>
@@ -1581,7 +1685,7 @@ function canManageNetwork(n: NetInfo): boolean {
   return networkRole(n) === "owner" || !!n.owner;
 }
 
-function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string): string {
+function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string, routes: RelayRoute[] | undefined): string {
   if (!r) return `<p class="hint">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
   const list: NetNode[] = self ? [self, ...(r.peers ?? [])] : (r.peers ?? []);
@@ -1592,12 +1696,17 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const online = nd.online
       ? '<span class="pill ok">在线</span>'
       : '<span class="pill off">离线</span>';
-    const subnets = (nd.allowedSubnets?.length ?? 0) > 0
-      ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
-      : '<span class="muted">-</span>';
+    const routeCell = nodeRouteCell(routes, nd.id);
     const rolePill = role === "owner"
       ? `<span class="pill accent">${roleLabel(role)}</span>`
       : `<span class="pill off">${roleLabel(role)}</span>`;
+    // Relay gateway capability: the owner picks a gateway for a delegated
+    // subnet, so the table shows which nodes can actually forward.
+    const relay = nd.allowRelay
+      ? `<span class="pill ok" title="该节点已开启中继网关">中继</span>`
+      : nd.relayError
+        ? `<span class="pill warn" title="${esc(nd.relayError)}">不可用</span>`
+        : '<span class="muted">-</span>';
     const diag = isSelf
       ? '<td><span class="muted">-</span></td>'
       : `<td class="ping-cell"><button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">📡 诊断</button><span class="ping-result" data-ping-result="${esc(nd.id)}"></span></td>`;
@@ -1608,14 +1717,15 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       <td>${deviceLabel(nd)}</td>
       <td class="mono">${esc(nd.ip || "-")}</td>
       <td>${online}</td>
-      <td>${subnets}</td>
+      <td>${routeCell}</td>
+      <td>${relay}</td>
       <td>${rolePill}</td>
       ${diag}
       ${op}
     </tr>`;
   }).join("");
   return `<div class="tbl-wrap"><table class="members"><thead><tr>
-    <th>设备名 / 设备ID</th><th>虚拟 IP</th><th>状态</th><th>子网路由</th><th>角色</th><th>诊断</th>${canManage ? "<th>操作</th>" : ""}
+    <th>设备名 / 设备ID</th><th>虚拟 IP</th><th>状态</th><th>子网路由</th><th>中继网关</th><th>角色</th><th>诊断</th>${canManage ? "<th>操作</th>" : ""}
   </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
@@ -1793,7 +1903,7 @@ function networkDetailHTML(n: NetInfo): string {
   </section>
   <section class="card detail-section">
     <div class="detail-section-head"><h3>成员列表</h3><span class="hint">${members}</span></div>
-    ${memberTableHTML(n, r, canManage, role)}
+    ${memberTableHTML(n, r, canManage, role, ownerInfo[n.networkId]?.routes)}
   </section>`;
 }
 
@@ -1862,7 +1972,12 @@ async function openNetworkDetail(nid: string) {
   if (detail) detail.hidden = false;
   renderNetworkDetail();
   try {
-    peerDetails[nid] = await withTimeout(backend.peers(nid), 5000, "成员信息加载超时");
+    const [peers, info] = await Promise.all([
+      withTimeout(backend.peers(nid), 5000, "成员信息加载超时"),
+      backend.netinfo(nid),
+    ]);
+    peerDetails[nid] = peers;
+    ownerInfo[nid] = info;
     delete peerErrors[nid];
     renderNetworkDetail();
   } catch {

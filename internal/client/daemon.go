@@ -318,6 +318,14 @@ type Daemon struct {
 	// netErrs records the last tunnel bring-up failure per network so the
 	// status API can explain why an active-looking network has no tunnel.
 	netErrs map[string]string
+	// relayErr records why the local relay gateway setup failed (empty when
+	// the gateway is healthy or not enabled). It is reported to the
+	// coordination server so delegated routes stay pending with a reason.
+	relayErr string
+	// relayServed caches the subnets this node currently forwards as the
+	// network's relay gateway, per node ID, so the log only reports a
+	// change and not every poll.
+	relayServed map[string]string
 	// serverState records the server-side existence of each joined network.
 	// Values: pointer to "ok"   = network exists on server
 	//         pointer to "gone" = network no longer exists (deleted by owner)
@@ -370,6 +378,7 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 		nets:          make(map[string]*netRuntime),
 		pendingRuns:   make(map[string]chan struct{}),
 		netErrs:       make(map[string]string),
+		relayServed:   make(map[string]string),
 		retryPending:  make(map[string]struct{}),
 		retryAttempts: make(map[string]int),
 		relayEP:       make(map[string]string),
@@ -853,6 +862,9 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 		return resp, err
 	}
 	d.reconcileOwnership(resp.NetworkID)
+	// Tell the server whether this device can act as a relay gateway, so a
+	// route delegated to it can become active.
+	d.publishRelayCapabilityLocked()
 	return resp, nil
 }
 
@@ -889,6 +901,9 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 		return resp, err
 	}
 	d.reconcileOwnership(resp.NetworkID)
+	// Tell the server whether this device can act as a relay gateway, so a
+	// route delegated to it can become active.
+	d.publishRelayCapabilityLocked()
 	return resp, nil
 }
 
@@ -969,6 +984,8 @@ func (d *Daemon) pendingLoop(pendingID string, stop chan struct{}) {
 			delete(d.pendingRuns, pendingID)
 			_ = d.save()
 			d.reconcileOwnership(status.NetworkID)
+			// Report the relay gateway capability for the newly joined network.
+			d.publishRelayCapabilityLocked()
 			d.mu.Unlock()
 			log.Printf("pending %s approved, joined %s", pendingID, status.NetworkID)
 			return
@@ -1114,6 +1131,15 @@ func (d *Daemon) Start() error {
 			break
 		}
 	}
+	// Relay gateway mode: when the user allowed this device to act as a
+	// gateway, the local forwarding and NAT rules must be in place before
+	// any delegated route can be honoured. A failure is reported to the
+	// coordination server so the routes stay pending with a visible reason.
+	d.applyRelayGatewayLocked()
+	// Report the gateway capability again after a restart: the server's view
+	// of this node must match the current state, otherwise a route delegated
+	// to this node would stay pending until the next manual change.
+	d.publishRelayCapabilityAsync()
 	for nid := range d.cfg.Networks {
 		nc := d.cfg.Networks[nid]
 		if !nc.Active {
@@ -1930,6 +1956,9 @@ func (d *Daemon) pollLoop(nid string) {
 			}
 			rt.path.UpdatePeersWithContext(st.Peers, subnets, selfIP)
 			peers := rt.path.PreparePeers(st.Peers)
+			// Inject the network's delegated relay routes: the CIDR an owner
+			// delegated to a node must travel through that node's tunnel.
+			peers = d.planRelayRoutesLocked(nc, st.Routes, peers)
 			if err := rt.tun.ApplyPeers(peers, nc.Subnet, ""); err != nil {
 				log.Printf("apply relay-v2 peers %s: %v", nid, err)
 				d.noteApplyErrLocked(nid, err)
@@ -1953,6 +1982,9 @@ func (d *Daemon) pollLoop(nid string) {
 		// off the selected relay so failover actually moves the data plane.
 		st.RelayEndpoint = sel
 		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnets(), observed)
+		// Inject the network's delegated relay routes into the peer routing
+		// entries so the delegated CIDRs travel through their gateway node.
+		peers = d.planRelayRoutesLocked(nc, st.Routes, peers)
 		// Per-peer WireGuard tunnel stats straight from the engine, so the
 		// poll line distinguishes a real data-plane handshake from the
 		// relay-group "online" guess (Cc, CJEB, KAYS... consumers poll peers
@@ -2796,6 +2828,174 @@ func (d *Daemon) UpdateSubnets(nid string, subnets []string) error {
 	return nil
 }
 
+// applyRelayGatewayLocked (re)configures the local relay gateway according to
+// the current configuration and records the outcome. Caller must hold d.mu.
+//
+// When the gateway is disabled the previous error is cleared and the node
+// stops advertising itself as a gateway. When it is enabled the forwarding
+// and NAT rules are installed; a failure is kept in d.relayErr and reported
+// to the coordination server, so the routes delegated to this node stay
+// pending instead of blackholing traffic.
+func (d *Daemon) applyRelayGatewayLocked() {
+	if !d.cfg.RelayAllowed() {
+		d.relayErr = ""
+		return
+	}
+	subnets := relayGatewaySubnets(d.cfg.Networks)
+	if err := setupRelayGateway(subnets); err != nil {
+		d.relayErr = describeRelayGatewayError(err)
+		log.Printf("relay gateway setup failed: %v", err)
+		return
+	}
+	d.relayErr = ""
+}
+
+// publishRelayCapabilityLocked reports this node's gateway capability to the
+// coordination server for every joined network. Caller must hold d.mu.
+//
+// The report is sent for all networks because the switch is device-wide: a
+// gateway that forwards for one network can forward for all of them.
+func (d *Daemon) publishRelayCapabilityLocked() {
+	allow := d.cfg.RelayAllowed() && d.relayErr == ""
+	relayErr := d.relayErr
+	for nid, nc := range d.cfg.Networks {
+		if nc == nil {
+			continue
+		}
+		token := nc.Token
+		api := d.apiLocked()
+		if err := api.SetRelayCapability(nid, token, allow, relayErr); err != nil {
+			log.Printf("report relay capability %s: %v", nid, err)
+		}
+	}
+}
+
+// publishRelayCapabilityAsync reports the gateway capability without blocking
+// the caller. The HTTP calls run outside the daemon lock so a slow server
+// cannot stall the control API or the daemon startup.
+func (d *Daemon) publishRelayCapabilityAsync() {
+	go func() {
+		d.mu.Lock()
+		allow := d.cfg.RelayAllowed() && d.relayErr == ""
+		relayErr := d.relayErr
+		type target struct {
+			nid   string
+			token string
+		}
+		var targets []target
+		for nid, nc := range d.cfg.Networks {
+			if nc == nil {
+				continue
+			}
+			targets = append(targets, target{nid: nid, token: nc.Token})
+		}
+		api := d.apiLocked()
+		d.mu.Unlock()
+		for _, t := range targets {
+			if err := api.SetRelayCapability(t.nid, t.token, allow, relayErr); err != nil {
+				log.Printf("report relay capability %s: %v", t.nid, err)
+			}
+		}
+	}()
+}
+
+// SetRelayOptions updates the two relay switches of this device:
+//
+//   - allowRelay makes the device act as a relay gateway for the networks it
+//     belongs to. The local gateway setup (IP forwarding + NAT) is applied
+//     immediately and a failure is reported to the coordination server.
+//   - useRelay controls whether the device honours the network's delegated
+//     routes. It defaults to enabled.
+//
+// The new state is persisted and reported to the server.
+func (d *Daemon) SetRelayOptions(allowRelay, useRelay bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.cfg.AllowRelay = allowRelay
+	u := useRelay
+	d.cfg.UseRelay = &u
+	if err := d.save(); err != nil {
+		return err
+	}
+	d.applyRelayGatewayLocked()
+	d.publishRelayCapabilityAsync()
+	return nil
+}
+
+// RelayOptions returns the current relay switches and the last gateway setup
+// error, for the status API.
+func (d *Daemon) RelayOptions() (allowRelay, useRelay bool, relayErr string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.cfg.RelayAllowed(), d.cfg.RelayUsed(), d.relayErr
+}
+
+// SetRoutes replaces the network's delegated relay routes. Only the network
+// owner may delegate routes; the server keeps them pending until the target
+// node confirms it can act as the gateway.
+func (d *Daemon) SetRoutes(nid string, routes []protocol.Route) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api := d.apiLocked()
+	if err := api.SetRoutes(nid, nc.Token, routes); err != nil {
+		var se *httpStatusErr
+		if errors.As(err, &se) && se.code == 404 {
+			// An older server returns 404 for the unknown /routes endpoint.
+			// Only GET /networks/{nid} returning 404 proves the network itself
+			// is gone; otherwise report a version/capability mismatch instead
+			// of telling the user to clean up a live network.
+			if _, infoErr := api.NetworkInfo(nid, nc.Token); infoErr != nil {
+				return wrapNetGone(infoErr)
+			}
+			return fmt.Errorf("服务端不支持该功能，请检查服务端版本")
+		}
+		return err
+	}
+	return nil
+}
+
+// planRelayRoutesLocked merges the network's delegated relay routes into the
+// peer routing entries. Caller must hold d.mu.
+//
+// When the device opted out of using the network's relay gateways
+// (use_relay = false) every delegated route is ignored and the peers are
+// returned untouched.
+func (d *Daemon) planRelayRoutesLocked(nc *NetworkCfg, routes []protocol.Route, peers []protocol.Node) []protocol.Node {
+	if len(routes) == 0 || !d.cfg.RelayUsed() {
+		return peers
+	}
+	selfID := ""
+	if nc != nil {
+		selfID = nc.NodeID
+	}
+	planner := NewRoutePlanner(selfID, true)
+	d.logRelayGatewayRolesLocked(nc, planner.ServedBySelf(routes))
+	return planner.Apply(peers, routes)
+}
+
+// logRelayGatewayRolesLocked reports the subnets this node forwards as the
+// network's relay gateway. The message is only written when the set changes,
+// so the poll loop does not spam the log. Caller must hold d.mu.
+func (d *Daemon) logRelayGatewayRolesLocked(nc *NetworkCfg, served []string) {
+	if nc == nil {
+		return
+	}
+	key := strings.Join(served, ",")
+	if d.relayServed[nc.NodeID] == key {
+		return
+	}
+	d.relayServed[nc.NodeID] = key
+	if len(served) == 0 {
+		log.Printf("relay gateway %s: no delegated subnet", nc.NodeID)
+		return
+	}
+	log.Printf("relay gateway %s: forwarding %s towards the LAN", nc.NodeID, key)
+}
+
 // DetectLocalSubnets enumerates network interfaces and returns the private
 // IPv4 CIDR subnets (e.g. "192.168.1.0/24") this device is directly on.
 // Virtual / tunnel interfaces are excluded.
@@ -3308,5 +3508,10 @@ func (d *Daemon) Status() (map[string]any, error) {
 		"networks":     nets,
 		"pendingJoins": pending,
 		"natMapping":   d.nat.status(),
+		// Relay switches: whether this device may act as a gateway for the
+		// network, and whether it honours the network's delegated routes.
+		"allowRelay": d.cfg.RelayAllowed(),
+		"useRelay":   d.cfg.RelayUsed(),
+		"relayError": d.relayErr,
 	}, nil
 }

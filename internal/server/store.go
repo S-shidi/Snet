@@ -195,25 +195,26 @@ type tokenEntry struct {
 }
 
 type networkRecord struct {
-	ID               string    `json:"id"`
-	OwnerNodeID      string    `json:"ownerNodeId"`
-	CreatedAt        string    `json:"createdAt"`
-	CodeHash         string    `json:"codeHash"`
-	Remaining        int       `json:"remaining"`
-	ExpiresAt        time.Time `json:"expiresAt"`
-	FailCount        int       `json:"failCount"`
-	LockedUntil      time.Time `json:"lockedUntil"`
-	IPAM             int       `json:"ipam"`
-	RelayPort        int       `json:"relayPort"`
-	Name             string    `json:"name,omitempty"`
-	Subnet           string    `json:"subnet,omitempty"`
-	OwnerDeviceID    string    `json:"ownerDeviceId,omitempty"`
-	LastActivityAt   int64     `json:"lastActivityAt,omitempty"`
-	ApprovalRequired bool      `json:"approvalRequired,omitempty"`
-	Managed          bool      `json:"managed,omitempty"`
-	Description      string    `json:"description,omitempty"`
-	Tags             []string  `json:"tags,omitempty"`
-	Visibility       string    `json:"visibility,omitempty"`
+	ID               string           `json:"id"`
+	OwnerNodeID      string           `json:"ownerNodeId"`
+	CreatedAt        string           `json:"createdAt"`
+	CodeHash         string           `json:"codeHash"`
+	Remaining        int              `json:"remaining"`
+	ExpiresAt        time.Time        `json:"expiresAt"`
+	FailCount        int              `json:"failCount"`
+	LockedUntil      time.Time        `json:"lockedUntil"`
+	IPAM             int              `json:"ipam"`
+	RelayPort        int              `json:"relayPort"`
+	Name             string           `json:"name,omitempty"`
+	Subnet           string           `json:"subnet,omitempty"`
+	OwnerDeviceID    string           `json:"ownerDeviceId,omitempty"`
+	LastActivityAt   int64            `json:"lastActivityAt,omitempty"`
+	ApprovalRequired bool             `json:"approvalRequired,omitempty"`
+	Managed          bool             `json:"managed,omitempty"`
+	Description      string           `json:"description,omitempty"`
+	Tags             []string         `json:"tags,omitempty"`
+	Visibility       string           `json:"visibility,omitempty"`
+	Routes           []protocol.Route `json:"routes,omitempty"`
 }
 
 // networkShareOpts carries the optional community-sharing metadata for a
@@ -415,6 +416,7 @@ func (s *Store) load() error {
 						Description:      r.Description,
 						Tags:             r.Tags,
 						Visibility:       r.Visibility,
+						Routes:           r.Routes,
 					},
 					pairing: &pairing{
 						codeHash:    r.CodeHash,
@@ -622,6 +624,7 @@ func (s *Store) persistNetwork(ns *networkState) error {
 		Description:      ns.n.Description,
 		Tags:             ns.n.Tags,
 		Visibility:       ns.n.Visibility,
+		Routes:           ns.n.Routes,
 	}
 	b, err := json.Marshal(r)
 	if err != nil {
@@ -2960,12 +2963,14 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 			n2 := *n
 			// 普通成员只看到对端设备名、IP、在线状态与设备 ID，不暴露角色。
 			// 注意：publicKey 必须保留——WireGuard 直连/中继都依赖对端公钥建立
-			// 隧道，隐藏它会让成员端无法配置任何 peer。AllowedSubnets 同样必须
-			// 保留：成员需要它来安装 WireGuard AllowedIPs 和系统路由，否则
-			// ownerless/managed 网络中的子网共享永远不可达。
+			// 隧道，隐藏它会让成员端无法配置任何 peer。
 			if !isOwner {
 				n2.Role = ""
 			}
+			// 节点自行宣告的子网（AllowedSubnets）已被网络级的委派路由取代：
+			// 网段由创建者指派给网关节点，网关确认后路由才生效。旧的宣告
+			// 数据不再下发，避免成员继续按旧模型安装路由。
+			n2.AllowedSubnets = nil
 			fillNodeView(&n2)
 			// Keep the peer's self-advertised direct endpoint; the caller
 			// decides whether to use it or fall back to the relay endpoint.
@@ -2975,6 +2980,7 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 	var self *protocol.Node
 	if me != nil {
 		m2 := *me
+		m2.AllowedSubnets = nil
 		fillNodeView(&m2)
 		self = &m2
 	}
@@ -2987,6 +2993,10 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 		RelayEndpoint:    relayEP,
 		RelayEndpoints:   relayEPs,
 		RelayV2:          s.relayV2InfoLocked(),
+		// Only confirmed (active) routes are pushed to the whole network; a
+		// pending route has no working gateway yet, so injecting it would
+		// blackhole the delegated subnet.
+		Routes: s.activeRoutesLocked(ns),
 	}, nil
 }
 
@@ -3004,6 +3014,10 @@ func (s *Store) RemoveNode(token string) error {
 	// Release the node's per-node unicast relay port before dropping the node.
 	s.releaseNodePortLocked(ns, te.NodeID)
 	s.clearNodeRelayIndexesLocked(ns, te.NodeID)
+	// Delegated routes pointing at this node can no longer be served.
+	if err := s.dropRoutesForNodeLocked(ns, te.NodeID); err != nil {
+		return err
+	}
 	delete(ns.nodes, te.NodeID)
 	delete(s.byToken, hashToken(token))
 	if err := s.deleteNode(te.NetworkID, te.NodeID); err != nil {
@@ -3671,6 +3685,9 @@ func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
 		if d := s.devices[c.DeviceID]; d != nil {
 			c.DeviceName = d.Name
 		}
+		// Subnet advertisement is superseded by delegated network routes.
+		// Never expose stale AllowedSubnets to clients or the admin console.
+		c.AllowedSubnets = nil
 		nodes = append(nodes, c)
 	}
 	pending := make([]protocol.PendingNode, 0, len(ns.pending))
@@ -3803,6 +3820,10 @@ func (s *Store) KickNode(token, nodeID string) error {
 	// matching RemoveNode/AdminRemoveNode. releaseNodePortLocked is idempotent.
 	s.releaseNodePortLocked(ns, nodeID)
 	s.clearNodeRelayIndexesLocked(ns, nodeID)
+	// Delegated routes pointing at the removed node can no longer be served.
+	if err := s.dropRoutesForNodeLocked(ns, nodeID); err != nil {
+		return err
+	}
 	delete(ns.nodes, nodeID)
 	for h, te := range s.byToken {
 		if te.NetworkID == ns.n.ID && te.NodeID == nodeID {
@@ -4477,6 +4498,9 @@ func (s *Store) AdminNodes(nid string) ([]protocol.Node, error) {
 		if d := s.devices[n.DeviceID]; d != nil {
 			node.DeviceName = d.Name
 		}
+		// Delegated routes are network-level; node subnet advertisement is
+		// legacy and must not be shown in the admin console.
+		node.AllowedSubnets = nil
 		// Enrich node with IPv6 and public IP information
 		enrichNodeWithIPInfo(&node, ns.n.Subnet)
 		nodes = append(nodes, node)
@@ -4497,6 +4521,10 @@ func (s *Store) AdminRemoveNode(nid, nodeID string) error {
 	// Release the node's per-node unicast relay port before dropping the node.
 	s.releaseNodePortLocked(ns, nodeID)
 	s.clearNodeRelayIndexesLocked(ns, nodeID)
+	// Delegated routes pointing at the removed node can no longer be served.
+	if err := s.dropRoutesForNodeLocked(ns, nodeID); err != nil {
+		return err
+	}
 	delete(ns.nodes, nodeID)
 	for h, te := range s.byToken {
 		if te.NetworkID == nid && te.NodeID == nodeID {
@@ -5018,6 +5046,10 @@ func (s *Store) AdminDeleteDevice(deviceID string) error {
 			if n.DeviceID == deviceID {
 				s.releaseNodePortLocked(ns, nodeID)
 				s.clearNodeRelayIndexesLocked(ns, nodeID)
+				// Delegated routes pointing at the removed node can no longer be served.
+				if err := s.dropRoutesForNodeLocked(ns, nodeID); err != nil {
+					return err
+				}
 				delete(ns.nodes, nodeID)
 				for h, te := range s.byToken {
 					if te.NetworkID == nid && te.NodeID == nodeID {
@@ -5319,6 +5351,176 @@ func (s *Store) UpdateAllowedSubnets(token string, subnets []string) error {
 	return s.persistNode(te.NetworkID, me)
 }
 
+// SetRoutes replaces the network's delegated relay routes. Only the network
+// owner may call it: the owner decides which node acts as the gateway for
+// which subnet.
+//
+// Every route is stored as "pending". It is promoted to "active" only once the
+// target node reports allow_relay (see UpdateRelayCapability), so a route
+// never silently blackholes traffic onto a node that never agreed to forward
+// it.
+func (s *Store) SetRoutes(token string, routes []protocol.Route) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	return s.setRoutesLocked(ns, routes)
+}
+
+// setRoutesLocked validates and stores the delegated routes. Callers must
+// hold s.mu and must have verified owner rights.
+//
+// Existing activations are preserved: a route that is already active stays
+// active unless its target stopped allowing relay. That keeps a full-list
+// PUT from downgrading live routes on every unrelated edit.
+func (s *Store) setRoutesLocked(ns *networkState, routes []protocol.Route) error {
+	prevActive := make(map[string]bool, len(ns.n.Routes))
+	for _, r := range ns.n.Routes {
+		if r.Status == protocol.RouteStatusActive {
+			prevActive[routeKey(r.TargetNodeID, r.CIDR)] = true
+		}
+	}
+	out := make([]protocol.Route, 0, len(routes))
+	seen := map[string]struct{}{}
+	for _, r := range routes {
+		cidr, err := validateSubnet(r.CIDR)
+		if err != nil {
+			return fmt.Errorf("委派网段 %q 无效: %w", r.CIDR, err)
+		}
+		if r.TargetNodeID == "" {
+			return errors.New("必须指定目标节点")
+		}
+		if _, ok := ns.nodes[r.TargetNodeID]; !ok {
+			return fmt.Errorf("目标节点 %s 不在本网络中", r.TargetNodeID)
+		}
+		key := routeKey(r.TargetNodeID, cidr)
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("重复的委派路由 %s → %s", r.TargetNodeID, cidr)
+		}
+		seen[key] = struct{}{}
+		status := protocol.RouteStatusPending
+		// A previously active route keeps working across a full-list update.
+		if prevActive[key] {
+			if n := ns.nodes[r.TargetNodeID]; n != nil && n.AllowRelay {
+				status = protocol.RouteStatusActive
+			}
+		}
+		out = append(out, protocol.Route{
+			TargetNodeID: r.TargetNodeID,
+			CIDR:         cidr,
+			Status:       status,
+		})
+	}
+	ns.n.Routes = out
+	return s.persistNetwork(ns)
+}
+
+// routeKey identifies a delegated route independently of its status.
+func routeKey(targetNodeID, cidr string) string {
+	return targetNodeID + "|" + cidr
+}
+
+// UpdateRelayCapability records whether the calling node is able to act as a
+// relay gateway for the network, and re-evaluates the routes delegated to it.
+//
+// A route becomes "active" as soon as the target node reports allow_relay
+// without an error. If the node reports a gateway setup failure the route
+// stays "pending" and the owner sees the reason on the node.
+func (s *Store) UpdateRelayCapability(token string, allowRelay bool, relayErr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	me := ns.nodes[te.NodeID]
+	if me == nil {
+		return ErrNotFound
+	}
+	// A node that cannot configure its gateway can never act as one, no
+	// matter what it claims.
+	effective := allowRelay && relayErr == ""
+	if me.AllowRelay == effective && me.RelayError == relayErr {
+		return nil
+	}
+	me.AllowRelay = effective
+	me.RelayError = relayErr
+	if err := s.persistNode(te.NetworkID, me); err != nil {
+		return err
+	}
+	return s.refreshRouteStatusesLocked(ns)
+}
+
+// refreshRouteStatusesLocked promotes pending routes whose target node
+// allows relay, and demotes active routes whose target stopped allowing it.
+// Callers must hold s.mu.
+func (s *Store) refreshRouteStatusesLocked(ns *networkState) error {
+	if len(ns.n.Routes) == 0 {
+		return nil
+	}
+	changed := false
+	for i := range ns.n.Routes {
+		r := &ns.n.Routes[i]
+		n := ns.nodes[r.TargetNodeID]
+		want := protocol.RouteStatusPending
+		if n != nil && n.AllowRelay {
+			want = protocol.RouteStatusActive
+		}
+		if r.Status != want {
+			r.Status = want
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.persistNetwork(ns)
+}
+
+// activeRoutesLocked returns the network's active delegated routes. Callers
+// must hold s.mu.
+func (s *Store) activeRoutesLocked(ns *networkState) []protocol.Route {
+	out := make([]protocol.Route, 0, len(ns.n.Routes))
+	for _, r := range ns.n.Routes {
+		if r.Status == protocol.RouteStatusActive {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// dropRoutesForNodeLocked removes the delegated routes that target the given
+// node. A route to a node that left the network can never be served, so it is
+// dropped instead of lingering as an unreachable entry. Callers must hold s.mu.
+func (s *Store) dropRoutesForNodeLocked(ns *networkState, nodeID string) error {
+	if len(ns.n.Routes) == 0 || nodeID == "" {
+		return nil
+	}
+	kept := make([]protocol.Route, 0, len(ns.n.Routes))
+	changed := false
+	for _, r := range ns.n.Routes {
+		if r.TargetNodeID == nodeID {
+			changed = true
+			continue
+		}
+		kept = append(kept, r)
+	}
+	if !changed {
+		return nil
+	}
+	ns.n.Routes = kept
+	return s.persistNetwork(ns)
+}
+
 // validateNodeAllowedSubnets validates a node's advertised CIDRs against the
 // network subnet and every other node's advertisements. Callers must hold s.mu.
 func validateNodeAllowedSubnets(ns *networkState, nodeID string, subnets []string) error {
@@ -5378,6 +5580,36 @@ func (s *Store) AdminSetNodeAllowedSubnets(nid, nodeID string, subnets []string)
 	}
 	n.AllowedSubnets = subnets
 	return s.persistNode(nid, n)
+}
+
+// AdminDeleteRoute removes one delegated relay route from a network. Admins can
+// revoke a route even when the owner is unavailable.
+func (s *Store) AdminDeleteRoute(nid, targetNodeID, cidr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[nid]
+	if ns == nil {
+		return ErrNotFound
+	}
+	norm, err := validateSubnet(cidr)
+	if err != nil {
+		return err
+	}
+	key := routeKey(targetNodeID, norm)
+	out := make([]protocol.Route, 0, len(ns.n.Routes))
+	found := false
+	for _, r := range ns.n.Routes {
+		if routeKey(r.TargetNodeID, r.CIDR) == key {
+			found = true
+			continue
+		}
+		out = append(out, r)
+	}
+	if !found {
+		return ErrNotFound
+	}
+	ns.n.Routes = out
+	return s.persistNetwork(ns)
 }
 
 // AdminSetNodeRole changes a node's role from the admin console. Setting a
