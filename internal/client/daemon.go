@@ -322,6 +322,10 @@ type Daemon struct {
 	// the gateway is healthy or not enabled). It is reported to the
 	// coordination server so delegated routes stay pending with a reason.
 	relayErr string
+	// relayServed caches the subnets this node currently forwards as the
+	// network's relay gateway, per node ID, so the log only reports a
+	// change and not every poll.
+	relayServed map[string]string
 	// serverState records the server-side existence of each joined network.
 	// Values: pointer to "ok"   = network exists on server
 	//         pointer to "gone" = network no longer exists (deleted by owner)
@@ -374,6 +378,7 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 		nets:          make(map[string]*netRuntime),
 		pendingRuns:   make(map[string]chan struct{}),
 		netErrs:       make(map[string]string),
+		relayServed:   make(map[string]string),
 		retryPending:  make(map[string]struct{}),
 		retryAttempts: make(map[string]int),
 		relayEP:       make(map[string]string),
@@ -2955,7 +2960,28 @@ func (d *Daemon) planRelayRoutesLocked(nc *NetworkCfg, routes []protocol.Route, 
 	if nc != nil {
 		selfID = nc.NodeID
 	}
-	return NewRoutePlanner(selfID, true).Apply(peers, routes)
+	planner := NewRoutePlanner(selfID, true)
+	d.logRelayGatewayRolesLocked(nc, planner.ServedBySelf(routes))
+	return planner.Apply(peers, routes)
+}
+
+// logRelayGatewayRolesLocked reports the subnets this node forwards as the
+// network's relay gateway. The message is only written when the set changes,
+// so the poll loop does not spam the log. Caller must hold d.mu.
+func (d *Daemon) logRelayGatewayRolesLocked(nc *NetworkCfg, served []string) {
+	if nc == nil {
+		return
+	}
+	key := strings.Join(served, ",")
+	if d.relayServed[nc.NodeID] == key {
+		return
+	}
+	d.relayServed[nc.NodeID] = key
+	if len(served) == 0 {
+		log.Printf("relay gateway %s: no delegated subnet", nc.NodeID)
+		return
+	}
+	log.Printf("relay gateway %s: forwarding %s towards the LAN", nc.NodeID, key)
 }
 
 // DetectLocalSubnets enumerates network interfaces and returns the private

@@ -690,9 +690,12 @@ async function openSubnetRouteModal(nid: string) {
     nodes = r ? [...(r.peers ?? []), ...(r.self ? [r.self] : [])] : [];
   }
   const selfID = net?.networkId ? (peerDetails[nid]?.self?.id ?? "") : "";
-  // A node is never picked as its own gateway: the gateway has to forward
-  // the delegated traffic towards the LAN, not back into the tunnel.
-  const targets = nodes.filter((n) => n.id && n.id !== selfID);
+  // Every node of the network can be the gateway, including this one: the
+  // owner often is the machine that reaches the delegated LAN. A route
+  // delegated to the owner is honoured by the gateway itself (it forwards
+  // the traffic towards the LAN) and by the other members (they send the
+  // traffic through the owner's tunnel).
+  const targets = nodes.filter((n) => n.id);
 
   const renderTags = (tags: string[]) =>
     tags.length
@@ -728,7 +731,8 @@ async function openSubnetRouteModal(nid: string) {
               ? targets
                   .map((n) => {
                     const relay = n.allowRelay ? "（已开启中继）" : n.relayError ? "（网关不可用）" : "（未开启中继）";
-                    return `<option value="${esc(n.id)}">${esc(deviceLabel(n))} · ${esc(n.ip || "-")}${esc(relay)}</option>`;
+                    const who = n.id === selfID ? "本机" : "";
+                    return `<option value="${esc(n.id)}">${esc(who ? who + " · " : "")}${esc(deviceLabel(n))} · ${esc(n.ip || "-")}${esc(relay)}</option>`;
                   })
                   .join("")
               : `<option value="">（无可选节点）</option>`}

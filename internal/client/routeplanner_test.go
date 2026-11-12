@@ -130,3 +130,15 @@ func TestRelayGatewaySubnetsOnlyFromActiveNetworks(t *testing.T) {
 		t.Fatalf("subnets = %+v, want [10.88.1.0/24]", got)
 	}
 }
+
+func TestRoutePlannerServedBySelf(t *testing.T) {
+	routes := []protocol.Route{
+		{TargetNodeID: "node-self", CIDR: "192.168.50.0/24", Status: protocol.RouteStatusActive},
+		{TargetNodeID: "node-other", CIDR: "192.168.60.0/24", Status: protocol.RouteStatusActive},
+		{TargetNodeID: "node-self", CIDR: "192.168.70.0/24", Status: protocol.RouteStatusPending},
+	}
+	got := NewRoutePlanner("node-self", true).ServedBySelf(routes)
+	if len(got) != 1 || got[0] != "192.168.50.0/24" {
+		t.Fatalf("served = %+v, want [192.168.50.0/24]", got)
+	}
+}

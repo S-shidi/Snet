@@ -76,6 +76,27 @@ func (p *RoutePlanner) Apply(peers []protocol.Node, routes []protocol.Route) []p
 	return out
 }
 
+// ServedBySelf returns the CIDRs that are delegated to this node itself. The
+// node forwards them towards the LAN instead of back into the tunnel, so
+// they are not part of its own routing entries — but knowing them makes the
+// gateway role visible in the logs.
+func (p *RoutePlanner) ServedBySelf(routes []protocol.Route) []string {
+	if p == nil {
+		return nil
+	}
+	out := make([]string, 0, len(routes))
+	for _, r := range routes {
+		if r.Status != protocol.RouteStatusActive {
+			continue
+		}
+		if r.CIDR == "" || r.TargetNodeID == "" || r.TargetNodeID != p.selfID {
+			continue
+		}
+		out = append(out, r.CIDR)
+	}
+	return out
+}
+
 // mergeCIDRs appends the extra CIDRs to the base list, skipping duplicates
 // and preserving the original order.
 func mergeCIDRs(base, extra []string) []string {
