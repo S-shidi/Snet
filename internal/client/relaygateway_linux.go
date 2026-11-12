@@ -17,22 +17,58 @@ import (
 var iptablesSearchDirs = []string{"/usr/sbin", "/sbin", "/usr/local/sbin", "/bin", "/usr/bin", "/usr/local/bin"}
 
 // iptablesNames are the binary names to try, in order of preference.
-var iptablesNames = []string{"iptables", "iptables-legacy", "iptables-nft"}
+//
+// The nf_tables backend comes first because it is the default on modern
+// kernels. The legacy xtables backend is the fallback for kernels without
+// nf_tables support: on such a kernel the nf_tables binary exists but every
+// command fails with "Table does not exist" and exit status 4, which is
+// exactly what an older NAS kernel does.
+var iptablesNames = []string{"iptables", "iptables-nft", "iptables-legacy"}
 
-// iptablesBin resolves the iptables binary to use.
+// iptablesProbeErr keeps the diagnostic of the last failed backend probe so
+// the error message can explain why no usable backend was found.
+var iptablesProbeErr string
+
+// iptablesBin resolves a usable iptables binary.
 //
-// The lookup must not rely on PATH alone: the daemon runs under supervisord
-// inside a container, and the environment it inherits does not always
-// contain the sbin directories even though the binary is installed there
-// (a container runtime or the DSM UI may replace the PATH). The well-known
-// locations are therefore probed explicitly.
+// Three things matter:
 //
-// Distributions ship either the legacy backend, the nft backend, or a
-// wrapper that picks one, so all common names are tried.
+//   - The binary must not be found through PATH alone: the daemon runs under
+//     supervisord inside a container, and the environment it inherits does
+//     not always contain the sbin directories even though the binary is
+//     installed there (a container runtime or the DSM UI may replace the
+//     PATH). The well-known locations are therefore probed explicitly.
+//   - The first existing binary is not necessarily usable: the nf_tables
+//     backend needs kernel support that older NAS kernels lack, and it then
+//     fails on every command. Each candidate is probed against the kernel
+//     and the first working one wins.
+//   - The chosen backend must be the one the host firewall uses, otherwise
+//     the ACCEPT rule lands in a rule set the kernel never consults for the
+//     forwarded packets.
 func iptablesBin() string {
+	iptablesProbeErr = ""
+	for _, cand := range iptablesCandidates() {
+		if iptablesUsable(cand) {
+			return cand
+		}
+	}
+	return ""
+}
+
+// iptablesCandidates lists the binaries to probe, without duplicates.
+func iptablesCandidates() []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
 	for _, name := range iptablesNames {
 		if p, err := exec.LookPath(name); err == nil {
-			return p
+			add(p)
 		}
 	}
 	for _, dir := range iptablesSearchDirs {
@@ -42,10 +78,26 @@ func iptablesBin() string {
 			if err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
 				continue
 			}
-			return p
+			add(p)
 		}
 	}
-	return ""
+	return out
+}
+
+// iptablesUsable reports whether the binary can talk to the kernel. Listing
+// a chain is a harmless way to find out: it fails with exit status 4 when
+// the backend is not supported by the kernel.
+func iptablesUsable(bin string) bool {
+	out, err := exec.Command(bin, "-t", "filter", "-S").CombinedOutput()
+	if err == nil {
+		return true
+	}
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		msg = err.Error()
+	}
+	iptablesProbeErr = bin + ": " + msg
+	return false
 }
 
 // iptablesRuleExists reports whether the given rule is already installed.
@@ -54,21 +106,28 @@ func iptablesBin() string {
 func iptablesRuleExists(table, chain string, args []string) (bool, error) {
 	bin := iptablesBin()
 	if bin == "" {
-		return false, errors.New("未找到 iptables")
+		if iptablesProbeErr != "" {
+			return false, fmt.Errorf("未找到可用的 iptables（%s）", iptablesProbeErr)
+		}
+		return false, errors.New("未找到可用的 iptables（nf_tables 与 legacy 后端均不可用）")
 	}
 	full := append([]string{"-t", table, "-C", chain}, args...)
-	cmd := exec.Command(bin, full...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	err := cmd.Run()
+	// The output is kept: iptables explains the failure on stderr, and that
+	// text is the only useful diagnostic when the backend cannot be used.
+	out, err := exec.Command(bin, full...).CombinedOutput()
 	if err == nil {
 		return true, nil
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		// Exit status 1 means the rule is simply not installed yet.
 		return false, nil
 	}
-	return false, fmt.Errorf("iptables %s: %w", strings.Join(full, " "), err)
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		msg = err.Error()
+	}
+	return false, fmt.Errorf("iptables %s: %w (%s)", strings.Join(full, " "), err, msg)
 }
 
 // iptablesAdd appends the given rule to the chain.
