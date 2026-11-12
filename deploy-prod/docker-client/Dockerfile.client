@@ -18,8 +18,14 @@ RUN npx --yes esbuild@0.25.12 deploy/docker/web-build/web.ts \
 FROM alpine:3.20
 # iptables is required by the relay gateway mode (NAT masquerading for the
 # delegated subnets). The container runs with NET_ADMIN and host networking,
-# so the rules apply to the host's network namespace.
+# so the rules apply to the host's network namespace. ip6tables covers the
+# IPv6 side of the same rules.
 RUN apk add --no-cache ca-certificates nginx supervisor iptables ip6tables
+# Alpine keeps the binaries in /sbin while tooling and checklists often look
+# for the Debian-style /usr/sbin path. Expose both so the binary is found
+# regardless of the PATH the daemon inherits.
+RUN ln -sf /sbin/iptables /usr/sbin/iptables \
+ && ln -sf /sbin/ip6tables /usr/sbin/ip6tables
 
 # Never bake a machine-id into the image. Every container built from it would
 # otherwise derive the same device identity. The daemon persists its own ID in

@@ -8,16 +8,41 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
-// iptablesBin resolves the iptables binary to use. Distributions ship
-// either the legacy backend, the nft backend, or a wrapper that picks one,
-// so all common names are tried.
+// iptablesSearchDirs are the directories probed for the iptables binary when
+// it is not found through PATH.
+var iptablesSearchDirs = []string{"/usr/sbin", "/sbin", "/usr/local/sbin", "/bin", "/usr/bin", "/usr/local/bin"}
+
+// iptablesNames are the binary names to try, in order of preference.
+var iptablesNames = []string{"iptables", "iptables-legacy", "iptables-nft"}
+
+// iptablesBin resolves the iptables binary to use.
+//
+// The lookup must not rely on PATH alone: the daemon runs under supervisord
+// inside a container, and the environment it inherits does not always
+// contain the sbin directories even though the binary is installed there
+// (a container runtime or the DSM UI may replace the PATH). The well-known
+// locations are therefore probed explicitly.
+//
+// Distributions ship either the legacy backend, the nft backend, or a
+// wrapper that picks one, so all common names are tried.
 func iptablesBin() string {
-	for _, name := range []string{"iptables", "iptables-legacy", "iptables-nft"} {
-		if _, err := exec.LookPath(name); err == nil {
-			return name
+	for _, name := range iptablesNames {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	for _, dir := range iptablesSearchDirs {
+		for _, name := range iptablesNames {
+			p := filepath.Join(dir, name)
+			st, err := os.Stat(p)
+			if err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
+				continue
+			}
+			return p
 		}
 	}
 	return ""
