@@ -66,8 +66,9 @@ header {
 }
 .header-right { display: flex; align-items: center; gap: 10px; flex: none; }
 .network-tabs {
-  display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0;
-  overflow-x: auto; white-space: nowrap; scrollbar-width: none;
+  display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0;
+  margin: 10px auto 0; padding: 0 24px; overflow-x: auto; white-space: nowrap;
+  border-bottom: 1px solid var(--border); scrollbar-width: none;
 }
 .network-tabs::-webkit-scrollbar { display: none; }
 .network-tab {
@@ -77,6 +78,9 @@ header {
 }
 .network-tab:hover { color: var(--text); background: rgba(255,255,255,.04); }
 .network-tab.active { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.network-tab.pending { color: var(--warn); }
+.network-tab.pending.active { border-bottom-color: var(--warn); }
+.pending-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); margin-left: 5px; vertical-align: 1px; }
 .network-tab-add {
   flex: none; width: 30px; height: 30px; border-radius: 8px; border: 1px dashed var(--border2);
   background: transparent; color: var(--dim); font-size: 20px; line-height: 1; cursor: pointer;
@@ -372,6 +376,18 @@ header {
   display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
 }
 .detail-heading { min-width: 0; flex: 1; }
+.detail-more { position: relative; flex: none; }
+.detail-more-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  min-width: 150px; padding: 5px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--card); box-shadow: 0 10px 28px rgba(0,0,0,.24);
+}
+.detail-more-menu button {
+  display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text); text-align: left; font: inherit; font-size: 13px; cursor: pointer;
+}
+.detail-more-menu button:hover { background: rgba(255,255,255,.06); }
+.detail-more-menu button.danger { color: var(--err); }
 .detail-title { font-size: 17px; font-weight: 700; word-break: break-all; }
 .detail-sub { margin-top: 2px; color: var(--dim); font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .detail-section { margin-bottom: 14px; }

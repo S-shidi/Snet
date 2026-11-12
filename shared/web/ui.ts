@@ -46,6 +46,7 @@ function currentServer(): string {
 let refreshing = false;
 let refreshAgain = false;
 let detailNid: string | null = null;
+let detailPendingId: string | null = null;
 let lastNetHTML = "";
 let lastEmptyHTML = "";
 let lastTabsHTML = "";
@@ -321,9 +322,13 @@ function sortedNetworks(): NetInfo[] {
 function renderNetworkTabs(nets: NetInfo[]) {
   const tabs = $("#network-tabs");
   if (!tabs) return;
+  const pending = status?.pendingJoins ?? [];
   const html = nets.map((n) => {
     const active = n.networkId === detailNid ? " active" : "";
     return `<button type="button" class="network-tab${active}" data-nid="${esc(n.networkId)}" title="${esc(n.name || n.networkId)}">${esc(n.name || n.networkId)}</button>`;
+  }).join("") + pending.map((p) => {
+    const active = p.pendingId === detailPendingId ? " active" : "";
+    return `<button type="button" class="network-tab pending${active}" data-pid="${esc(p.pendingId)}" title="等待批准 · ${esc(p.networkId)}">${esc(p.networkId)} <span class="pending-dot"></span></button>`;
   }).join("") + '<button type="button" class="network-tab-add" id="btn-add-network" title="创建或加入网络">+</button>';
   if (html !== lastTabsHTML) {
     tabs.innerHTML = html;
@@ -362,19 +367,28 @@ function openNetworkChooser() {
 
 function renderNetworks() {
   const nets = sortedNetworks();
-  const hasNets = !!status && nets.length > 0;
+  const pending = status?.pendingJoins ?? [];
+  const hasContent = !!status && (nets.length > 0 || pending.length > 0);
   const empty = $("#empty-state");
   const main = $("#app-main");
-  if (empty) empty.hidden = hasNets;
-  if (main) main.hidden = !hasNets;
+  if (empty) empty.hidden = hasContent;
+  if (main) main.hidden = !hasContent;
 
-  if (!hasNets) {
+  if (!hasContent) {
     detailNid = null;
+    detailPendingId = null;
     renderNetworkTabs(nets);
     return;
   }
-  if (!detailNid || !nets.some((n) => n.networkId === detailNid && n.serverState !== "gone")) {
-    detailNid = nets.find((n) => n.serverState !== "gone")?.networkId ?? nets[0].networkId;
+  if (detailPendingId && !pending.some((p) => p.pendingId === detailPendingId)) {
+    detailPendingId = null;
+  }
+  if (detailNid && !nets.some((n) => n.networkId === detailNid && n.serverState !== "gone")) {
+    detailNid = null;
+  }
+  if (!detailNid && !detailPendingId) {
+    detailNid = nets.find((n) => n.serverState !== "gone")?.networkId ?? null;
+    if (!detailNid && pending.length) detailPendingId = pending[0].pendingId;
   }
   renderNetworkTabs(nets);
 }
@@ -1199,7 +1213,12 @@ function openJoinModal() {
             result.innerHTML = `<p>已提交加入请求，等待网络创建者批准。</p><p class="hint">批准后本机会自动加入并连接；也可在上方「待批准 · 加入请求」卡片中取消。</p>`;
           } else {
             result.textContent = `已加入: IP ${r.ip ?? "-"}，网络 ${r.networkId ?? "-"}`;
-          if (r.networkId) detailNid = r.networkId;
+            if (r.networkId) detailNid = r.networkId;
+          }
+          if (r.status === "pending" && r.pendingId) {
+            detailPendingId = r.pendingId;
+            detailNid = null;
+            toast("加入请求已提交，等待网络创建者批准");
           }
           await refresh();
           closeModal();
@@ -1665,6 +1684,19 @@ async function copyPairingCode(nid: string, btn: HTMLButtonElement) {
   }
 }
 
+async function leaveNetworkFromDetail(nid: string) {
+  if (!(await confirmDialog("退出网络", "退出后将断开该网络，确定继续？", true))) return;
+  try {
+    const r = await ctlOrClean(nid, "退出网络", () => backend.leave(nid));
+    if (r === null) return;
+    toast("已退出网络");
+    closeNetworkDetail();
+    await refresh();
+  } catch (e) {
+    toast(String(e), "err");
+  }
+}
+
 async function deleteNetworkFromDetail(nid: string, btn: HTMLButtonElement) {
   if (!(await confirmDialog("删除网络", "删除将断开所有成员并释放网段，不可恢复。确定？", true))) return;
   const orig = btn.textContent;
@@ -1704,17 +1736,24 @@ function networkDetailHTML(n: NetInfo): string {
     ? `<section class="card detail-section detail-danger">
         <div class="detail-section-head"><h3>网络设置</h3><span class="hint">仅创建者</span></div>
         <div class="detail-actions">
-          <button type="button" class="btn ghost sm" data-detail-act="settings">网络设置</button>
           <button type="button" class="btn ghost sm" data-detail-act="subnets">子网路由管理</button>
-          <button type="button" class="btn danger sm" data-detail-act="delete">删除网络</button>
         </div>
       </section>`
     : "";
+  const more = `<div class="detail-more">
+    <button type="button" class="btn ghost sm" id="detail-more-btn">更多</button>
+    <div class="detail-more-menu" id="detail-more-menu" hidden>
+      ${canManage ? '<button type="button" data-detail-act="settings">编辑网络</button>' : ""}
+      <button type="button" data-detail-act="leave">退出网络</button>
+      ${canManage ? '<button type="button" class="danger" data-detail-act="delete">删除网络</button>' : ""}
+    </div>
+  </div>`;
   return `<div class="net-detail-head">
     <div class="detail-heading">
       <div class="detail-title">${esc(n.name || n.networkId)}</div>
       <div class="detail-sub">网络详情 · ${esc(n.networkId)}</div>
     </div>
+    ${more}
   </div>
   <section class="card detail-section">
     <div class="detail-section-head"><h3>基础概览</h3></div>
@@ -1742,9 +1781,41 @@ function networkDetailHTML(n: NetInfo): string {
   ${settings}`;
 }
 
+function pendingDetailHTML(p: NonNullable<DaemonStatus["pendingJoins"]>[number]): string {
+  return `<div class="net-detail-head">
+    <div class="detail-heading">
+      <div class="detail-title">${esc(p.networkId)}</div>
+      <div class="detail-sub">加入请求 · 等待批准</div>
+    </div>
+    <div class="detail-more">
+      <button type="button" class="btn ghost sm" id="detail-more-btn">更多</button>
+      <div class="detail-more-menu" id="detail-more-menu" hidden>
+        <button type="button" data-detail-act="cancel-pending">取消加入请求</button>
+      </div>
+    </div>
+  </div>
+  <section class="card detail-section">
+    <div class="detail-section-head"><h3>等待网络创建者批准</h3></div>
+    <p class="muted">请求已提交。网络创建者批准后，该网络会自动出现在上方 Tabs 中并建立连接。</p>
+    <div class="detail-actions">
+      <button type="button" class="btn danger ghost sm" data-detail-act="cancel-pending">取消加入请求</button>
+    </div>
+  </section>`;
+}
+
 function renderNetworkDetail() {
   const box = $("#net-detail");
   if (!box) return;
+  if (detailPendingId) {
+    const p = (status?.pendingJoins ?? []).find((x) => x.pendingId === detailPendingId);
+    if (!p) {
+      box.hidden = true;
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML = pendingDetailHTML(p);
+    return;
+  }
   if (!detailNid) {
     box.hidden = true;
     return;
@@ -1768,6 +1839,7 @@ function renderNetworkDetail() {
 async function openNetworkDetail(nid: string) {
   const n = (status?.networks ?? []).find((x) => x.networkId === nid);
   if (!n || n.serverState === "gone") return;
+  detailPendingId = null;
   detailNid = nid;
   renderNetworkTabs(sortedNetworks());
   const detail = $("#net-detail");
@@ -1783,8 +1855,18 @@ async function openNetworkDetail(nid: string) {
   }
 }
 
+function openPendingDetail(pid: string) {
+  const p = (status?.pendingJoins ?? []).find((x) => x.pendingId === pid);
+  if (!p) return;
+  detailNid = null;
+  detailPendingId = pid;
+  renderNetworkTabs(sortedNetworks());
+  renderNetworkDetail();
+}
+
 function closeNetworkDetail() {
   detailNid = null;
+  detailPendingId = null;
   const detail = $("#net-detail");
   if (detail) {
     detail.hidden = true;
@@ -1797,7 +1879,34 @@ function bindNetworkDetailEvents() {
   const detail = $("#net-detail");
   if (!detail) return;
   detail.addEventListener("click", async (e) => {
-    const pingEl = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-detail-ping]");
+    const target = e.target as HTMLElement;
+    const moreBtn = target.closest<HTMLButtonElement>("#detail-more-btn");
+    if (moreBtn) {
+      e.stopPropagation();
+      const menu = document.getElementById("detail-more-menu");
+      if (menu) menu.hidden = !menu.hidden;
+      return;
+    }
+    const moreAction = target.closest<HTMLElement>(".detail-more-menu [data-detail-act]");
+    if (moreAction) {
+      const menu = document.getElementById("detail-more-menu");
+      if (menu) menu.hidden = true;
+    }
+    const pendingCancel = target.closest<HTMLElement>('[data-detail-act="cancel-pending"]');
+    if (pendingCancel && detailPendingId) {
+      const pid = detailPendingId;
+      if (!(await confirmDialog("取消加入请求", "确定取消等待批准？", true))) return;
+      try {
+        await backend.cancelPending(pid);
+        toast("已取消加入请求");
+        detailPendingId = null;
+        await refresh();
+      } catch (err) {
+        toast(String(err), "err");
+      }
+      return;
+    }
+    const pingEl = target.closest<HTMLButtonElement>("[data-detail-ping]");
     if (pingEl && detailNid) {
       await runPeerPing(pingEl);
       return;
@@ -1830,7 +1939,14 @@ function bindNetworkDetailEvents() {
       case "copy-code": await copyPairingCode(nid, el as HTMLButtonElement); break;
       case "settings": await openNetworkSettings(nid); break;
       case "subnets": await openSubnetRouteModal(nid); break;
+      case "leave": await leaveNetworkFromDetail(nid); break;
       case "delete": await deleteNetworkFromDetail(nid, el as HTMLButtonElement); break;
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (!(e.target as HTMLElement).closest(".detail-more")) {
+      const menu = document.getElementById("detail-more-menu");
+      if (menu) menu.hidden = true;
     }
   });
   detail.addEventListener("change", async (e) => {
@@ -1912,6 +2028,11 @@ function bindEvents() {
     const target = e.target as HTMLElement;
     if (target.closest("#btn-add-network")) {
       openNetworkChooser();
+      return;
+    }
+    const pendingTab = target.closest<HTMLElement>("[data-pid]");
+    if (pendingTab?.dataset.pid) {
+      openPendingDetail(pendingTab.dataset.pid);
       return;
     }
     const tab = target.closest<HTMLElement>("[data-nid]");
