@@ -80,7 +80,13 @@ header {
 .network-tab.active { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
 .network-tab.pending { color: var(--warn); }
 .network-tab.pending.active { border-bottom-color: var(--warn); }
-.pending-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); margin-left: 5px; vertical-align: 1px; }
+.network-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  margin-right: 6px; vertical-align: 1px; background: var(--faint);
+}
+.network-dot.ok { background: var(--ok); }
+.network-dot.off { background: var(--faint); }
+.network-dot.warn { background: var(--warn); }
 .network-tab-add {
   flex: none; width: 30px; height: 30px; border-radius: 8px; border: 1px dashed var(--border2);
   background: transparent; color: var(--dim); font-size: 20px; line-height: 1; cursor: pointer;
@@ -376,6 +382,7 @@ header {
   display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
 }
 .detail-heading { min-width: 0; flex: 1; }
+.detail-conn-switch { flex: none; margin: 0 2px; }
 .detail-more { position: relative; flex: none; }
 .detail-more-menu {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;

@@ -325,10 +325,11 @@ function renderNetworkTabs(nets: NetInfo[]) {
   const pending = status?.pendingJoins ?? [];
   const html = nets.map((n) => {
     const active = n.networkId === detailNid ? " active" : "";
-    return `<button type="button" class="network-tab${active}" data-nid="${esc(n.networkId)}" title="${esc(n.name || n.networkId)}">${esc(n.name || n.networkId)}</button>`;
+    const dot = n.interface ? "ok" : "off";
+    return `<button type="button" class="network-tab${active}" data-nid="${esc(n.networkId)}" title="${esc(n.name || n.networkId)}"><span class="network-dot ${dot}"></span>${esc(n.name || n.networkId)}</button>`;
   }).join("") + pending.map((p) => {
     const active = p.pendingId === detailPendingId ? " active" : "";
-    return `<button type="button" class="network-tab pending${active}" data-pid="${esc(p.pendingId)}" title="等待批准 · ${esc(p.networkId)}">${esc(p.networkId)} <span class="pending-dot"></span></button>`;
+    return `<button type="button" class="network-tab pending${active}" data-pid="${esc(p.pendingId)}" title="等待批准 · ${esc(p.networkId)}"><span class="network-dot warn"></span>${esc(p.networkId)}</button>`;
   }).join("") + '<button type="button" class="network-tab-add" id="btn-add-network" title="创建或加入网络">+</button>';
   if (html !== lastTabsHTML) {
     tabs.innerHTML = html;
@@ -1734,18 +1735,14 @@ async function deleteNetworkFromDetail(nid: string, btn: HTMLButtonElement) {
 
 function networkDetailHTML(n: NetInfo): string {
   const r = peerDetails[n.networkId];
-  const self = r?.self;
   const role = networkRole(n);
   const canManage = canManageNetwork(n);
-  const ip = n.ip || self?.ip || "-";
-  const linked = !!n.interface;
-  const linkText = linked ? "已链接" : n.active ? "未就绪" : "未链接";
-  const linkCls = linked ? "ok" : n.active ? "warn" : "off";
   const path = pathMonitorHTML(n, r, false);
   const members = r ? `${(r.peers ?? []).length + 1} 位成员` : "加载中";
   const more = `<div class="detail-more">
     <button type="button" class="btn ghost sm" id="detail-more-btn">更多</button>
     <div class="detail-more-menu" id="detail-more-menu" hidden>
+      <button type="button" data-detail-act="detail">网络详情</button>
       ${canManage ? '<button type="button" data-detail-act="settings">编辑网络</button>' : ""}
       ${canManage ? '<button type="button" data-detail-act="subnets">子网路由管理</button>' : ""}
       ${canManage ? '<button type="button" data-detail-act="reset-code">重置配对码</button>' : ""}
@@ -1756,22 +1753,15 @@ function networkDetailHTML(n: NetInfo): string {
   return `<div class="net-detail-head">
     <div class="detail-heading">
       <div class="detail-title">${esc(n.name || n.networkId)}</div>
-      <div class="detail-sub">网络详情 · ${esc(n.networkId)}</div>
+      <div class="detail-sub">${esc(n.networkId)} · ${roleLabel(role)} · ↑ ${fmtSpeed(status?.txSpeed)} ↓ ${fmtSpeed(status?.rxSpeed)}</div>
     </div>
+    <label class="switch detail-conn-switch" title="连接 / 断开">
+      <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
+      <span class="slider"></span>
+    </label>
     ${canManage ? '<button type="button" class="btn ghost sm" id="detail-invite" data-detail-act="invite">邀请</button>' : ""}
     ${more}
   </div>
-  <section class="card detail-section">
-    <div class="detail-section-head"><h3>基础概览</h3></div>
-    <div class="detail-overview">
-      <div class="detail-kv"><span>网络 ID</span><code>${esc(n.networkId)}</code></div>
-      <div class="detail-kv"><span>当前角色</span><span class="pill ${role === "member" ? "off" : "accent"}">${roleLabel(role)}</span></div>
-      <div class="detail-kv"><span>本机虚拟 IP</span><code>${esc(ip)}</code></div>
-      <div class="detail-kv"><span>连接状态</span><span class="pill ${linkCls}">${linkText}</span></div>
-      <div class="detail-kv"><span>连接/断开</span><label class="switch"><input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} /><span class="slider"></span></label></div>
-      <div class="detail-kv"><span>实时速率</span><code>↑ ${fmtSpeed(status?.txSpeed)} ↓ ${fmtSpeed(status?.rxSpeed)}</code></div>
-    </div>
-  </section>
   <section class="card detail-section">
     <div class="detail-section-head">
       <h3>组网路径与拓扑</h3>
@@ -1939,6 +1929,7 @@ function bindNetworkDetailEvents() {
       return;
     }
     switch (el.dataset.detailAct) {
+      case "detail": await openNetworkDetail(nid); break;
       case "invite": await openInviteModal(nid); break;
       case "settings": await openNetworkSettings(nid); break;
       case "subnets": await openSubnetRouteModal(nid); break;
