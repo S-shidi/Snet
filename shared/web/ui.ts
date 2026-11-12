@@ -374,6 +374,9 @@ function renderNetworks() {
   const main = $("#app-main");
   if (empty) empty.hidden = hasContent;
   if (main) main.hidden = !hasContent;
+  document.body.classList.toggle("empty-mode", !hasContent);
+  const networkTabs = $("#network-tabs");
+  if (networkTabs) networkTabs.hidden = !hasContent;
 
   if (!hasContent) {
     detailNid = null;

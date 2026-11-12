@@ -231,9 +231,10 @@ header {
 
 #app-main { width: 100%; max-width: none; margin: 0 auto; padding: 20px 24px 60px; }
 #app-main[hidden], .empty-state[hidden] { display: none; }
+body.empty-mode { overflow: hidden; }
 .empty-state {
-  min-height: calc(100vh - 65px); display: flex; align-items: center; justify-content: center;
-  padding: 48px 24px 80px;
+  height: calc(100vh - 65px); min-height: 0; display: flex; align-items: center; justify-content: center;
+  padding: 48px 24px 80px; overflow: hidden;
 }
 .empty-state-inner { max-width: 560px; text-align: center; }
 .empty-state-icon {
@@ -924,7 +925,7 @@ pre.code { user-select: all; }
   .header-inner { padding: 12px 14px; }
   .tabs { padding: 0 14px; }
   #app-main { padding: 16px 14px 50px; }
-  .empty-state { padding: 32px 18px 60px; min-height: calc(100vh - 60px); }
+  .empty-state { padding: 32px 18px 60px; height: calc(100vh - 60px); }
   .empty-state h2 { font-size: 23px; }
   .network-choice { grid-template-columns: 1fr; }
   .status-grid.info-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
