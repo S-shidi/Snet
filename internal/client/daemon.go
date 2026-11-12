@@ -1131,6 +1131,10 @@ func (d *Daemon) Start() error {
 	// any delegated route can be honoured. A failure is reported to the
 	// coordination server so the routes stay pending with a visible reason.
 	d.applyRelayGatewayLocked()
+	// Report the gateway capability again after a restart: the server's view
+	// of this node must match the current state, otherwise a route delegated
+	// to this node would stay pending until the next manual change.
+	d.publishRelayCapabilityAsync()
 	for nid := range d.cfg.Networks {
 		nc := d.cfg.Networks[nid]
 		if !nc.Active {
@@ -2861,6 +2865,35 @@ func (d *Daemon) publishRelayCapabilityLocked() {
 	}
 }
 
+// publishRelayCapabilityAsync reports the gateway capability without blocking
+// the caller. The HTTP calls run outside the daemon lock so a slow server
+// cannot stall the control API or the daemon startup.
+func (d *Daemon) publishRelayCapabilityAsync() {
+	go func() {
+		d.mu.Lock()
+		allow := d.cfg.RelayAllowed() && d.relayErr == ""
+		relayErr := d.relayErr
+		type target struct {
+			nid   string
+			token string
+		}
+		var targets []target
+		for nid, nc := range d.cfg.Networks {
+			if nc == nil {
+				continue
+			}
+			targets = append(targets, target{nid: nid, token: nc.Token})
+		}
+		api := d.apiLocked()
+		d.mu.Unlock()
+		for _, t := range targets {
+			if err := api.SetRelayCapability(t.nid, t.token, allow, relayErr); err != nil {
+				log.Printf("report relay capability %s: %v", t.nid, err)
+			}
+		}
+	}()
+}
+
 // SetRelayOptions updates the two relay switches of this device:
 //
 //   - allowRelay makes the device act as a relay gateway for the networks it
@@ -2880,7 +2913,7 @@ func (d *Daemon) SetRelayOptions(allowRelay, useRelay bool) error {
 		return err
 	}
 	d.applyRelayGatewayLocked()
-	d.publishRelayCapabilityLocked()
+	d.publishRelayCapabilityAsync()
 	return nil
 }
 
