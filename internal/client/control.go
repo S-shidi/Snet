@@ -155,6 +155,12 @@ func (c *apiClient) NetworkInfo(nid, token string) (protocol.NetworkInfoResp, er
 	return out, err
 }
 
+func (c *apiClient) MemberNetworkInfo(nid, token string) (protocol.NetworkInfoResp, error) {
+	var out protocol.NetworkInfoResp
+	err := c.do(http.MethodGet, "/api/v1/networks/"+nid+"/member-info", token, nil, &out)
+	return out, err
+}
+
 func (c *apiClient) NetworkExists(nid, token string) (bool, error) {
 	var out struct{ Exists bool }
 	err := c.do(http.MethodGet, "/api/v1/networks/"+nid+"/exists", token, nil, &out)

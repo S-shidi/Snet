@@ -2970,8 +2970,15 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 	}
 	api := d.apiLocked()
 	token := nc.Token
+	owner := nc.Owner
 	d.mu.Unlock()
-	resp, err := api.NetworkInfo(nid, token)
+	var resp protocol.NetworkInfoResp
+	var err error
+	if owner {
+		resp, err = api.NetworkInfo(nid, token)
+	} else {
+		resp, err = api.MemberNetworkInfo(nid, token)
+	}
 	return resp, wrapNetGone(err)
 }
 

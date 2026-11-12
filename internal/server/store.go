@@ -3684,6 +3684,22 @@ func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
 	return protocol.NetworkInfoResp{Network: n, Nodes: nodes, Pending: pending}
 }
 
+// MemberNetworkInfo returns the member-safe view of a network. It includes
+// nodes and network metadata but hides owner-only fields such as the pairing
+// code and pending join requests.
+func (s *Store) MemberNetworkInfo(token string) (protocol.NetworkInfoResp, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, _, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return protocol.NetworkInfoResp{}, err
+	}
+	info := s.networkInfoLocked(ns)
+	info.PairingCode = ""
+	info.Pending = nil
+	return info, nil
+}
+
 // AdminNetworkInfo returns full network details for any network, bypassing
 // the owner requirement.
 func (s *Store) AdminNetworkInfo(nid string) (protocol.NetworkInfoResp, error) {
