@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -72,6 +73,46 @@ func ensureIptablesRule(table, chain string, args []string) error {
 	return iptablesAdd(table, chain, args)
 }
 
+// currentIPForward reads the effective IPv4 forwarding setting.
+func currentIPForward() string {
+	b, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// Test seams for the forwarding setup. They keep the read-only /proc/sys
+// case (common on container hosts) coverable without touching the real
+// kernel settings.
+var (
+	ipForwardReadFn    = currentIPForward
+	ipForwardWriteFn   = enableIPForwarding
+	ipForwardPersistFn = persistSysctl
+)
+
+// ensureIPForwarding turns IPv4 forwarding on.
+//
+// Writing the sysctl fails on hosts that mount /proc/sys read-only (some
+// container runtimes, Synology), even when forwarding is already enabled. An
+// already-enabled value is therefore accepted as success: the relay gateway
+// only needs forwarding to be on, not to have been written by us.
+func ensureIPForwarding() error {
+	if ipForwardReadFn() == "1" {
+		ipForwardPersistFn("net.ipv4.ip_forward", "1")
+		return nil
+	}
+	if err := ipForwardWriteFn(); err != nil {
+		// The write may have failed for a reason unrelated to the value
+		// (read-only /proc/sys). Re-read: forwarding may already be on.
+		if ipForwardReadFn() == "1" {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // setupRelayGateway prepares this host to forward traffic between the
 // WireGuard mesh and the local LAN.
 //
@@ -87,7 +128,7 @@ func ensureIptablesRule(table, chain string, args []string) error {
 //
 // The rules are idempotent: they are checked before they are added.
 func setupRelayGateway(subnets []string) error {
-	if err := enableIPForwarding(); err != nil {
+	if err := ensureIPForwarding(); err != nil {
 		return fmt.Errorf("开启 IP 转发失败: %w", err)
 	}
 	for _, raw := range subnets {
