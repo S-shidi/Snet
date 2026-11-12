@@ -1696,9 +1696,9 @@ async function copyPairingCode(nid: string, btn: HTMLButtonElement) {
 }
 
 async function leaveNetworkFromDetail(nid: string) {
-  if (!(await confirmDialog("退出网络", "退出后将断开该网络，确定继续？", true))) return;
+  if (!(await confirmDialog("退出网络", "退出后将断开该网络并移除本地网络配置，确定继续？", true))) return;
   try {
-    const r = await ctlOrClean(nid, "退出网络", () => backend.leave(nid));
+    const r = await ctlOrClean(nid, "退出网络", () => backend.remove(nid));
     if (r === null) return;
     toast("已退出网络");
     closeNetworkDetail();
