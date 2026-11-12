@@ -2940,8 +2940,20 @@ func (d *Daemon) SetRoutes(nid string, routes []protocol.Route) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	if err := d.apiLocked().SetRoutes(nid, nc.Token, routes); err != nil {
-		return wrapNetGone(err)
+	api := d.apiLocked()
+	if err := api.SetRoutes(nid, nc.Token, routes); err != nil {
+		var se *httpStatusErr
+		if errors.As(err, &se) && se.code == 404 {
+			// An older server returns 404 for the unknown /routes endpoint.
+			// Only GET /networks/{nid} returning 404 proves the network itself
+			// is gone; otherwise report a version/capability mismatch instead
+			// of telling the user to clean up a live network.
+			if _, infoErr := api.NetworkInfo(nid, nc.Token); infoErr != nil {
+				return wrapNetGone(infoErr)
+			}
+			return fmt.Errorf("服务端不支持该功能，请检查服务端版本")
+		}
+		return err
 	}
 	return nil
 }

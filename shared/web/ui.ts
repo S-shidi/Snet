@@ -668,7 +668,6 @@ async function openNetworkSettings(nid: string) {
 async function openSubnetRouteModal(nid: string) {
   const st = await backend.status();
   const net = (st?.networks ?? []).find((n) => n.networkId === nid);
-  const curSubnets: string[] = net?.allowedSubnets ?? [];
   const canManage = !!net && canManageNetwork(net);
 
   // Owner view: the delegated relay routes of the network plus the nodes
@@ -697,17 +696,13 @@ async function openSubnetRouteModal(nid: string) {
   // traffic through the owner's tunnel).
   const targets = nodes.filter((n) => n.id);
 
-  const renderTags = (tags: string[]) =>
-    tags.length
-      ? tags.map((s) => `<span class="chip chip-active">${esc(s)}<button data-del="${esc(s)}" class="chip-del" title="移除">&times;</button></span>`).join("")
-      : `<span class="muted">暂无生效子网</span>`;
-
   const renderRoutes = (list: RelayRoute[]) => {
     if (!list.length) return `<span class="muted">尚未委派任何路由</span>`;
     return list
       .map((rt) => {
         const node = nodes.find((n) => n.id === rt.targetNodeId);
-        const who = node ? deviceLabel(node) : rt.targetNodeId.slice(0, 8);
+        const whoHTML = node ? deviceLabel(node) : esc(rt.targetNodeId.slice(0, 8));
+        const whoText = node ? deviceLabelText(node) : rt.targetNodeId.slice(0, 8);
         const active = rt.status === "active";
         const badge = active
           ? `<span class="pill ok">已生效</span>`
@@ -715,7 +710,7 @@ async function openSubnetRouteModal(nid: string) {
         const why = node && node.relayError
           ? `<span class="muted"> · ${esc(node.relayError)}</span>`
           : "";
-        return `<span class="chip chip-active" title="${esc(rt.cidr)} → ${esc(who)}">${esc(who)} → ${esc(rt.cidr)} ${badge}${why}<button data-del-route="${esc(rt.targetNodeId)}|${esc(rt.cidr)}" class="chip-del" title="移除">&times;</button></span>`;
+        return `<span class="chip chip-active" title="${esc(rt.cidr)} → ${esc(whoText)}">${whoHTML} → ${esc(rt.cidr)} ${badge}${why}<button data-del-route="${esc(rt.targetNodeId)}|${esc(rt.cidr)}" class="chip-del" title="移除">&times;</button></span>`;
       })
       .join("");
   };
@@ -732,7 +727,7 @@ async function openSubnetRouteModal(nid: string) {
                   .map((n) => {
                     const relay = n.allowRelay ? "（已开启中继）" : n.relayError ? "（网关不可用）" : "（未开启中继）";
                     const who = n.id === selfID ? "本机" : "";
-                    return `<option value="${esc(n.id)}">${esc(who ? who + " · " : "")}${esc(deviceLabel(n))} · ${esc(n.ip || "-")}${esc(relay)}</option>`;
+                    return `<option value="${esc(n.id)}">${esc(who ? who + " · " : "")}${esc(deviceLabelText(n))} · ${esc(n.ip || "-")}${esc(relay)}</option>`;
                   })
                   .join("")
               : `<option value="">（无可选节点）</option>`}
@@ -743,41 +738,13 @@ async function openSubnetRouteModal(nid: string) {
         <div class="settings-actions"><button id="sr-route-save" class="btn" type="button">保存委派路由</button></div>
         <p class="msg" id="sr-route-result"></p>
       </div>`
-    : "";
+    : `<p class="hint">仅创建者可以委派子网路由。</p>`;
 
   openModal({
     title: `子网路由 · ${nid}`,
-    body: `
-      ${ownerSection}
-      <p class="hint">宣告本设备的局域网子网，其他成员可通过 VPN 访问。</p>
-      <div class="subnet-section subnet-section-active">
-        <div class="subnet-section-title">当前生效的子网</div>
-        <div id="sr-tags" class="subnet-tags subnet-tags-active">${renderTags(curSubnets)}</div>
-      </div>
-      <div class="subnet-section subnet-section-detected">
-        <div class="subnet-section-title">检测到的本地子网</div>
-        <div id="sr-suggest" class="subnet-tags subnet-tags-detected"><span class="muted">正在检测…</span></div>
-      </div>
-      <div class="subnet-section subnet-section-manual">
-        <div class="subnet-section-title">手动添加</div>
-        <div class="subnet-add-row">
-          <input type="text" id="sr-input" placeholder="如 192.168.3.0/24" />
-          <button id="sr-add" class="btn ghost sm">添加</button>
-        </div>
-      </div>
-      <p class="msg" style="margin-top:8px">IP 转发将由后台服务自动开启，无需手动配置。</p>
-      <p class="msg" id="sr-result"></p>`,
-    footer: `<button data-close class="btn ghost">关闭</button><button id="sr-save" class="btn">保存本机子网</button>`,
+    body: ownerSection,
+    footer: `<button data-close class="btn ghost">关闭</button>`,
     onBody: (body) => {
-      const tags = [...curSubnets];
-      const tagsEl = body.querySelector<HTMLElement>("#sr-tags")!;
-      const suggestEl = body.querySelector<HTMLElement>("#sr-suggest")!;
-      const input = body.querySelector<HTMLInputElement>("#sr-input")!;
-      const result = body.querySelector<HTMLElement>("#sr-result")!;
-
-      const rerender = () => { tagsEl.innerHTML = renderTags(tags); };
-
-      /* ── delegated relay routes (owner) ─────────────────────── */
       const routesEl = body.querySelector<HTMLElement>("#sr-routes");
       const targetEl = body.querySelector<HTMLSelectElement>("#sr-target");
       const cidrEl = body.querySelector<HTMLInputElement>("#sr-cidr");
@@ -843,82 +810,6 @@ async function openSubnetRouteModal(nid: string) {
           }
         });
       }
-
-      const refreshSuggest = (localSubnets: string[]) => {
-        const suggestions = localSubnets.filter((s) => !tags.includes(s));
-        if (!suggestions.length) {
-          suggestEl.innerHTML = `<span class="muted">未发现其他可用的本地子网</span>`;
-          return;
-        }
-        suggestEl.innerHTML = suggestions
-          .map((s) => `<span class="chip chip-candidate" data-add="${esc(s)}" title="添加 ${esc(s)}">${esc(s)} <span class="chip-add">+</span></span>`)
-          .join("");
-      };
-
-      let localSubnets: string[] = [];
-      backend.detectLocalSubnets()
-        .then((arr) => { localSubnets = arr; refreshSuggest(arr); })
-        .catch(() => { refreshSuggest([]); });
-
-      suggestEl.addEventListener("click", (e) => {
-        const chip = (e.target as HTMLElement).closest<HTMLElement>("[data-add]");
-        if (!chip) return;
-        const cidr = chip.dataset.add!;
-        if (tags.includes(cidr)) return;
-        tags.push(cidr);
-        rerender();
-        refreshSuggest(localSubnets);
-      });
-
-      body.querySelector("#sr-add")!.addEventListener("click", () => {
-        const raw = input.value.trim();
-        if (!raw) return;
-        if (tags.includes(raw)) { result.textContent = "该子网已添加"; return; }
-        const chk = subnetCheck(raw, 24);
-        if (!chk.ok) { result.className = "msg"; result.textContent = `无效: ${chk.error}`; return; }
-        const cidr = chk.value;
-        if (tags.includes(cidr)) { result.textContent = "该子网已添加"; return; }
-        tags.push(cidr);
-        input.value = "";
-        result.textContent = "";
-        rerender();
-        refreshSuggest(localSubnets);
-      });
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") { e.preventDefault(); (body.querySelector("#sr-add") as HTMLElement).click(); }
-      });
-      tagsEl.addEventListener("click", (e) => {
-        const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-del]");
-        if (!btn) return;
-        const val = btn.dataset.del!;
-        const idx = tags.indexOf(val);
-        if (idx >= 0) tags.splice(idx, 1);
-        rerender();
-        refreshSuggest(localSubnets);
-      });
-
-      body.querySelector("#sr-save")!.addEventListener("click", async () => {
-        const saveBtn = body.querySelector<HTMLButtonElement>("#sr-save")!;
-        const origText = saveBtn.textContent;
-        saveBtn.disabled = true;
-        result.className = "msg";
-        result.textContent = "保存中…";
-        try {
-          const r = await ctlOrClean(nid, "子网路由", async () => {
-            await backend.updateSubnets({ nid, subnets: tags });
-            return true;
-          });
-          if (r === null) return;
-          result.className = "msg ok";
-          result.textContent = "已保存";
-          toast("本机宣告的子网已更新");
-        } catch (e) {
-          result.className = "msg";
-          result.textContent = `保存失败: ${e}`;
-          saveBtn.disabled = false;
-          saveBtn.textContent = origText;
-        }
-      });
     },
   });
 }
@@ -1086,6 +977,15 @@ function deviceLabel(nd: { deviceName?: string; deviceId?: string }): string {
   if (name && id) return `${esc(name)} <span class="muted mono">(${esc(id)})</span>`;
   if (name) return esc(name);
   if (id) return `<span class="muted mono">${esc(id)}</span>`;
+  return "-";
+}
+
+function deviceLabelText(nd: { deviceName?: string; deviceId?: string }): string {
+  const name = nd.deviceName?.trim();
+  const id = nd.deviceId ? nd.deviceId.slice(0, 8) : "";
+  if (name && id) return `${name} (${id})`;
+  if (name) return name;
+  if (id) return id;
   return "-";
 }
 
