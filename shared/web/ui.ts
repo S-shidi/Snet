@@ -1244,7 +1244,9 @@ function natViaLabel(via: string): string {
 
 function openSettingsModal() {
   const s = loadSettings();
-  const statusHTML = document.getElementById("status-source")?.innerHTML || "";
+  const statusSource = document.getElementById("status-source");
+  const statusGridHTML = statusSource?.querySelector(".status-grid")?.innerHTML || "";
+  const statusJSONHTML = statusSource?.querySelector(".card")?.outerHTML || "";
   const server = (status?.serverAddr || s.server || "").trim();
   const isOfficial = !server || server.replace(/\/+$/, "") === DEFAULT_SERVER.replace(/\/+$/, "");
   const nat = status?.natMapping;
@@ -1257,23 +1259,25 @@ function openSettingsModal() {
     title: "信息",
     body: `<div class="info-status">
         <div class="detail-section-head"><h3>运行状态</h3></div>
-        ${statusHTML}
-      </div>
-      <div class="settings-block" id="s-server-block">
-        <div id="s-server-view">
-          <div class="row">
-            <label>协调服务</label>
-            <span class="value" id="s-server-label">${isOfficial ? "官方 (SnetServ)" : esc(server)}</span>
-            <button type="button" id="s-server-edit" class="btn icon sm" title="修改">✎</button>
-            ${isOfficial ? "" : '<button type="button" id="s-server-reset" class="btn ghost sm">恢复默认</button>'}
+        <div class="status-grid info-status-grid">
+          ${statusGridHTML}
+          <div class="stat coordinator-card" id="s-server-card">
+            <div class="label">协调服务</div>
+            <div id="s-server-view">
+              <div class="value" id="s-server-label">${isOfficial ? "官方 (SnetServ)" : esc(server)}</div>
+              <div class="coordinator-actions">
+                <button type="button" id="s-server-edit" class="btn icon sm" title="修改">✎</button>
+                ${isOfficial ? "" : '<button type="button" id="s-server-reset" class="btn ghost sm">恢复默认</button>'}
+              </div>
+            </div>
+            <div id="s-server-editor" hidden>
+              <input id="s-server" type="url" value="${isOfficial ? "" : esc(server)}" placeholder="https://my-vps:8090" autocomplete="off" />
+              <p class="hint">留空则使用官方 SnetServ，或填入自托管地址。</p>
+              <div class="settings-actions"><button id="s-server-save" class="btn">保存</button><button id="s-server-cancel" class="btn ghost">取消</button></div>
+            </div>
+            <p class="msg" id="s-server-result"></p>
           </div>
         </div>
-        <div id="s-server-editor" hidden>
-          <div class="row"><label>服务端地址 (SnetServ)</label><input id="s-server" type="url" value="${isOfficial ? "" : esc(server)}" placeholder="https://my-vps:8090" autocomplete="off" /></div>
-          <p class="hint">留空则使用官方 SnetServ，或填入你的自托管地址（如 https://my-vps:8090）</p>
-          <div class="settings-actions"><button id="s-server-save" class="btn">保存</button><button id="s-server-cancel" class="btn ghost">取消</button></div>
-        </div>
-        <p class="msg" id="s-server-result"></p>
       </div>
       <div class="row"><label>WireGuard 端口</label><input id="s-wgport" type="number" min="1024" max="65535" value="${s.wgport}" /></div>
       <div class="settings-block">
@@ -1299,6 +1303,7 @@ function openSettingsModal() {
           : ""}
       </div>
       <p class="msg" id="s-msg"></p>
+      <div class="info-json">${statusJSONHTML}</div>
     `,
     wide: true,
     footer: `<button data-close class="btn ghost">关闭</button>`,
@@ -1703,6 +1708,20 @@ async function leaveNetworkFromDetail(nid: string) {
   }
 }
 
+async function openNetworkDetailModal(nid: string) {
+  try {
+    const r = await backend.netinfo(nid);
+    openModal({
+      title: `网络详情 · ${nid}`,
+      wide: true,
+      body: `<pre class="json">${esc(JSON.stringify(r, null, 2))}</pre>`,
+      footer: `<button data-close class="btn ghost">关闭</button>`,
+    });
+  } catch (e) {
+    toast(`获取网络详情失败: ${e}`, "err");
+  }
+}
+
 async function resetPairingCode(nid: string) {
   if (!(await confirmDialog("重置配对码", "作废旧配对码并生成新码？旧码立即失效，已加入成员不受影响。", true))) return;
   try {
@@ -1929,7 +1948,7 @@ function bindNetworkDetailEvents() {
       return;
     }
     switch (el.dataset.detailAct) {
-      case "detail": await openNetworkDetail(nid); break;
+      case "detail": await openNetworkDetailModal(nid); break;
       case "invite": await openInviteModal(nid); break;
       case "settings": await openNetworkSettings(nid); break;
       case "subnets": await openSubnetRouteModal(nid); break;
