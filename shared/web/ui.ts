@@ -1013,29 +1013,15 @@ function deviceLabelText(nd: { deviceName?: string; deviceId?: string }): string
   return "-";
 }
 
-function nodeRouteCell(routes: RelayRoute[] | undefined, nodeID: string, selfID = ""): string {
-  const all = routes ?? [];
-  const mine = all.filter((r) => r.targetNodeId === nodeID);
-  if (mine.length) {
-    return mine
-      .map((r) => {
-        const active = r.status === "active";
-        return `<span class="pill ${active ? "ok" : "warn"} subnet-route" title="${active ? "已生效" : "待节点确认"}">${esc(r.cidr)}</span>`;
-      })
-      .join(" ");
-  }
-  // A member row should also show the subnets it can reach through the
-  // network's active gateways, otherwise the member that uses the route
-  // appears to have no subnet routing at all.
-  if (selfID && nodeID === selfID) {
-    const via = all.filter((r) => r.status === "active" && r.targetNodeId !== nodeID);
-    if (via.length) {
-      return via
-        .map((r) => `<span class="pill ok subnet-route" title="通过中继网关访问">${esc(r.cidr)}</span>`)
-        .join(" ");
-    }
-  }
-  return '<span class="muted">-</span>';
+function nodeRouteCell(routes: RelayRoute[] | undefined, nodeID: string): string {
+  // Only the route delegated to this exact node may be shown on its row.
+  // Never borrow another gateway's CIDR and never show a pending route as if
+  // it were already usable.
+  const mine = (routes ?? []).filter((r) => r.targetNodeId === nodeID && r.status === "active");
+  if (!mine.length) return '<span class="muted">-</span>';
+  return mine
+    .map((r) => `<span class="pill ok subnet-route" title="已生效">${esc(r.cidr)}</span>`)
+    .join(" ");
 }
 
 async function showMembers(nid: string) {
@@ -1151,7 +1137,7 @@ async function showMembers(nid: string) {
   const rows = all.map((nd) => {
     const isSelf = nd.ip === myIp;
     const online = nd.online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>';
-    const routeCell = nodeRouteCell(info.routes ?? r.routes, nd.id, isSelf ? nd.id : "");
+    const routeCell = nodeRouteCell(info.routes ?? r.routes, nd.id);
     return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${routeCell}</td><td>${isSelf ? `<span class="muted">自己</span>` : ""}</td></tr>`;
   }).join("");
   openModal({
@@ -1739,7 +1725,7 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const online = nd.online
       ? '<span class="pill ok">在线</span>'
       : '<span class="pill off">离线</span>';
-    const routeCell = nodeRouteCell(routes, nd.id, isSelf ? (self?.id ?? nd.id) : "");
+    const routeCell = nodeRouteCell(routes, nd.id);
     const rolePill = role === "owner"
       ? `<span class="pill accent">${roleLabel(role)}</span>`
       : `<span class="pill off">${roleLabel(role)}</span>`;

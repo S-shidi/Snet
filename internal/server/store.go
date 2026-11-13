@@ -5344,12 +5344,6 @@ func (s *Store) SetRoutes(token string, routes []protocol.Route) error {
 // active unless its target stopped allowing relay. That keeps a full-list
 // PUT from downgrading live routes on every unrelated edit.
 func (s *Store) setRoutesLocked(ns *networkState, routes []protocol.Route) error {
-	prevActive := make(map[string]bool, len(ns.n.Routes))
-	for _, r := range ns.n.Routes {
-		if r.Status == protocol.RouteStatusActive {
-			prevActive[routeKey(r.TargetNodeID, r.CIDR)] = true
-		}
-	}
 	out := make([]protocol.Route, 0, len(routes))
 	seen := map[string]struct{}{}
 	seenCIDR := map[string]struct{}{}
@@ -5378,11 +5372,11 @@ func (s *Store) setRoutesLocked(ns *networkState, routes []protocol.Route) error
 		}
 		seen[key] = struct{}{}
 		status := protocol.RouteStatusPending
-		// A previously active route keeps working across a full-list update.
-		if prevActive[key] {
-			if n := ns.nodes[r.TargetNodeID]; n != nil && n.AllowRelay {
-				status = protocol.RouteStatusActive
-			}
+		// Active state is derived solely from the target's current capability.
+		// This also handles a route added after the gateway enabled itself, and
+		// demotes a route whose target has since stopped allowing relay.
+		if n := ns.nodes[r.TargetNodeID]; n != nil && n.AllowRelay {
+			status = protocol.RouteStatusActive
 		}
 		out = append(out, protocol.Route{
 			TargetNodeID: r.TargetNodeID,
@@ -5423,14 +5417,15 @@ func (s *Store) UpdateRelayCapability(token string, allowRelay bool, relayErr st
 	// A node that cannot configure its gateway can never act as one, no
 	// matter what it claims.
 	effective := allowRelay && relayErr == ""
-	if me.AllowRelay == effective && me.RelayError == relayErr {
-		return nil
+	if me.AllowRelay != effective || me.RelayError != relayErr {
+		me.AllowRelay = effective
+		me.RelayError = relayErr
+		if err := s.persistNode(te.NetworkID, me); err != nil {
+			return err
+		}
 	}
-	me.AllowRelay = effective
-	me.RelayError = relayErr
-	if err := s.persistNode(te.NetworkID, me); err != nil {
-		return err
-	}
+	// Always re-evaluate: a route may have been delegated after the previous
+	// capability report, so a value-equal heartbeat must still promote it.
 	return s.refreshRouteStatusesLocked(ns)
 }
 

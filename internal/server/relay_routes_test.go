@@ -232,6 +232,25 @@ func TestSetRoutesRejectsDuplicateCIDROnDifferentNodes(t *testing.T) {
 	}
 }
 
+func TestSetRoutesActivatesRouteWhenTargetAlreadyAllowsRelay(t *testing.T) {
+	s, created, joined := relayRouteFixture(t)
+	if err := s.UpdateRelayCapability(joined.Token, true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRoutes(created.Token, []protocol.Route{
+		{TargetNodeID: joined.NodeID, CIDR: "192.168.9.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := s.NetworkInfo(created.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Routes) != 1 || info.Routes[0].Status != protocol.RouteStatusActive {
+		t.Fatalf("route = %+v, want active immediately", info.Routes)
+	}
+}
+
 func TestSetRoutesKeepsActiveRoutesAcrossUpdates(t *testing.T) {
 	s, created, joined := relayRouteFixture(t)
 

@@ -1154,6 +1154,7 @@ func (d *Daemon) Start() error {
 	// "已删除" badge for networks that the owner has removed from the server.
 	// Run asynchronously so daemon startup is not blocked on the server.
 	go d.pingAllServerStates()
+	go d.relayCapabilityHeartbeat()
 
 	d.started = true
 	return nil
@@ -2878,6 +2879,23 @@ func (d *Daemon) SetRelayOptions(allowRelay, useRelay bool) error {
 	d.applyRelayGatewayLocked()
 	d.publishRelayCapabilityAsync()
 	return nil
+}
+
+// relayCapabilityHeartbeat re-reports the gateway state periodically. The
+// server also performs this reconciliation on every report, so a route that
+// was delegated after the switch was enabled is promoted even when the local
+// flags have not changed.
+func (d *Daemon) relayCapabilityHeartbeat() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+			d.publishRelayCapabilityAsync()
+		}
+	}
 }
 
 // RelayOptions returns the current relay switches and the last gateway setup
