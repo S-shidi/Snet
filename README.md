@@ -91,7 +91,7 @@ curl -fsS https://snet.example.com:8090/healthz
 ```yaml
 services:
   relay:
-    image: 66.187.6.46:5000/snet-relay:v1.1.4
+    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.1.4
     container_name: snet-relay
     restart: unless-stopped
     environment:
@@ -101,7 +101,7 @@ services:
       - "8092:8092/udp"
 
   server:
-    image: 66.187.6.46:5000/snet-server:v1.1.4
+    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.1.4
     container_name: snet-server
     restart: unless-stopped
     depends_on:
@@ -133,26 +133,16 @@ volumes:
 
 ### 2. 部署 Docker 客户端 / NAS
 
-客户端镜像：
+客户端镜像使用阿里云 ACR 公开仓库，无需登录：
 
 ```text
-66.187.6.46:5000/snet-client:latest
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.4
 ```
 
-如果 Docker 无法访问 HTTP Registry，先配置：
-
-```json
-{
-  "insecure-registries": ["66.187.6.46:5000"]
-}
-```
-
-Linux 写入 `/etc/docker/daemon.json` 后重启 Docker；群晖可在 Container Manager 的 Registry 设置中添加。
-
-登录：
+也可以直接拉取：
 
 ```bash
-docker login 66.187.6.46:5000 -u snet
+docker pull crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.4
 ```
 
 标准 Linux 创建：
@@ -161,7 +151,7 @@ docker login 66.187.6.46:5000 -u snet
 # /opt/stacks/snet/compose.yaml
 services:
   snetd:
-    image: 66.187.6.46:5000/snet-client:latest
+    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.4
     container_name: snetd
     restart: unless-stopped
     network_mode: host
