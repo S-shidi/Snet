@@ -1,20 +1,22 @@
-# SNET 虚拟组网
+<h1 align="center">SNET</h1>
 
-SNET 是一个端到端加密的私有虚拟局域网：WireGuard 负责数据面，HTTPS 协调服务负责成员与网络状态，UDP Relay 负责在无法直连时保证连通性。
+<p align="center">
+  端到端加密的私有虚拟局域网。WireGuard 负责数据面，HTTPS 协调服务负责成员与网络状态，UDP Relay 负责在无法直连时保证连通性。
+</p>
 
-当前版本：**v1.1.4**
+<p align="center">
+  当前版本：<b>v1.1.4</b> · <a href="https://github.com/S-shidi/Snet/releases/latest">下载最新版</a>
+</p>
 
 ## 核心特性
 
 - **WireGuard 加密数据面**：节点之间使用 WireGuard 隧道通信。
 - **P2P 优先**：同 LAN、全局 IPv6、NAT 打洞直连优先，失败自动回退 Relay。
 - **Relay v2**：signed ticket + 节点级 UDP 转发，支持多 relay 候选与故障切换。
+- **委派子网路由**：网络创建者把 CIDR 委派给网关节点，其他成员自动通过该节点访问目标子网。
 - **Web 控制台**：网络详情、成员管理、路径监控、子网路由、自定义 SnetServ。
-- **Docker 客户端**：一个镜像包含 `snetd`、nginx 和 Web UI，适合 Docker 主机与群晖 NAS。
-- **服务端管理台**：网络、节点、待审批和网络详情运维。
-- **可观测性**：`/ctl/status` 暴露 `relayPath`、`peerDirect`、NAT 类型和路径状态。
-- **一键 Ping 诊断**：在网络详情页的成员列表中，点击“📡 诊断”即可测试到该节点的延迟与丢包率。
-- **导出诊断日志**：在“设置”页面底部点击“导出诊断日志”，即可下载 `snet-diagnostic.log`，方便排查网络异常。
+- **Docker 客户端**：一个镜像包含 `snetd`、nginx 和 Web UI，适合 Linux 主机与群晖 NAS。
+- **macOS 原生客户端**：DMG 安装，内置 LaunchDaemon、菜单栏状态与中继网关模式。
 - **安全默认值**：HTTPS、鉴权、限流、安全头和设备身份持久化。
 
 ## 架构简介
@@ -36,142 +38,224 @@ SNET 是一个端到端加密的私有虚拟局域网：WireGuard 负责数据�
 - `cmd/client/snetd`：客户端 daemon。
 - `cmd/client/snetctl`：本地控制命令。
 - `shared/web`：客户端 Web UI 源码。
-- `internal/client/pathmanager.go`：直连/Relay 路径选择与回退。
+- `internal/client/routeplanner.go`：委派路由与直连/中继路径规划。
 
-## Quick Start
+## Docker 部署
 
-### 1. 服务端 Docker Compose
+### 1. 部署服务端
 
-前置：Linux 主机、Docker Compose、TLS 证书、8090/tcp、8091/udp、8092/udp 可用。
+前置条件：
+
+- Linux VPS，Docker 与 Docker Compose。
+- 一个域名，例如 `snet.example.com`，解析到 VPS。
+- TLS 证书，默认示例使用 Let's Encrypt 路径。
+- 放行 `8090/tcp`、`8091/udp`、`8092/udp`。
+
+创建部署目录和 `.env`：
 
 ```bash
-git clone <repo-url> /opt/stacks/snet
-cd /opt/stacks/snet
-./scripts/build-release.sh
-
-mkdir -p dist-deploy/linux-amd64
-cp dist/server-linux-amd64 dist-deploy/linux-amd64/server
-cp dist/relay-linux-amd64 dist-deploy/linux-amd64/relay
-cp dist/snetd-linux-amd64 dist-deploy/linux-amd64/snetd
-
-cd deploy-prod/docker-server
+git clone https://github.com/S-shidi/Snet.git
+cd Snet/deploy-prod/docker-server
 cp .env.example .env
-# 编辑 .env，设置 SNET_RELAY_SECRET 和 SNET_RELAY_V2_ENDPOINTS
+```
+
+编辑 `.env`，至少设置：
+
+```dotenv
+SNET_RELAY_SECRET=用 openssl rand -hex 32 生成
+SNET_RELAY_V2_ENDPOINTS=snet.example.com:8092
+TLS_CERT_PATH=/etc/letsencrypt/live/snet.example.com/fullchain.pem
+TLS_KEY_PATH=/etc/letsencrypt/live/snet.example.com/privkey.pem
+```
+
+启动：
+
+```bash
 docker compose --env-file .env up -d --build
 ```
 
 验证：
 
 ```bash
-curl -fsS https://snet.uizhi.eu.org:8090/healthz
+curl -fsS https://snet.example.com:8090/healthz
 ```
 
-预期返回 `serverVersion: "1.1.4"` 和 `status: "ok"`。
+预期：
 
-### 2. 客户端 Docker 镜像
+```json
+{"serverVersion":"1.1.4","status":"ok"}
+```
 
-客户端镜像已发布到 VPS Registry：
+如果不想从源码构建，可以直接使用预构建镜像：
+
+```yaml
+services:
+  relay:
+    image: 66.187.6.46:5000/snet-relay:v1.1.4
+    container_name: snet-relay
+    restart: unless-stopped
+    environment:
+      SNET_RELAY_SECRET: ${SNET_RELAY_SECRET}
+    command: ["-addr", "0.0.0.0:8092", "-metrics-addr", "127.0.0.1:8094"]
+    ports:
+      - "8092:8092/udp"
+
+  server:
+    image: 66.187.6.46:5000/snet-server:v1.1.4
+    container_name: snet-server
+    restart: unless-stopped
+    depends_on:
+      - relay
+    environment:
+      SNET_RELAY_SECRET: ${SNET_RELAY_SECRET}
+      SNET_RELAY_V2_ENDPOINTS: ${SNET_RELAY_V2_ENDPOINTS}
+    command:
+      - "-addr"
+      - "0.0.0.0:8090"
+      - "-probe-addr"
+      - "0.0.0.0:8091"
+      - "-db"
+      - "/data/snet.db"
+      - "-tls-cert"
+      - "${TLS_CERT_PATH}"
+      - "-tls-key"
+      - "${TLS_KEY_PATH}"
+    ports:
+      - "8090:8090/tcp"
+      - "8091:8091/udp"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - snet-data:/data
+
+volumes:
+  snet-data:
+```
+
+### 2. 部署 Docker 客户端 / NAS
+
+客户端镜像：
 
 ```text
 66.187.6.46:5000/snet-client:latest
 ```
 
-在 Docker 主机或群晖 NAS 上：
+如果 Docker 无法访问 HTTP Registry，先配置：
+
+```json
+{
+  "insecure-registries": ["66.187.6.46:5000"]
+}
+```
+
+Linux 写入 `/etc/docker/daemon.json` 后重启 Docker；群晖可在 Container Manager 的 Registry 设置中添加。
+
+登录：
 
 ```bash
 docker login 66.187.6.46:5000 -u snet
+```
 
-# 标准 Docker 主机
-cd /opt/stacks/snet
-docker compose pull
-docker compose up -d
+标准 Linux 创建：
 
-# 群晖 NAS
-cd /volume1/docker/snet
-docker compose pull
+```yaml
+# /opt/stacks/snet/compose.yaml
+services:
+  snetd:
+    image: 66.187.6.46:5000/snet-client:latest
+    container_name: snetd
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - /etc/snet:/etc/snet
+```
+
+群晖 NAS 把数据卷改成：
+
+```yaml
+    volumes:
+      - /volume1/docker/snet/etc:/etc/snet
+```
+
+启动：
+
+```bash
+cd /opt/stacks/snet       # 标准 Linux
+# 或 cd /volume1/docker/snet   # 群晖 NAS
 docker compose up -d
 ```
 
-打开：
+打开控制台：
 
 ```text
 http://<主机IP>:8081
 ```
 
-客户端容器使用 host network、`/dev/net/tun` 和 `/etc/snet` 数据卷；首次启动会在数据卷内生成稳定的 `device.id`。
+首次打开需要设置 Web 管理密码。更新客户端：
 
-客户端不再需要设备授权码或设备绑定，启动后可以直接创建或加入网络。
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+docker exec snetd snetd -version
+```
+
+客户端容器需要 `/dev/net/tun` 和 `NET_ADMIN`；`network_mode: host` 可让 nginx、WireGuard 和本机控制 API 正常工作。
 
 ### 3. 连接自托管 SnetServ
 
-默认连接官方 SnetServ。需要使用自建服务端时，在客户端 Web UI 或 macOS App 的「设置」中：
+默认连接官方 SnetServ。使用自建服务端时，在客户端 Web UI 或 macOS App 的「信息」页面：
 
 1. 点击「协调服务」旁的修改按钮。
-2. 填写自托管地址，例如 `https://my-vps:8090`。
-3. 点击保存；客户端会先请求目标 `/healthz` 校验连通性。
-4. 校验通过后保存并重新连接。点击「恢复默认」可切回官方 SnetServ。
+2. 填入 `https://snet.example.com:8090`。
+3. 保存，客户端会先校验目标 `/healthz`。
+4. 校验通过后自动重新连接；点击「恢复默认」可切回官方服务端。
 
-也可以在本地控制 API 修改：
+## macOS 安装
 
-```bash
-snetctl -ctl http://127.0.0.1:19432 config --server https://my-vps:8090
-# 恢复官方
-snetctl -ctl http://127.0.0.1:19432 config --server ""
-```
+系统要求：macOS 10.13+，建议使用 Apple Silicon Mac。
 
-自托管服务端需要暴露 8090/tcp、8091/udp 和 8092/udp，并配置有效的 TLS 证书。
+1. 打开最新 Release：
 
-### 4. macOS Wails 客户端
+   <https://github.com/S-shidi/Snet/releases/latest>
 
-GitHub Release 提供标准 `.dmg` 安装包，DMG 内包含 `SnetMac.app`、`Applications` 快捷方式和 `安装说明.txt`。
+2. 下载 `SnetMac-v1.1.4-*.dmg`。
 
-1. 下载并打开 `.dmg`。
-2. 将左侧的 `SnetMac.app` 拖入右侧的 `Applications` 文件夹。
-3. 打开 Mac 自带的“终端”应用（在启动台搜索“终端”）。
-4. 在终端中复制并粘贴以下整行命令，然后按回车：
+3. 打开 DMG，把 `SnetMac.app` 拖入 `Applications`。
+
+4. 第一次打开前，在「终端」执行：
 
    ```bash
    sudo xattr -cr /Applications/SnetMac.app && open /Applications/SnetMac.app
    ```
 
-5. 根据提示输入你的 Mac 开机密码（输入时屏幕不显示，输完直接回车）。
+   输入 Mac 开机密码。该命令只需执行一次，用于解除未公证应用的隔离限制。
 
-此命令用于解除 macOS 对未公证应用的隔离限制，仅需执行一次，后续可直接从启动台打开。
+5. 首次启动会请求管理员授权，安装后台服务：
 
-首次启动需要一次 macOS 管理员授权：客户端会安装 LaunchDaemon：
+   ```text
+   /Library/LaunchDaemons/com.snet.daemon.plist
+   /usr/local/bin/snetd
+   /usr/local/etc/snet/
+   ```
 
-```text
-/Library/LaunchDaemons/com.snet.daemon.plist
-```
+6. 打开 App 后，在「信息」中设置 Web 管理密码，即可创建或加入网络。
 
-之后每次打开 App 会自动通过 `launchctl kickstart system/com.snet.daemon` 启动服务，不再弹窗。配置固定为：
+7. 关闭窗口后 App 会留在菜单栏继续运行；彻底退出请从菜单栏选择「退出 SNET」。
 
-```text
-/usr/local/etc/snet/config.json
-/usr/local/etc/snet/device.id
-/usr/local/etc/snet/ctl-token
-/usr/local/etc/snet/snetd.log
-```
+macOS 客户端支持作为中继网关：在「信息」页面打开「允许本设备作为中继网关转发流量」。如果委派 CIDR 与本机物理局域网冲突，客户端会跳过该路由，并在网络状态中显示原因。
 
-App 只使用包内 `Contents/Resources/snetd`，不依赖 `/usr/local/snet` 或系统 `PATH`。应用以普通窗口启动，关闭窗口即退出；不使用系统托盘。
-
-本地构建见 [macOS Wails 客户端说明](desktop-mac/README.md)，开发排坑记录见 [MAC-DEV-NOTES](docs/MAC-DEV-NOTES.md)。
-
-## 构建与发布
+## 本地构建
 
 ```bash
 ./scripts/build-release.sh
 ```
 
-脚本会：
+脚本会读取 `VERSION`，交叉编译 Linux/Darwin amd64/arm64 的 `server`、`relay`、`snetd`、`snetctl`，输出到 `dist/` 并生成校验和。
 
-- 从 `VERSION` 读取版本号。
-- 使用 `git describe --tags --always` 注入 commit。
-- 使用 UTC 时间注入 buildDate。
-- 交叉编译 Linux/Darwin 的 amd64/arm64 二进制到 `dist/`。
-- 生成 `dist/checksums.txt`。
-
-本地测试：
+运行测试：
 
 ```bash
 go test ./...
@@ -181,23 +265,13 @@ go test ./...
 
 - [VPS 部署](docs/VPS-DEPLOY-VIA-HOSTODO.md)
 - [部署环境与路径](docs/DEPLOYMENTS.md)
+- [客户端 Docker 说明](deploy-prod/docker-client/README.md)
 - [项目总览](docs/PROJECT-ATLAS.md)
 - [网络架构评审](docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md)
-- [客户端 Docker 说明](deploy-prod/docker-client/README.md)
-- [macOS Wails 客户端](desktop-mac/README.md)
 - [macOS 开发排坑记录](docs/MAC-DEV-NOTES.md)
 
 ## 安全
 
-- 不要提交 `.env`、`device.id`、`ctl-token`、registry 密码、私钥或手机 WireGuard 配置。
-- 服务端 `.env` 与 registry 密码只保存在部署主机，权限保持 `0600`。
+- 不要提交 `.env`、`device.id`、`ctl-token`、Registry 密码、私钥或手机 WireGuard 配置。
+- 服务端 `.env` 与 Registry 密码只保存在部署主机，权限保持 `0600`。
 - 发布前运行 `git status` 和安全扫描，确认工作区干净且没有真实凭据。
-
-## 网段冲突防护（v1.0.1）
-
-- 客户端加入网络前会检查本机物理局域网与目标 CIDR 是否重叠，冲突直接拒绝；
-  高级用户可用 `SNET_IGNORE_LAN_CONFLICT=1` 绕过。
-- 路由安装失败不再静默：网络状态变为 `error`，Web UI 显示红色警告。
-- 服务端自动网段池扩展到 `10.80.0.0/12`（4096 个 `/24`），按 CIDR 包含关系查重；
-  显式重叠网段默认拒绝，可用 `allowOverlap: true` 放行。
-- 详见 [客户端 Docker 说明](deploy-prod/docker-client/README.md#13-网段冲突防护v101)。
