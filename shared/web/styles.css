@@ -516,12 +516,14 @@ body.empty-mode { overflow: hidden; }
 .member-card-label { width: 62px; flex: 0 0 62px; color: var(--faint); font-size: 11px; }
 .member-card-line code { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .member-card-line .path-badge { margin-left: 2px; }
+.member-card-line .member-endpoint { color: var(--dim); overflow-wrap: anywhere; }
 .member-card-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 19px; }
 .member-card-tags .pill { font-size: 11px; }
 .member-card-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding-top: 10px; border-top: 1px solid var(--border);
 }
+.member-card-last { color: var(--faint); font-size: 11.5px; }
 .member-card-actions { display: flex; align-items: center; gap: 6px; }
 .member-empty { margin: 4px 0 0; }
 .path-badge.self { background: var(--accent-soft); color: var(--accent2); }

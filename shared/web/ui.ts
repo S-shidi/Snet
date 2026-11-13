@@ -1729,6 +1729,13 @@ function canManageNetwork(n: NetInfo): boolean {
   return networkRole(n) === "owner" || !!n.owner;
 }
 
+function lastActiveLabel(pd: PeerDirect | undefined, online: boolean): string {
+  const sec = pd?.lastRecvSec;
+  if (typeof sec !== "number" || sec < 0) return "暂无活跃记录";
+  if (!online && sec < 2) return "最后活跃 1 秒前";
+  return `最后活跃 ${fmtAgo(sec)}`;
+}
+
 function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string, routes: RelayRoute[] | undefined): string {
   if (!r) return `<p class="hint member-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
@@ -1754,6 +1761,8 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       : nd.relayError
         ? `<span class="pill warn" title="${esc(nd.relayError)}">网关不可用</span>`
         : "";
+    const endpoint = isSelf ? "" : pathAddr(pd) !== "-" ? pathAddr(pd) : (nd.endpoint || "-");
+    const last = isSelf ? "" : lastActiveLabel(pd, online);
     const diag = isSelf
       ? ""
       : `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button><span class="ping-result" data-ping-result="${esc(nd.id)}"></span>`;
@@ -1764,9 +1773,11 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       </div>
       <div class="member-card-body">
         <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${path}</div>
+        ${isSelf ? "" : `<div class="member-card-line"><span class="member-card-label">Endpoint</span><code class="member-endpoint">${esc(endpoint)}</code></div>`}
         <div class="member-card-tags">${routeCell}${relay}</div>
       </div>
       <div class="member-card-foot">
+        <span class="member-card-last">${esc(last)}</span>
         <span class="member-card-actions">${diag}</span>
       </div>
     </article>`;
