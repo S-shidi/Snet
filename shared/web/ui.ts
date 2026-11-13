@@ -839,8 +839,18 @@ async function openSubnetRouteModal(nid: string) {
 
 /* ── Invite modal ─────────────────────────────────────────────── */
 async function openInviteModal(nid: string, known?: { link: string; name?: string }) {
-  const info = known ?? (await inviteInfo(nid));
-  if (!info) return;
+  let info: { link: string; name?: string } | null = known ?? null;
+  if (!info) {
+    // Never fail silently: a missing invite link has to tell the user why.
+    try {
+      info = await inviteInfo(nid);
+    } catch (e) {
+      const msg = String(e).replace(/^Error:\s*/, "") || "未知错误";
+      toast(/404/.test(msg) ? `获取邀请链接失败: ${msg}（客户端版本过旧，请更新镜像）` : `获取邀请链接失败: ${msg}`, "err");
+      return;
+    }
+    if (!info) return;
+  }
   const name = info.name || "";
   const link = info.link;
   openModal({
@@ -1825,8 +1835,11 @@ async function runPeerPing(btn: HTMLButtonElement) {
     const cls = loss >= 50 || avg >= 200 ? "err" : loss > 0 || avg >= 80 ? "warn" : "ok";
     showPingModal(`延迟: ${avg > 0 ? `${avg.toFixed(0)}ms` : "-"} / 丢包: ${loss.toFixed(0)}%`, cls);
   } catch (e) {
-    showPingModal(`诊断失败：${String(e).includes("目标不可达") ? "目标不可达" : String(e)}`, "err");
-    toast("诊断失败：目标不可达", "err");
+    // Report the real reason: a missing ping binary, an unreachable target
+    // and an auth failure all need different fixes.
+    const msg = String(e).replace(/^Error:\s*/, "") || "未知错误";
+    showPingModal(`诊断失败：${msg}`, "err");
+    toast(`诊断失败：${msg}`, "err");
   } finally {
     btn.disabled = false;
     btn.innerHTML = original;
@@ -2135,14 +2148,20 @@ function bindNetworkDetailEvents() {
       }
       return;
     }
-    switch (el.dataset.detailAct) {
-      case "detail": await openNetworkDetailModal(nid); break;
-      case "invite": await openInviteModal(nid); break;
-      case "settings": await openNetworkSettings(nid); break;
-      case "subnets": await openSubnetRouteModal(nid); break;
-      case "rotate-invite": await rotateInviteLink(nid); break;
-      case "leave": await leaveNetworkFromDetail(nid); break;
-      case "delete": await deleteNetworkFromDetail(nid, el as HTMLButtonElement); break;
+    // Every action reports its own failure: a rejected promise here would
+    // leave the user with a button that does nothing.
+    try {
+      switch (el.dataset.detailAct) {
+        case "detail": await openNetworkDetailModal(nid); break;
+        case "invite": await openInviteModal(nid); break;
+        case "settings": await openNetworkSettings(nid); break;
+        case "subnets": await openSubnetRouteModal(nid); break;
+        case "rotate-invite": await rotateInviteLink(nid); break;
+        case "leave": await leaveNetworkFromDetail(nid); break;
+        case "delete": await deleteNetworkFromDetail(nid, el as HTMLButtonElement); break;
+      }
+    } catch (err) {
+      toast(String(err), "err");
     }
   });
   document.addEventListener("click", (e) => {
