@@ -107,7 +107,7 @@ export type NetInfoDetail = {
   nodes?: Array<{ id: string; ip: string; deviceId?: string; deviceName?: string; online?: boolean; allowedSubnets?: string[]; role?: string; publicKey?: string; allowRelay?: boolean; relayError?: string }>;
 };
 export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; deviceName?: string; online?: boolean; allowedSubnets?: string[]; role?: string; natType?: string; allowRelay?: boolean; relayError?: string };
-export type PeersResp = { peers?: NetNode[]; self?: NetNode; subnet?: string; approvalRequired?: boolean };
+export type PeersResp = { peers?: NetNode[]; self?: NetNode; subnet?: string; approvalRequired?: boolean; routes?: RelayRoute[] };
 export type CreateResp = { networkId: string; ip: string; pairingCode: string; link: string };  
 export type JoinResp = { ip?: string; networkId?: string; status?: string; pendingId?: string };
 export type ShareMeta = { description?: string; tags?: string[]; visibility?: string };
