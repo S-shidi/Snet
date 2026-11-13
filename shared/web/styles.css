@@ -6,6 +6,7 @@
   --err:#e05252; --err-soft:rgba(224,82,82,.14);
   --warn:#d9a13a; --warn-soft:rgba(217,161,58,.14);
   --radius:12px; --radius-s:8px;
+  --header-padding-x:18px;
   --shadow:0 10px 34px rgba(0,0,0,.35);
   --ring:0 0 0 3px rgba(79,140,255,.35);
 }
@@ -39,7 +40,7 @@ header {
 }
 .header-inner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  width: 100%; max-width: 1200px; margin: 0 auto; padding: 12px 18px;
+  width: 100%; max-width: 1200px; margin: 0 auto; padding: 12px var(--header-padding-x);
 }
 .brand { flex: none; }
 .brand { display: flex; align-items: center; gap: 10px; }
@@ -67,7 +68,7 @@ header {
 .header-right { display: flex; align-items: center; gap: 10px; flex: none; }
 .network-tabs {
   display: flex; align-items: flex-end; gap: 2px; width: 100%; max-width: 1200px; min-width: 0;
-  margin: 0 auto; padding: 0 18px 0 68px; overflow-x: auto; white-space: nowrap;
+  margin: 0 auto; padding: 0 var(--header-padding-x); overflow-x: auto; white-space: nowrap;
   scrollbar-width: none;
 }
 .network-tabs::-webkit-scrollbar { display: none; }
@@ -98,12 +99,11 @@ header {
 .network-tab-add:hover { color: var(--accent); border-color: var(--accent); }
 
 /* macOS Wails: leave room for traffic lights and make the header draggable. */
+.wails-desktop { --header-padding-x: 80px; }
 .wails-desktop .header-inner {
-  padding-left: 80px;
   --wails-draggable: drag !important;
   user-select: none;
 }
-.wails-desktop .network-tabs { padding-left: 80px; }
 .wails-desktop header {
   --wails-draggable: drag !important;
   user-select: none;
@@ -515,8 +515,8 @@ body.empty-mode { overflow: hidden; }
 .member-card-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--dim); font-size: 12px; }
 .member-card-label { width: 62px; flex: 0 0 62px; color: var(--faint); font-size: 11px; }
 .member-card-line code { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-.member-card-line .path-badge { margin-left: 2px; }
 .member-card-line .member-endpoint { color: var(--dim); overflow-wrap: anywhere; }
+.member-card-line .path-badge { margin-left: 2px; }
 .member-card-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 19px; }
 .member-card-tags .pill { font-size: 11px; }
 .member-card-foot {
@@ -1066,14 +1066,15 @@ pre.code { user-select: all; }
   .header-more { display: block !important; }
 
   .brand .sub { display: none; }
-  .header-inner { padding: 12px 14px; }
+  :root { --header-padding-x: 14px; }
+  .header-inner { padding: 12px var(--header-padding-x); }
   .tabs { padding: 0 14px; }
   #app-main { padding: 16px 14px 50px; }
   .empty-state { padding: 32px 18px 60px; height: calc(100vh - 60px); }
   .empty-state h2 { font-size: 23px; }
   .network-choice { grid-template-columns: 1fr; }
   .status-grid.info-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .network-tabs { gap: 2px; padding-left: 14px; padding-right: 14px; }
+  .network-tabs { gap: 2px; padding-left: var(--header-padding-x); padding-right: var(--header-padding-x); }
   .network-tab { padding: 8px 9px 7px; font-size: 12px; }
   .kv { flex-wrap: wrap; }
 
