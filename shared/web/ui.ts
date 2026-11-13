@@ -103,9 +103,6 @@ const peerErrors: Record<string, string> = {};
 // proves recent data-plane traffic, so an idle-but-connected member would
 // otherwise be miscounted as offline.
 const peerSummary: Record<string, { online: number; total: number }> = {};
-// Diagnostic results survive the 5s network refresh; otherwise the card is
-// re-rendered before the user can read the result.
-const pingResults: Record<string, { text: string; cls: string }> = {};
 let lastPeerSubnetsFetch = 0;
 
 function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
@@ -1776,10 +1773,9 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const poke = isSelf
       ? ""
       : `<button type="button" class="btn ghost sm member-poke" data-detail-poke="${esc(nd.id)}" data-poke-target="${esc(nd.ip || "")}" title="发送探测包唤醒节点"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>唤醒</button>`;
-    const diagResult = pingResults[nd.id];
     const diag = isSelf
       ? ""
-      : `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button><span class="ping-result ${esc(diagResult?.cls || "")}" data-ping-result="${esc(nd.id)}">${esc(diagResult?.text || "")}</span>`;
+      : `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button>`;
     const kick = !isSelf && canManage
       ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}">踢出</button>`
       : "";
@@ -1814,15 +1810,11 @@ function showPingModal(text: string, cls: string) {
 
 async function runPeerPing(btn: HTMLButtonElement) {
   const target = btn.dataset.pingTarget || "";
-  const nodeID = btn.dataset.detailPing || target || "unknown";
   if (!target) {
-    pingResults[nodeID] = { text: "诊断失败：无 IP", cls: "err" };
-    showPingModal(pingResults[nodeID].text, "err");
-    renderNetworkDetail();
+    showPingModal("诊断失败：无 IP", "err");
     return;
   }
   const original = btn.innerHTML;
-  delete pingResults[nodeID];
   btn.disabled = true;
   btn.innerHTML = `${SPIN} 诊断中…`;
   try {
@@ -1831,22 +1823,13 @@ async function runPeerPing(btn: HTMLButtonElement) {
     const avg = Math.max(0, Number(r.avgRtt) || 0);
     if (loss >= 100) throw new Error("目标不可达");
     const cls = loss >= 50 || avg >= 200 ? "err" : loss > 0 || avg >= 80 ? "warn" : "ok";
-    pingResults[nodeID] = {
-      text: `延迟: ${avg > 0 ? `${avg.toFixed(0)}ms` : "-"} / 丢包: ${loss.toFixed(0)}%`,
-      cls,
-    };
-    showPingModal(pingResults[nodeID].text, cls);
+    showPingModal(`延迟: ${avg > 0 ? `${avg.toFixed(0)}ms` : "-"} / 丢包: ${loss.toFixed(0)}%`, cls);
   } catch (e) {
-    pingResults[nodeID] = {
-      text: `诊断失败：${String(e).includes("目标不可达") ? "目标不可达" : String(e)}`,
-      cls: "err",
-    };
-    showPingModal(pingResults[nodeID].text, "err");
+    showPingModal(`诊断失败：${String(e).includes("目标不可达") ? "目标不可达" : String(e)}`, "err");
     toast("诊断失败：目标不可达", "err");
   } finally {
     btn.disabled = false;
     btn.innerHTML = original;
-    renderNetworkDetail();
   }
 }
 
