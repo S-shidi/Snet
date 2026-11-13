@@ -97,12 +97,10 @@ header {
 .wails-desktop .header-inner {
   padding-left: 80px;
   --wails-draggable: drag !important;
-  -webkit-app-region: drag;
   user-select: none;
 }
 .wails-desktop header {
   --wails-draggable: drag !important;
-  -webkit-app-region: drag;
   user-select: none;
 }
 .wails-desktop header button,
@@ -116,7 +114,6 @@ header {
 .wails-desktop header .network-tabs,
 .wails-desktop header .network-tabs button {
   --wails-draggable: no-drag !important;
-  -webkit-app-region: no-drag;
 }
 
 /* ── header dropdown (mobile) ───────────── */
