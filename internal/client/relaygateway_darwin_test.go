@@ -21,4 +21,7 @@ func TestPFGatewayRules(t *testing.T) {
 			t.Fatalf("rules missing %q:\n%s", want, rules)
 		}
 	}
+	if strings.Index(rules, "nat on") > strings.Index(rules, "pass in") {
+		t.Fatalf("PF translation rules must come before filter rules:\n%s", rules)
+	}
 }
