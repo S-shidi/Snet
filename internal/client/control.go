@@ -179,11 +179,6 @@ func (c *apiClient) SetNodeRole(nid, token, nodeID, role string) error {
 		protocol.SetNodeRoleReq{Role: role}, nil)
 }
 
-func (c *apiClient) UpdateSubnets(nid, token string, subnets []string) error {
-	return c.do(http.MethodPatch, "/api/v1/networks/"+nid+"/subnets", token,
-		protocol.UpdateSubnetsReq{Subnets: subnets}, nil)
-}
-
 // SetRoutes replaces the network's delegated relay routes. Only the network
 // owner may call it; the server keeps every route pending until its target
 // node confirms it can act as the gateway.

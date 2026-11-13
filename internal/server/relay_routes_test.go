@@ -344,17 +344,12 @@ func TestRoutesHTTPRoutes(t *testing.T) {
 }
 
 // TestAdminRoutesHTTPCoversRoutesAndDelete verifies the admin surface: the
-// network detail carries the delegated routes, the node list no longer
-// carries the legacy advertised subnets, and an admin can revoke a route.
+// network detail carries the delegated routes and an admin can revoke one.
 func TestAdminRoutesHTTPCoversRoutesAndDelete(t *testing.T) {
 	s, created, joined := relayRouteFixture(t)
 	ts := httptest.NewServer(NewHandler(s, Options{AdminToken: "adm"}))
 	defer ts.Close()
 
-	// The legacy advertisement is accepted by the API but never exposed.
-	if err := s.UpdateAllowedSubnets(joined.Token, []string{"192.168.77.0/24"}); err != nil {
-		t.Fatal(err)
-	}
 	if err := s.SetRoutes(created.Token, []protocol.Route{
 		{TargetNodeID: joined.NodeID, CIDR: "192.168.9.0/24"},
 	}); err != nil {
@@ -375,11 +370,6 @@ func TestAdminRoutesHTTPCoversRoutesAndDelete(t *testing.T) {
 	}
 	if len(info.Routes) != 1 || info.Routes[0].CIDR != "192.168.9.0/24" {
 		t.Fatalf("admin routes = %+v, want the delegated route", info.Routes)
-	}
-	for _, n := range info.Nodes {
-		if len(n.AllowedSubnets) != 0 {
-			t.Fatalf("legacy allowedSubnets leaked in the admin view: %+v", n)
-		}
 	}
 
 	// An admin can revoke the route.

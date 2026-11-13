@@ -453,19 +453,6 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		writeCtlJSON(w, 200, map[string]string{"pairingCode": code})
 	})
 
-	mux.HandleFunc("POST /ctl/subnets", func(w http.ResponseWriter, r *http.Request) {
-		var req CtlReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeCtlErr(w, 400, err)
-			return
-		}
-		if err := d.UpdateSubnets(req.Nid, req.Subnets); err != nil {
-			writeCtlErr(w, 500, err)
-			return
-		}
-		w.WriteHeader(204)
-	})
-
 	// Delegated relay routes. The network owner assigns a CIDR to a node; the
 	// route stays pending until that node confirms it can act as the gateway.
 	mux.HandleFunc("POST /ctl/routes", func(w http.ResponseWriter, r *http.Request) {

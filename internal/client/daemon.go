@@ -1120,17 +1120,6 @@ func (d *Daemon) Start() error {
 			}
 		}
 	}
-	// Enable IP forwarding at startup if any active network has subnets
-	// configured, so the setting is restored after a reboot.
-	for nid := range d.cfg.Networks {
-		nc := d.cfg.Networks[nid]
-		if nc.Active && len(nc.AllowedSubnets) > 0 {
-			if err := enableIPForwarding(); err != nil {
-				log.Printf("enable IP forwarding: %v (needs admin/root)", err)
-			}
-			break
-		}
-	}
 	// Relay gateway mode: when the user allowed this device to act as a
 	// gateway, the local forwarding and NAT rules must be in place before
 	// any delegated route can be honoured. A failure is reported to the
@@ -1225,13 +1214,6 @@ func (d *Daemon) bringUp(nid string) error {
 		peerIDs:    make(map[string]string),
 	}
 	d.nets[nid] = rt
-
-	// Enable IP forwarding if this device advertises subnets.
-	if len(nc.AllowedSubnets) > 0 {
-		if err := enableIPForwarding(); err != nil {
-			log.Printf("enable IP forwarding: %v (needs admin/root)", err)
-		}
-	}
 
 	endpoint, err := d.localEndpointLocked(nc.Port)
 	if err != nil {
@@ -2804,32 +2786,6 @@ func (d *Daemon) SetNodeRole(nid, nodeID, role string) error {
 	return nil
 }
 
-// UpdateSubnets replaces the CIDR subnets this device advertises for routing
-// on the given network. Other peers will route traffic for these subnets
-// through this device's tunnel.
-func (d *Daemon) UpdateSubnets(nid string, subnets []string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	nc := d.cfg.Networks[nid]
-	if nc == nil {
-		return fmt.Errorf("网络 %s 未找到", nid)
-	}
-	if err := d.apiLocked().UpdateSubnets(nid, nc.Token, subnets); err != nil {
-		return wrapNetGone(err)
-	}
-	nc.AllowedSubnets = subnets
-	if err := d.save(); err != nil {
-		return err
-	}
-	// If subnets were added, try to enable IP forwarding (best-effort).
-	if len(subnets) > 0 {
-		if err := enableIPForwarding(); err != nil {
-			log.Printf("enable IP forwarding: %v (needs admin/root)", err)
-		}
-	}
-	return nil
-}
-
 // applyRelayGatewayLocked (re)configures the local relay gateway according to
 // the current configuration and records the outcome. Caller must hold d.mu.
 //
@@ -3444,20 +3400,19 @@ func (d *Daemon) Status() (map[string]any, error) {
 			state = "active"
 		}
 		entry := map[string]any{
-			"networkId":      nid,
-			"name":           nc.Name,
-			"ip":             nc.IP,
-			"subnet":         nc.Subnet,
-			"port":           nc.Port,
-			"active":         active,
-			"owner":          nc.Owner,
-			"serverState":    statePtr,
-			"error":          errMsg,
-			"state":          state,
-			"interface":      "",
-			"peerStats":      map[string]PeerStats{},
-			"allowedSubnets": nc.AllowedSubnets,
-			"joinedAt":       nc.JoinedAt,
+			"networkId":   nid,
+			"name":        nc.Name,
+			"ip":          nc.IP,
+			"subnet":      nc.Subnet,
+			"port":        nc.Port,
+			"active":      active,
+			"owner":       nc.Owner,
+			"serverState": statePtr,
+			"error":       errMsg,
+			"state":       state,
+			"interface":   "",
+			"peerStats":   map[string]PeerStats{},
+			"joinedAt":    nc.JoinedAt,
 		}
 		if rt := d.nets[nid]; rt != nil {
 			if rt.tun != nil {

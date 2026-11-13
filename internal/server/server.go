@@ -289,29 +289,6 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		writeJSON(w, http.StatusOK, ticket)
 	}))
 
-	mux.HandleFunc("PATCH /api/v1/networks/{nid}/subnets", requireToken(func(w http.ResponseWriter, r *http.Request) {
-		token := tokenOf(r)
-		nid, _, ok := nodeTokenIDs(s, token)
-		if !ok {
-			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
-			return
-		}
-		if nid != r.PathValue("nid") {
-			writeErr(w, http.StatusNotFound, ErrNotFound)
-			return
-		}
-		var req protocol.UpdateSubnetsReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, ErrBadJSON)
-			return
-		}
-		if err := s.UpdateAllowedSubnets(token, req.Subnets); err != nil {
-			handleStoreErr(w, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
 	// A node reports whether it is willing and able to act as a relay gateway
 	// for this network. The report is node-scoped (the caller is identified by
 	// its bearer token) and drives the route state machine: routes delegated
@@ -682,18 +659,6 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		if err := s.AdminSetNodeRole(r.PathValue("nid"), r.PathValue("nodeID"), req.Role); err != nil {
-			handleStoreErr(w, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	mux.HandleFunc("PATCH /admin/networks/{nid}/nodes/{nodeID}/subnets", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		var req protocol.UpdateSubnetsReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, ErrBadJSON)
-			return
-		}
-		if err := s.AdminSetNodeAllowedSubnets(r.PathValue("nid"), r.PathValue("nodeID"), req.Subnets); err != nil {
 			handleStoreErr(w, err)
 			return
 		}

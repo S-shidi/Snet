@@ -39,7 +39,6 @@ export type NetInfo = {
   state?: string;
   interface?: string;
   peerStats?: Record<string, PeerStats>;
-  allowedSubnets?: string[];
   joinedAt?: string;
   description?: string;
   tags?: string[];
@@ -104,9 +103,9 @@ export type NetInfoDetail = {
   visibility?: string;
   routes?: RelayRoute[];
   pending?: Array<{ id: string; publicKey: string; deviceId?: string; createdAt?: string; deviceName?: string }>;
-  nodes?: Array<{ id: string; ip: string; deviceId?: string; deviceName?: string; online?: boolean; allowedSubnets?: string[]; role?: string; publicKey?: string; allowRelay?: boolean; relayError?: string }>;
+  nodes?: Array<{ id: string; ip: string; deviceId?: string; deviceName?: string; online?: boolean; role?: string; publicKey?: string; allowRelay?: boolean; relayError?: string }>;
 };
-export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; deviceName?: string; online?: boolean; allowedSubnets?: string[]; role?: string; natType?: string; allowRelay?: boolean; relayError?: string };
+export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; deviceName?: string; online?: boolean; role?: string; natType?: string; allowRelay?: boolean; relayError?: string };
 export type PeersResp = { peers?: NetNode[]; self?: NetNode; subnet?: string; approvalRequired?: boolean; routes?: RelayRoute[] };
 export type CreateResp = { networkId: string; ip: string; pairingCode: string; link: string };  
 export type JoinResp = { ip?: string; networkId?: string; status?: string; pendingId?: string };
@@ -142,8 +141,6 @@ export interface Backend {
   setNATMapping(enabled: boolean): Promise<void>;
   /** Set a peer node's role (owner only) */
   setRole?(params: { nid: string; nodeId: string; role: string }): Promise<void>;
-  /** Update subnets for a network */
-  updateSubnets(params: { nid: string; subnets: string[] }): Promise<void>;
   /** Set the device's relay switches: act as a gateway, and use the network's gateways */
   setRelayOptions(params: { allowRelay: boolean; useRelay: boolean }): Promise<void>;
   /** Replace the network's delegated relay routes (owner only) */

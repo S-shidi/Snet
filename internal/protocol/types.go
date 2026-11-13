@@ -145,9 +145,10 @@ type Node struct {
 	// Empty means the node is served by the network's primary relay host.
 	RelayHostOverride string `json:"relayHostOverride,omitempty"`
 	Online            bool   `json:"online,omitempty"`
-	// AllowedSubnets lists CIDR subnets this node advertises for routing.
-	// Other peers route traffic for these subnets through this node's tunnel.
-	AllowedSubnets []string `json:"allowedSubnets,omitempty"`
+	// AllowedIPs is the client-computed set of effective CIDRs for this
+	// peer: the WireGuard AllowedIPs and OS routes derived from the network's
+	// active delegated Routes. The server never populates or sends this field.
+	AllowedIPs []string `json:"allowedIPs,omitempty"`
 	// Role 是节点在网络中的角色："owner"（创建者）| "member"（普通成员）。
 	Role string `json:"role,omitempty"`
 	// PublicIPv4 is the node's public IPv4 address (without port), extracted
@@ -304,12 +305,6 @@ type NetworkSettingsReq struct {
 	Description      *string  `json:"description,omitempty"`
 	Tags             []string `json:"tags"`
 	Visibility       *string  `json:"visibility,omitempty"`
-}
-
-// UpdateSubnetsReq sets the CIDR subnets a node advertises for routing.
-// Other peers will route traffic for these subnets through this node.
-type UpdateSubnetsReq struct {
-	Subnets []string `json:"subnets"`
 }
 
 // SetRoutesReq replaces the network's delegated relay routes. Only the

@@ -53,55 +53,6 @@ func TestAdminSetNodeRoleRejectsExternalOwner(t *testing.T) {
 	}
 }
 
-func TestAdminSetNodeAllowedSubnets(t *testing.T) {
-	st := NewStore()
-	created, err := st.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined, err := st.Join(created.NetworkID, created.PairingCode, "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-joiner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.AdminSetNodeAllowedSubnets(created.NetworkID, joined.NodeID, []string{"192.168.50.0/24"}); err != nil {
-		t.Fatal(err)
-	}
-	nodes, err := st.AdminNodes(created.NetworkID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, n := range nodes {
-		if n.ID == joined.NodeID {
-			if len(n.AllowedSubnets) != 0 {
-				t.Fatalf("legacy AllowedSubnets leaked: %v", n.AllowedSubnets)
-			}
-			return
-		}
-	}
-	t.Fatalf("node %s not found", joined.NodeID)
-}
-
-func TestAdminSetNodeAllowedSubnetsRejectsOverlap(t *testing.T) {
-	st := NewStore()
-	created, err := st.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined, err := st.Join(created.NetworkID, created.PairingCode, "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-joiner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.AdminSetNodeAllowedSubnets(created.NetworkID, joined.NodeID, []string{created.Subnet}); err == nil {
-		t.Fatal("network subnet overlap should fail")
-	}
-	if err := st.AdminSetNodeAllowedSubnets(created.NetworkID, joined.NodeID, []string{"192.168.50.0/24"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.AdminSetNodeAllowedSubnets(created.NetworkID, created.NodeID, []string{"192.168.50.0/24"}); err == nil {
-		t.Fatal("another node's subnet overlap should fail")
-	}
-}
-
 func assertNodeRole(t *testing.T, st *Store, nid, nodeID, want string) {
 	t.Helper()
 	nodes, err := st.AdminNodes(nid)

@@ -239,12 +239,6 @@ func TestListPeersRoleScoping(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Advertise an owner LAN so members can install routes. The role itself
-	// must stay hidden, but the subnet is required for the data plane.
-	if err := s.UpdateAllowedSubnets(created.Token, []string{"10.7.86.0/24"}); err != nil {
-		t.Fatal(err)
-	}
-
 	// plain member's view of peers: role scrubbed, but deviceId, deviceName
 	// (from the device registry) and live online status are shown. The
 	// WireGuard publicKey must remain so the member can build tunnels
@@ -258,12 +252,6 @@ func TestListPeersRoleScoping(t *testing.T) {
 		seen[p.DeviceID+"|"+p.IP] = p
 		if p.Role != "" {
 			t.Fatalf("member peer leaked role: %+v", p)
-		}
-		// The legacy per-node subnet advertisement is retired: subnets are
-		// delegated by the network owner and confirmed by the gateway, so
-		// they travel in the network's route list, not on the node.
-		if len(p.AllowedSubnets) != 0 {
-			t.Fatalf("member peer must not carry the legacy advertised subnets: %+v", p)
 		}
 		if p.PublicKey == "" {
 			t.Fatalf("member peer missing publicKey (must be able to build tunnels): %+v", p)

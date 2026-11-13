@@ -151,13 +151,6 @@ const backend: Backend = {
     await api("/role", jsonPost("/role", { nid: params.nid, nodeId: params.nodeId, role: params.role }));
   },
 
-  async updateSubnets(params: { nid: string; subnets: string[] }): Promise<void> {
-    await api("/subnets", jsonPost("/subnets", { nid: params.nid, subnets: params.subnets }));
-  },
-
-  async setRelayOptions(params: { allowRelay: boolean; useRelay: boolean }): Promise<void> {
-    await api("/relay", jsonPost("/relay", { allowRelay: params.allowRelay, useRelay: params.useRelay }));
-  },
 
   async setRoutes(params: { nid: string; routes: RelayRoute[] }): Promise<void> {
     await api("/routes", jsonPost("/routes", { nid: params.nid, routes: params.routes }));

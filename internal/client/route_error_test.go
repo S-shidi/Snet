@@ -12,7 +12,7 @@ func TestAddPeerRoutesReportsRouteConflict(t *testing.T) {
 	addSubnetRouteFn = func(string, string) error { return errors.New("RTNETLINK answers: File exists") }
 	t.Cleanup(func() { addSubnetRouteFn = orig })
 
-	err := addPeerRoutes("tun0", protocol.Node{IP: "10.88.0.2", AllowedSubnets: []string{"192.168.1.0/24"}})
+	err := addPeerRoutes("tun0", protocol.Node{IP: "10.88.0.2", AllowedIPs: []string{"192.168.1.0/24"}})
 	if err == nil {
 		t.Fatal("expected addPeerRoutes to return the route error")
 	}

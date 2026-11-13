@@ -2968,10 +2968,6 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 			if !isOwner {
 				n2.Role = ""
 			}
-			// 节点自行宣告的子网（AllowedSubnets）已被网络级的委派路由取代：
-			// 网段由创建者指派给网关节点，网关确认后路由才生效。旧的宣告
-			// 数据不再下发，避免成员继续按旧模型安装路由。
-			n2.AllowedSubnets = nil
 			fillNodeView(&n2)
 			// Keep the peer's self-advertised direct endpoint; the caller
 			// decides whether to use it or fall back to the relay endpoint.
@@ -2981,7 +2977,6 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 	var self *protocol.Node
 	if me != nil {
 		m2 := *me
-		m2.AllowedSubnets = nil
 		fillNodeView(&m2)
 		self = &m2
 	}
@@ -3686,9 +3681,6 @@ func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
 		if d := s.devices[c.DeviceID]; d != nil {
 			c.DeviceName = d.Name
 		}
-		// Subnet advertisement is superseded by delegated network routes.
-		// Never expose stale AllowedSubnets to clients or the admin console.
-		c.AllowedSubnets = nil
 		nodes = append(nodes, c)
 	}
 	pending := make([]protocol.PendingNode, 0, len(ns.pending))
@@ -4499,9 +4491,6 @@ func (s *Store) AdminNodes(nid string) ([]protocol.Node, error) {
 		if d := s.devices[n.DeviceID]; d != nil {
 			node.DeviceName = d.Name
 		}
-		// Delegated routes are network-level; node subnet advertisement is
-		// legacy and must not be shown in the admin console.
-		node.AllowedSubnets = nil
 		// Enrich node with IPv6 and public IP information
 		enrichNodeWithIPInfo(&node, ns.n.Subnet)
 		nodes = append(nodes, node)
@@ -5327,31 +5316,6 @@ func (s *Store) BootstrapAdmin(user, pass string) (string, error) {
 	return string(h), s.putAdminPasswordLocked(user, string(h))
 }
 
-// UpdateAllowedSubnets replaces the CIDR subnets a node advertises for
-// routing. Each subnet is validated, must not overlap with the network's own
-// subnet, and must not conflict with another node's advertised subnets.
-func (s *Store) UpdateAllowedSubnets(token string, subnets []string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	te, ok := s.byToken[hashToken(token)]
-	if !ok {
-		return ErrUnauthorized
-	}
-	ns := s.networks[te.NetworkID]
-	if ns == nil {
-		return ErrNotFound
-	}
-	me := ns.nodes[te.NodeID]
-	if me == nil {
-		return ErrNotFound
-	}
-	if err := validateNodeAllowedSubnets(ns, te.NodeID, subnets); err != nil {
-		return err
-	}
-	me.AllowedSubnets = subnets
-	return s.persistNode(te.NetworkID, me)
-}
-
 // SetRoutes replaces the network's delegated relay routes. Only the network
 // owner may call it: the owner decides which node acts as the gateway for
 // which subnet.
@@ -5529,67 +5493,6 @@ func (s *Store) dropRoutesForNodeLocked(ns *networkState, nodeID string) error {
 	}
 	ns.n.Routes = kept
 	return s.persistNetwork(ns)
-}
-
-// validateNodeAllowedSubnets validates a node's advertised CIDRs against the
-// network subnet and every other node's advertisements. Callers must hold s.mu.
-func validateNodeAllowedSubnets(ns *networkState, nodeID string, subnets []string) error {
-	seen := map[string]struct{}{}
-	for _, raw := range subnets {
-		cidr, err := validateSubnet(raw)
-		if err != nil {
-			return fmt.Errorf("子网 %q 无效: %w", raw, err)
-		}
-		if _, dup := seen[cidr]; dup {
-			return fmt.Errorf("重复子网 %s", cidr)
-		}
-		seen[cidr] = struct{}{}
-		if ns.n.Subnet != "" && subnetsOverlap(cidr, ns.n.Subnet) {
-			return fmt.Errorf("子网 %s 与网络 VPN 网段 %s 重叠", cidr, ns.n.Subnet)
-		}
-	}
-	for id, n := range ns.nodes {
-		if id == nodeID {
-			continue
-		}
-		for _, other := range n.AllowedSubnets {
-			_, oc, _ := net.ParseCIDR(other)
-			if oc == nil {
-				continue
-			}
-			for _, raw := range subnets {
-				cidr, _ := validateSubnet(raw)
-				_, ac, _ := net.ParseCIDR(cidr)
-				if ac == nil {
-					continue
-				}
-				if oc.Contains(ac.IP) || ac.Contains(oc.IP) {
-					return fmt.Errorf("子网 %s 与节点 %s 宣告的 %s 冲突", cidr, n.ID, other)
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// AdminSetNodeAllowedSubnets updates any node's advertised subnets, bypassing
-// the owner-token requirement used by the client control API.
-func (s *Store) AdminSetNodeAllowedSubnets(nid, nodeID string, subnets []string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ns := s.networks[nid]
-	if ns == nil {
-		return ErrNotFound
-	}
-	n := ns.nodes[nodeID]
-	if n == nil {
-		return ErrNotFound
-	}
-	if err := validateNodeAllowedSubnets(ns, nodeID, subnets); err != nil {
-		return err
-	}
-	n.AllowedSubnets = subnets
-	return s.persistNode(nid, n)
 }
 
 // AdminDeleteRoute removes one delegated relay route from a network. Admins can

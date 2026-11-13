@@ -102,7 +102,7 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet, relayEP string) error
 		// Always accept packets from the peer's tunnel IP (needed for replies).
 		sb.WriteString("allowed_ip=" + p.IP + "/32\n")
 		// Also accept packets from any advertised subnets.
-		for _, sub := range p.AllowedSubnets {
+		for _, sub := range p.AllowedIPs {
 			sb.WriteString("allowed_ip=" + sub + "\n")
 		}
 		ep := ""
@@ -157,7 +157,7 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet, relayEP string) error
 			if err := addPeerRoutes(t.iface, p); err != nil && routeErr == nil {
 				routeErr = err
 			}
-		} else if subnetsChanged(old.AllowedSubnets, p.AllowedSubnets) || old.IP != p.IP {
+		} else if subnetsChanged(old.AllowedIPs, p.AllowedIPs) || old.IP != p.IP {
 			removePeerRoutes(t.iface, old)
 			if err := addPeerRoutes(t.iface, p); err != nil && routeErr == nil {
 				routeErr = err
@@ -186,7 +186,7 @@ func (t *Tunnel) PeerSubnets() []string {
 	defer t.mu.Unlock()
 	seen := make(map[string]struct{})
 	for _, p := range t.peers {
-		for _, sub := range p.AllowedSubnets {
+		for _, sub := range p.AllowedIPs {
 			if sub != "" {
 				seen[sub] = struct{}{}
 			}
@@ -213,8 +213,8 @@ func (t *Tunnel) RemoveAllPeers() {
 
 // addPeerRoutes installs OS routes for a peer's IP and any advertised subnets.
 func addPeerRoutes(iface string, p protocol.Node) error {
-	if len(p.AllowedSubnets) > 0 {
-		for _, sub := range p.AllowedSubnets {
+	if len(p.AllowedIPs) > 0 {
+		for _, sub := range p.AllowedIPs {
 			if err := addSubnetRouteFn(iface, sub); err != nil {
 				return err
 			}
@@ -226,8 +226,8 @@ func addPeerRoutes(iface string, p protocol.Node) error {
 
 // removePeerRoutes removes OS routes for a peer's IP and any advertised subnets.
 func removePeerRoutes(iface string, p protocol.Node) {
-	if len(p.AllowedSubnets) > 0 {
-		for _, sub := range p.AllowedSubnets {
+	if len(p.AllowedIPs) > 0 {
+		for _, sub := range p.AllowedIPs {
 			removeSubnetRoute(iface, sub)
 		}
 	}

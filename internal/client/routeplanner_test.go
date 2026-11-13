@@ -8,7 +8,7 @@ import (
 
 func TestRoutePlannerInjectsDelegatedCIDRIntoTargetPeer(t *testing.T) {
 	peers := []protocol.Node{
-		{ID: "node-a", IP: "10.88.1.2", AllowedSubnets: []string{"192.168.5.0/24"}},
+		{ID: "node-a", IP: "10.88.1.2", AllowedIPs: []string{"192.168.5.0/24"}},
 		{ID: "node-b", IP: "10.88.1.3"},
 	}
 	routes := []protocol.Route{
@@ -16,15 +16,15 @@ func TestRoutePlannerInjectsDelegatedCIDRIntoTargetPeer(t *testing.T) {
 	}
 	out := NewRoutePlanner("node-self", true).Apply(peers, routes)
 
-	if len(out[0].AllowedSubnets) != 1 || out[0].AllowedSubnets[0] != "192.168.5.0/24" {
-		t.Fatalf("unrelated peer changed: %+v", out[0].AllowedSubnets)
+	if len(out[0].AllowedIPs) != 1 || out[0].AllowedIPs[0] != "192.168.5.0/24" {
+		t.Fatalf("unrelated peer changed: %+v", out[0].AllowedIPs)
 	}
-	if len(out[1].AllowedSubnets) != 1 || out[1].AllowedSubnets[0] != "192.168.9.0/24" {
-		t.Fatalf("target peer = %+v, want the delegated CIDR", out[1].AllowedSubnets)
+	if len(out[1].AllowedIPs) != 1 || out[1].AllowedIPs[0] != "192.168.9.0/24" {
+		t.Fatalf("target peer = %+v, want the delegated CIDR", out[1].AllowedIPs)
 	}
 	// The input must not be mutated.
-	if len(peers[1].AllowedSubnets) != 0 {
-		t.Fatalf("input was mutated: %+v", peers[1].AllowedSubnets)
+	if len(peers[1].AllowedIPs) != 0 {
+		t.Fatalf("input was mutated: %+v", peers[1].AllowedIPs)
 	}
 }
 
@@ -41,8 +41,8 @@ func TestRoutePlannerSkipsRoutesOverlappingLocalLAN(t *testing.T) {
 	}
 	p := NewRoutePlanner("node-self", true)
 	out := p.Apply(peers, routes)
-	if len(out[0].AllowedSubnets) != 1 || out[0].AllowedSubnets[0] != "192.168.50.0/24" {
-		t.Fatalf("allowed subnets = %+v, want only the non-conflicting route", out[0].AllowedSubnets)
+	if len(out[0].AllowedIPs) != 1 || out[0].AllowedIPs[0] != "192.168.50.0/24" {
+		t.Fatalf("allowed subnets = %+v, want only the non-conflicting route", out[0].AllowedIPs)
 	}
 	skipped := p.Skipped()
 	if len(skipped) != 2 || skipped[0] != "192.168.0.0/16" || skipped[1] != "192.168.1.0/24" {
@@ -56,8 +56,8 @@ func TestRoutePlannerIgnoresRoutesWhenRelayDisabled(t *testing.T) {
 		{TargetNodeID: "node-b", CIDR: "192.168.9.0/24", Status: protocol.RouteStatusActive},
 	}
 	out := NewRoutePlanner("node-self", false).Apply(peers, routes)
-	if len(out[0].AllowedSubnets) != 0 {
-		t.Fatalf("use_relay=false must ignore the delegated routes: %+v", out[0].AllowedSubnets)
+	if len(out[0].AllowedIPs) != 0 {
+		t.Fatalf("use_relay=false must ignore the delegated routes: %+v", out[0].AllowedIPs)
 	}
 }
 
@@ -67,8 +67,8 @@ func TestRoutePlannerIgnoresPendingRoutes(t *testing.T) {
 		{TargetNodeID: "node-b", CIDR: "192.168.9.0/24", Status: protocol.RouteStatusPending},
 	}
 	out := NewRoutePlanner("node-self", true).Apply(peers, routes)
-	if len(out[0].AllowedSubnets) != 0 {
-		t.Fatalf("pending routes must not be injected: %+v", out[0].AllowedSubnets)
+	if len(out[0].AllowedIPs) != 0 {
+		t.Fatalf("pending routes must not be injected: %+v", out[0].AllowedIPs)
 	}
 }
 
@@ -80,21 +80,21 @@ func TestRoutePlannerSkipsSelfTargetedRoutes(t *testing.T) {
 		{TargetNodeID: "node-self", CIDR: "192.168.9.0/24", Status: protocol.RouteStatusActive},
 	}
 	out := NewRoutePlanner("node-self", true).Apply(peers, routes)
-	if len(out[0].AllowedSubnets) != 0 {
-		t.Fatalf("self-targeted route must be skipped: %+v", out[0].AllowedSubnets)
+	if len(out[0].AllowedIPs) != 0 {
+		t.Fatalf("self-targeted route must be skipped: %+v", out[0].AllowedIPs)
 	}
 }
 
 func TestRoutePlannerMergesWithOwnSubnetsWithoutDuplicates(t *testing.T) {
 	peers := []protocol.Node{
-		{ID: "node-b", IP: "10.88.1.3", AllowedSubnets: []string{"192.168.9.0/24", "192.168.7.0/24"}},
+		{ID: "node-b", IP: "10.88.1.3", AllowedIPs: []string{"192.168.9.0/24", "192.168.7.0/24"}},
 	}
 	routes := []protocol.Route{
 		{TargetNodeID: "node-b", CIDR: "192.168.9.0/24", Status: protocol.RouteStatusActive},
 		{TargetNodeID: "node-b", CIDR: "192.168.8.0/24", Status: protocol.RouteStatusActive},
 	}
 	out := NewRoutePlanner("node-self", true).Apply(peers, routes)
-	got := out[0].AllowedSubnets
+	got := out[0].AllowedIPs
 	if len(got) != 3 {
 		t.Fatalf("allowed subnets = %+v, want 3 entries", got)
 	}

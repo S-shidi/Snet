@@ -76,11 +76,11 @@ func (p *RoutePlanner) Apply(peers []protocol.Node, routes []protocol.Route) []p
 		if !ok {
 			continue
 		}
-		merged := mergeCIDRs(out[i].AllowedSubnets, cidrs)
-		if len(merged) != len(out[i].AllowedSubnets) {
+		merged := mergeCIDRs(out[i].AllowedIPs, cidrs)
+		if len(merged) != len(out[i].AllowedIPs) {
 			changed = true
 		}
-		out[i].AllowedSubnets = merged
+		out[i].AllowedIPs = merged
 	}
 	if !changed {
 		return peers

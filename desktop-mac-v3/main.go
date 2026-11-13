@@ -322,23 +322,18 @@ func queryOnlineSubnets(token, nid string) string {
 		return ""
 	}
 	var peers struct {
-		Peers []struct {
-			Online         bool     `json:"online"`
-			AllowedSubnets []string `json:"allowedSubnets"`
-		} `json:"peers"`
+		Routes []struct {
+			CIDR   string `json:"cidr"`
+			Status string `json:"status"`
+		} `json:"routes"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
 		return ""
 	}
 	seen := make(map[string]struct{})
-	for _, p := range peers.Peers {
-		if !p.Online {
-			continue
-		}
-		for _, sub := range p.AllowedSubnets {
-			if sub != "" {
-				seen[sub] = struct{}{}
-			}
+	for _, r := range peers.Routes {
+		if r.Status == "active" && r.CIDR != "" {
+			seen[r.CIDR] = struct{}{}
 		}
 	}
 	out := make([]string, 0, len(seen))

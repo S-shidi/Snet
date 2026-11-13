@@ -50,25 +50,6 @@ func TestAdminNodeRoleAndSubnetsHTTP(t *testing.T) {
 		t.Fatalf("admin role = %d, want 400", resp.StatusCode)
 	}
 
-	resp = doJSON(t, http.MethodPatch, ts.URL+"/admin/networks/"+nid+"/nodes/"+nodeID+"/subnets", "secret",
-		map[string]any{"subnets": []string{"192.168.50.0/24"}}, nil)
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("set subnets = %d", resp.StatusCode)
-	}
-	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/networks/"+nid+"/nodes", "secret", nil, &nodes)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("nodes after subnets = %d", resp.StatusCode)
-	}
-	for _, n := range nodes {
-		if n["id"] != nodeID {
-			continue
-		}
-		// AllowedSubnets is legacy; the admin node response must not expose it.
-		if subnets, ok := n["allowedSubnets"].([]any); ok && len(subnets) > 0 {
-			t.Fatalf("legacy allowedSubnets leaked: %v", n["allowedSubnets"])
-		}
-	}
-
 	resp = doJSON(t, http.MethodPatch, ts.URL+"/admin/networks/"+nid+"/nodes/"+nodeID+"/role", "secret",
 		map[string]any{"role": "owner"}, nil)
 	if resp.StatusCode != http.StatusNoContent {

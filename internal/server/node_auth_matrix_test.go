@@ -113,13 +113,6 @@ func TestNodeTokenRoutesAuthMatrix(t *testing.T) {
 			success: http.StatusOK, noToken: http.StatusUnauthorized, garbage: http.StatusUnauthorized, cross: http.StatusUnauthorized,
 		},
 		{
-			name:    "subnets",
-			method:  http.MethodPatch,
-			path:    func(f *nodeAuthFixture) string { return "/api/v1/networks/" + f.nid + "/subnets" },
-			body:    protocol.UpdateSubnetsReq{Subnets: []string{}},
-			success: http.StatusNoContent, noToken: http.StatusUnauthorized, garbage: http.StatusUnauthorized, cross: http.StatusNotFound,
-		},
-		{
 			name:    "exists",
 			method:  http.MethodGet,
 			path:    func(f *nodeAuthFixture) string { return "/api/v1/networks/" + f.nid + "/exists" },
