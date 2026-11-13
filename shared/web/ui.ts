@@ -923,12 +923,24 @@ async function openInviteModal(nid: string) {
     title: `邀请加入 · ${name}`,
     wide: true,
     body: `
-      <p class="hint">被邀请设备扫描下方二维码，或在 App 中选择「加入网络」粘贴邀请链接即可加入。</p>
-      <div class="qr" id="qr"></div>
-      <div class="kv"><span>邀请链接</span><code>${esc(link)}</code></div>
-      <div class="kv"><span>网络ID</span><code>${esc(netId)}</code></div>
-      <div class="kv"><span>配对码</span><code>${esc(code)}</code></div>
-      <p class="hint">配对码含有效次数与时限，可在卡片上「查看配对码」随时查看或作废重发。</p>`,
+      <div class="invite-layout">
+        <div class="invite-qr-side">
+          <div class="qr invite-qr" id="qr"></div>
+          <p class="hint">扫描二维码加入</p>
+        </div>
+        <div class="invite-info">
+          <p class="hint invite-lede">被邀请设备扫码，或在 App 中选择「加入网络」粘贴邀请链接。</p>
+          <div class="invite-field">
+            <span>邀请链接</span>
+            <code class="invite-link">${esc(link)}</code>
+          </div>
+          <div class="invite-meta">
+            <div class="invite-field"><span>网络 ID</span><code>${esc(netId)}</code></div>
+            <div class="invite-field"><span>配对码</span><code>${esc(code)}</code></div>
+          </div>
+          <p class="hint">配对码含有效次数与时限，可在卡片上「查看配对码」随时查看或作废重发。</p>
+        </div>
+      </div>`,
     footer: `<button data-close class="btn ghost">关闭</button><button id="m-copy" class="btn">复制邀请链接</button>`,
     onBody: (body) => {
       renderQR(body.querySelector<HTMLElement>("#qr")!, link);
@@ -1316,9 +1328,6 @@ function natViaLabel(via: string): string {
 
 function openSettingsModal() {
   const s = loadSettings();
-  const statusSource = document.getElementById("status-source");
-  const statusGridHTML = statusSource?.querySelector(".status-grid")?.innerHTML || "";
-  const statusJSONHTML = statusSource?.querySelector(".card")?.outerHTML || "";
   const server = (status?.serverAddr || s.server || "").trim();
   const isOfficial = !server || server.replace(/\/+$/, "") === DEFAULT_SERVER.replace(/\/+$/, "");
   const nat = status?.natMapping;
@@ -1334,79 +1343,93 @@ function openSettingsModal() {
   const relayErr = status?.relayError || "";
   openModal({
     title: "设置",
-    body: `<div class="info-status">
-        <div class="detail-section-head"><h3>运行状态</h3></div>
-        <div class="status-grid info-status-grid">
-          ${statusGridHTML}
-          <div class="stat coordinator-card" id="s-server-card">
-            <div class="label">协调服务</div>
-            <div id="s-server-view">
-              <div class="value" id="s-server-label">${isOfficial ? "官方 (SnetServ)" : esc(server)}</div>
-              <div class="coordinator-actions">
-                <button type="button" id="s-server-edit" class="btn icon sm" title="修改">✎</button>
-                ${isOfficial ? "" : '<button type="button" id="s-server-reset" class="btn ghost sm">恢复默认</button>'}
-              </div>
+    body: `<div class="settings-shell">
+      <section class="settings-panel">
+        <div class="settings-panel-head"><h3>连接</h3><span class="hint">连接与端口</span></div>
+        <div class="settings-list">
+          <div class="settings-row">
+            <div class="settings-row-main">
+              <div class="settings-row-title">协调服务</div>
+              <div class="settings-row-desc" id="s-server-label">${isOfficial ? "官方 (SnetServ)" : esc(server)}</div>
             </div>
-            <div id="s-server-editor" hidden>
-              <input id="s-server" type="url" value="${isOfficial ? "" : esc(server)}" placeholder="https://my-vps:8090" autocomplete="off" />
-              <p class="hint">留空则使用官方 SnetServ，或填入自托管地址。</p>
-              <div class="settings-actions"><button id="s-server-save" class="btn">保存</button><button id="s-server-cancel" class="btn ghost">取消</button></div>
+            <div class="settings-row-actions" id="s-server-view">
+              <button type="button" id="s-server-edit" class="btn icon sm" title="修改协调服务" aria-label="修改协调服务">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              </button>
+              ${isOfficial ? "" : '<button type="button" id="s-server-reset" class="btn ghost sm">恢复默认</button>'}
             </div>
+          </div>
+          <div id="s-server-editor" class="settings-editor" hidden>
+            <input id="s-server" type="url" value="${isOfficial ? "" : esc(server)}" placeholder="https://my-vps:8090" autocomplete="off" />
+            <p class="hint">留空则使用官方 SnetServ，或填入自托管地址。</p>
+            <div class="settings-actions"><button id="s-server-save" class="btn">保存</button><button id="s-server-cancel" class="btn ghost">取消</button></div>
             <p class="msg" id="s-server-result"></p>
           </div>
-        </div>
-      </div>
-      <div class="row"><label>WireGuard 端口</label><input id="s-wgport" type="number" min="1024" max="65535" value="${s.wgport}" /></div>
-      <div class="settings-block">
-        <div class="row" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px">
-          <div>
-            <label style="margin-bottom:2px">自动端口映射</label>
-            <div class="hint">通过 UPnP / NAT-PMP / PCP 让对端直连，默认开启</div>
+          <div class="settings-row">
+            <div class="settings-row-main">
+              <div class="settings-row-title">自动端口映射</div>
+              <div class="settings-row-desc">通过 UPnP / NAT-PMP / PCP 让对端直连，默认开启</div>
+            </div>
+            <label class="switch">
+              <input id="s-nat" type="checkbox" ${natEnabled ? "checked" : ""} ${!status ? "disabled" : ""} />
+              <span class="slider"></span>
+            </label>
           </div>
-          <label class="switch">
-            <input id="s-nat" type="checkbox" ${natEnabled ? "checked" : ""} ${!status ? "disabled" : ""} />
-            <span class="slider"></span>
-          </label>
+          <p class="settings-note" id="s-nat-state">${!status ? "后台服务未运行" : !natEnabled ? "已关闭" : natLines.length ? `已映射 ${natLines.length} 个端口` : "正在等待路由器分配映射…"}</p>
+          <div class="settings-note muted" id="s-nat-list">${natLines.map(esc).join("<br>")}${natErr ? `<div class="err">端口 ${natErr.port}: ${esc(natErr.error)}</div>` : ""}</div>
         </div>
-        <p class="msg" id="s-nat-state">${!status ? "后台服务未运行" : !natEnabled ? "已关闭" : natLines.length ? `已映射 ${natLines.length} 个端口` : "正在等待路由器分配映射…"}</p>
-        <div class="hint" id="s-nat-list">${natLines.map(esc).join("<br>")}${natErr ? `<div style="color:var(--err)">端口 ${natErr.port}: ${esc(natErr.error)}</div>` : ""}</div>
-      </div>
-      <div class="settings-block">
-        <div class="row" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px">
-          <div>
-            <label style="margin-bottom:2px">允许本设备作为中继网关转发流量</label>
-            <div class="hint">开启后本设备可为网络转发流量，需要 IP 转发与 NAT 权限，默认关闭</div>
+      </section>
+      <section class="settings-panel">
+        <div class="settings-panel-head"><h3>中继路由</h3><span class="hint">本机网关与远程子网</span></div>
+        <div class="settings-list">
+          <div class="settings-row">
+            <div class="settings-row-main">
+              <div class="settings-row-title">允许本设备作为中继网关</div>
+              <div class="settings-row-desc">为其他成员转发流量，需要 IP 转发与 NAT 权限</div>
+            </div>
+            <label class="switch">
+              <input id="s-allow-relay" type="checkbox" ${allowRelay ? "checked" : ""} ${!status ? "disabled" : ""} />
+              <span class="slider"></span>
+            </label>
           </div>
-          <label class="switch">
-            <input id="s-allow-relay" type="checkbox" ${allowRelay ? "checked" : ""} ${!status ? "disabled" : ""} />
-            <span class="slider"></span>
-          </label>
-        </div>
-        <p class="msg" id="s-allow-relay-state">${relayErr ? esc(relayErr) : allowRelay ? "已开启，等待目标节点确认路由" : "已关闭"}</p>
-      </div>
-      <div class="settings-block">
-        <div class="row" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px">
-          <div>
-            <label style="margin-bottom:2px">使用网络内的中继网关访问其他子网</label>
-            <div class="hint">按网络创建者委派的路由访问其他子网，默认开启</div>
+          <p class="settings-note ${relayErr ? "err" : allowRelay ? "ok" : ""}" id="s-allow-relay-state">${relayErr ? esc(relayErr) : allowRelay ? "已开启，等待目标节点确认路由" : "已关闭"}</p>
+          <div class="settings-row">
+            <div class="settings-row-main">
+              <div class="settings-row-title">使用网络内的中继网关</div>
+              <div class="settings-row-desc">按网络创建者委派的路由访问其他子网，默认开启</div>
+            </div>
+            <label class="switch">
+              <input id="s-use-relay" type="checkbox" ${useRelay ? "checked" : ""} ${!status ? "disabled" : ""} />
+              <span class="slider"></span>
+            </label>
           </div>
-          <label class="switch">
-            <input id="s-use-relay" type="checkbox" ${useRelay ? "checked" : ""} ${!status ? "disabled" : ""} />
-            <span class="slider"></span>
-          </label>
+          <p class="settings-note ${useRelay ? "ok" : ""}" id="s-use-relay-state">${useRelay ? "已开启" : "已关闭：忽略网络中所有已生效的中继路由"}</p>
         </div>
-        <p class="msg" id="s-use-relay-state">${useRelay ? "已开启" : "已关闭：忽略网络中所有已生效的中继路由"}</p>
-      </div>
-      <div class="settings-actions">
-        <button id="s-logs" class="btn ghost" type="button">导出诊断日志</button>
-      </div>
-      <div class="settings-actions" id="s-daemon-row">
-        ${backend.hasDaemonControl
-          ? (status ? `<span class="live-dot ok">运行中</span>` : `<button id="s-start-daemon" class="btn ghost">启动</button>`)
-          : ""}
-      </div>
+      </section>
+      <section class="settings-panel">
+        <div class="settings-panel-head"><h3>诊断</h3><span class="hint">日志与运行状态</span></div>
+        <div class="settings-list">
+          <div class="settings-row">
+            <div class="settings-row-main">
+              <div class="settings-row-title">诊断日志</div>
+              <div class="settings-row-desc">导出最近的 daemon 日志用于排查</div>
+            </div>
+            <button id="s-logs" class="btn ghost sm" type="button">导出</button>
+          </div>
+          <div class="settings-row" id="s-daemon-row">
+            <div class="settings-row-main">
+              <div class="settings-row-title">后台服务</div>
+              <div class="settings-row-desc">snetd 守护进程</div>
+            </div>
+            ${backend.hasDaemonControl ? (status ? '<span class="live-dot ok">运行中</span>' : '<button id="s-start-daemon" class="btn ghost sm">启动</button>') : '<span class="live-dot ok">snetd</span>'}
+          </div>
+        </div>
+      </section>
+      <details class="settings-advanced">
+        <summary>高级：原始状态 JSON</summary>
+        <pre class="settings-json">${esc(JSON.stringify(status ?? {}, null, 2))}</pre>
+      </details>
       <p class="msg" id="s-msg"></p>
-      <div class="info-json">${statusJSONHTML}</div>
     `,
     wide: true,
     footer: `<button data-close class="btn ghost">关闭</button>`,
@@ -1466,17 +1489,17 @@ function openSettingsModal() {
         if (!natState) return;
         const enabled = natInput.checked;
         natInput.disabled = true;
-        natState.className = "msg";
+        natState.className = "settings-note";
         natState.textContent = enabled ? "正在开启…" : "正在关闭…";
         try {
           await backend.setNATMapping(enabled);
           await refresh();
-          natState.className = "msg ok";
+          natState.className = "settings-note ok";
           natState.textContent = enabled ? "已开启自动端口映射" : "已关闭自动端口映射";
           toast(natState.textContent);
         } catch (e) {
           natInput.checked = !enabled;
-          natState.className = "msg";
+          natState.className = "settings-note err";
           natState.textContent = `保存失败: ${e}`;
         } finally {
           natInput.disabled = false;
@@ -1494,7 +1517,7 @@ function openSettingsModal() {
         const wantAllow = allowRelayInput?.checked ?? false;
         const wantUse = useRelayInput?.checked ?? true;
         if (allowRelayState) {
-          allowRelayState.className = "msg";
+          allowRelayState.className = "settings-note";
           allowRelayState.textContent = wantAllow ? "正在开启中继网关…" : "正在关闭中继网关…";
         }
         if (allowRelayInput) allowRelayInput.disabled = true;
@@ -1503,11 +1526,11 @@ function openSettingsModal() {
           await backend.setRelayOptions({ allowRelay: wantAllow, useRelay: wantUse });
           await refresh();
           if (allowRelayState) {
-            allowRelayState.className = "msg ok";
+            allowRelayState.className = "settings-note ok";
             allowRelayState.textContent = wantAllow ? "已开启中继网关" : "已关闭中继网关";
           }
           if (useRelayState) {
-            useRelayState.className = "msg ok";
+            useRelayState.className = "settings-note ok";
             useRelayState.textContent = wantUse ? "已开启" : "已关闭：忽略网络中所有已生效的中继路由";
           }
           toast("中继设置已保存");
@@ -1515,7 +1538,7 @@ function openSettingsModal() {
           if (allowRelayInput) allowRelayInput.checked = !wantAllow;
           if (useRelayInput) useRelayInput.checked = !wantUse;
           if (allowRelayState) {
-            allowRelayState.className = "msg";
+            allowRelayState.className = "settings-note";
             allowRelayState.textContent = `保存失败: ${e}`;
           }
         } finally {
@@ -1771,7 +1794,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       ? (nd.publicIPv4 || nd.endpoint || "-")
       : (pd?.public || pd?.addr || pd?.lan || nd.endpoint || "-");
     const selfV6 = nd.publicIPv6 || nd.endpointV6 || "";
-    const public6 = isSelf ? (selfV6 || "未检查到ipv6") : (pd?.ipv6 || nd.endpointV6 || "-");
+    const public6 = isSelf ? (selfV6 || "未检测到IPv6信息") : (pd?.ipv6 || nd.endpointV6 || "-");
     const showPublic6 = isSelf ? true : public6 !== "-" && public6 !== public4;
     const last = isSelf ? "" : lastActiveLabel(pd, online);
     const diag = isSelf
@@ -1952,8 +1975,10 @@ function networkDetailHTML(n: NetInfo): string {
   const rolePill = role === "owner"
     ? '<span class="pill owner">创建者</span>'
     : '<span class="pill off">成员</span>';
+  const iconInvite = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M16 11h6"/></svg>';
+  const iconMore = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
   const more = `<div class="detail-more">
-    <button type="button" class="btn ghost sm" id="detail-more-btn">更多</button>
+    <button type="button" class="btn ghost sm" id="detail-more-btn">${iconMore}更多</button>
     <div class="detail-more-menu" id="detail-more-menu" hidden>
       <button type="button" data-detail-act="detail">网络详情</button>
       ${canManage ? '<button type="button" data-detail-act="settings">编辑网络</button>' : ""}
@@ -1979,7 +2004,7 @@ function networkDetailHTML(n: NetInfo): string {
         <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
         <span class="slider"></span>
       </label>
-      ${canManage ? '<button type="button" class="btn ghost sm" id="detail-invite" data-detail-act="invite">邀请</button>' : ""}
+      ${canManage ? `<button type="button" class="btn ghost sm" id="detail-invite" data-detail-act="invite">${iconInvite}邀请</button>` : ""}
       ${more}
     </div>
   </div>
