@@ -84,6 +84,10 @@ header {
   position: relative; z-index: 1; color: var(--text); font-weight: 600; background: var(--bg);
   border-color: var(--border); border-bottom: 1px solid var(--bg); margin-bottom: -1px;
 }
+.network-tab.active::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+  background: var(--bg); pointer-events: none;
+}
 .network-tab.pending { color: var(--warn); }
 .network-dot {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;

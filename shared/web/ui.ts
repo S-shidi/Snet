@@ -133,9 +133,13 @@ async function refreshPeerSubnets(force = false) {
           total: list.length + 1,
         };
       } catch (e) {
-        delete peerSummary[n.networkId];
-        delete peerDetails[n.networkId];
-        peerErrors[n.networkId] = "该网络已失效或加载失败";
+        // A slow/unreachable coordination request is often transient. Keep the
+        // last successful snapshot instead of flashing a fatal error and
+        // blanking the member cards.
+        if (!peerDetails[n.networkId]) {
+          delete peerSummary[n.networkId];
+          peerErrors[n.networkId] = "该网络已失效或加载失败";
+        }
       }
     }),
   );
@@ -1766,10 +1770,9 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const public4 = isSelf
       ? (nd.publicIPv4 || nd.endpoint || "-")
       : (pd?.public || pd?.addr || pd?.lan || nd.endpoint || "-");
-    const public6 = isSelf
-      ? (nd.publicIPv6 || nd.endpointV6 || "-")
-      : (pd?.ipv6 || nd.endpointV6 || "-");
-    const showPublic6 = public6 !== "-" && public6 !== public4;
+    const selfV6 = nd.publicIPv6 || nd.endpointV6 || "";
+    const public6 = isSelf ? (selfV6 || "未检查到ipv6") : (pd?.ipv6 || nd.endpointV6 || "-");
+    const showPublic6 = isSelf ? true : public6 !== "-" && public6 !== public4;
     const last = isSelf ? "" : lastActiveLabel(pd, online);
     const diag = isSelf
       ? ""
