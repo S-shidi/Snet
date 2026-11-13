@@ -1700,35 +1700,12 @@ function pathMonitorHTML(n: NetInfo, r?: PeersResp, includeHead = true): { html:
   };
 }
 
-function topologyCounts(n: NetInfo, r?: PeersResp): { direct: number; relay: number; probing: number } {
-  const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
-  const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
-  let direct = 0;
-  let relay = 0;
-  let probing = 0;
-  for (const p of r?.peers ?? []) {
-    const path = effectivePath(directMap[p.id], relayReady);
-    if (path === "direct") direct++;
-    else if (path === "relay") relay++;
-    else probing++;
-  }
-  return { direct, relay, probing };
-}
-
-function topologySummaryHTML(n: NetInfo, r?: PeersResp): string {
-  const { direct, relay, probing } = topologyCounts(n, r);
-  const cgnat = hasCGNAT()
-    ? `<details class="cgnat-compact">
-        <summary><span class="cgnat-mark">!</span><span>检测到运营商多层 NAT（CGNAT），已启用中继保障连通</span><span class="cgnat-more">详情</span></summary>
-        <p>P2P 直连受限，客户端已自动选择中继路径；如需直连，请检查路由器 NAT 类型或 IPv6 连通性。</p>
-      </details>`
-    : "";
-  return `<div class="topology-summary">
-    <span class="topology-metric ok"><b>${direct}</b><span>直连</span></span>
-    <span class="topology-metric relay"><b>${relay}</b><span>中继</span></span>
-    ${probing ? `<span class="topology-metric"><b>${probing}</b><span>探测中</span></span>` : ""}
-    ${cgnat}
-  </div>`;
+function cgnatCompactHTML(): string {
+  if (!hasCGNAT()) return "";
+  return `<details class="cgnat-compact">
+    <summary><span class="cgnat-mark">!</span><span>检测到运营商多层 NAT（CGNAT），已启用中继保障连通</span><span class="cgnat-more">详情</span></summary>
+    <p>P2P 直连受限，客户端已自动选择中继路径；如需直连，请检查路由器 NAT 类型或 IPv6 连通性。</p>
+  </details>`;
 }
 
 function memberPathBadge(n: NetInfo, nd: NetNode, isSelf: boolean): string {
@@ -1752,8 +1729,8 @@ function canManageNetwork(n: NetInfo): boolean {
   return networkRole(n) === "owner" || !!n.owner;
 }
 
-function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string, routes: RelayRoute[] | undefined): string {
-  if (!r) return `<p class="hint">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
+function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string, routes: RelayRoute[] | undefined): string {
+  if (!r) return `<p class="hint member-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
   const list: NetNode[] = (self ? [self, ...(r.peers ?? [])] : (r.peers ?? []))
     .slice()
@@ -1762,46 +1739,39 @@ function memberTableHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       const bSelf = !!self && b.id === self.id ? 0 : 1;
       return aSelf - bSelf || String(a.id).localeCompare(String(b.id));
     });
-  if (!list.length) return `<p class="hint">暂无成员信息</p>`;
-  const rows = list.map((nd) => {
+  if (!list.length) return `<p class="hint member-empty">暂无成员信息</p>`;
+  const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
+  const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
+
+  const cards = list.map((nd) => {
     const isSelf = nd.ip === n.ip || (!!self && nd.id === self.id);
-    const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
-    const online = nd.online
-      ? '<span class="pill ok">在线</span>'
-      : '<span class="pill off">离线</span>';
+    const online = !!nd.online;
+    const pd = directMap[nd.id];
+    const path = isSelf ? '<span class="path-badge self">本机</span>' : pathBadge(pd, relayReady);
     const routeCell = nodeRouteCell(routes, nd.id);
-    const pathCell = memberPathBadge(n, nd, isSelf);
-    const rolePill = role === "owner"
-      ? `<span class="pill accent">${roleLabel(role)}</span>`
-      : `<span class="pill off">${roleLabel(role)}</span>`;
-    // Relay gateway capability: the owner picks a gateway for a delegated
-    // subnet, so the table shows which nodes can actually forward.
     const relay = nd.allowRelay
-      ? `<span class="pill ok" title="该节点已开启中继网关">中继</span>`
+      ? '<span class="pill ok">中继网关</span>'
       : nd.relayError
-        ? `<span class="pill warn" title="${esc(nd.relayError)}">不可用</span>`
-        : '<span class="muted">-</span>';
+        ? `<span class="pill warn" title="${esc(nd.relayError)}">网关不可用</span>`
+        : "";
     const diag = isSelf
-      ? '<td><span class="muted">-</span></td>'
-      : `<td class="ping-cell"><button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">📡 诊断</button><span class="ping-result" data-ping-result="${esc(nd.id)}"></span></td>`;
-    const op = canManage
-      ? `<td>${isSelf ? '<span class="muted">自己</span>' : `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}">移除</button>`}</td>`
-      : "";
-    return `<tr>
-      <td>${deviceLabel(nd)}</td>
-      <td class="mono">${esc(nd.ip || "-")}</td>
-      <td>${online}</td>
-      <td>${pathCell}</td>
-      <td>${routeCell}</td>
-      <td>${relay}</td>
-      <td>${rolePill}</td>
-      ${diag}
-      ${op}
-    </tr>`;
+      ? ""
+      : `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button><span class="ping-result" data-ping-result="${esc(nd.id)}"></span>`;
+    return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
+      <div class="member-card-head">
+        <div class="member-card-name">${deviceLabel(nd)}</div>
+        ${online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>'}
+      </div>
+      <div class="member-card-body">
+        <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${path}</div>
+        <div class="member-card-tags">${routeCell}${relay}</div>
+      </div>
+      <div class="member-card-foot">
+        <span class="member-card-actions">${diag}</span>
+      </div>
+    </article>`;
   }).join("");
-  return `<div class="tbl-wrap"><table class="members"><thead><tr>
-    <th>设备名 / 设备ID</th><th>虚拟 IP</th><th>状态</th><th>路径</th><th>子网路由</th><th>中继网关</th><th>角色</th><th>诊断</th>${canManage ? "<th>操作</th>" : ""}
-  </tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<div class="member-grid">${cards}</div>`;
 }
 
 async function runPeerPing(btn: HTMLButtonElement) {
@@ -1947,9 +1917,9 @@ function networkDetailHTML(n: NetInfo): string {
   const canManage = canManageNetwork(n);
   const selfIp = n.ip || self?.ip || "-";
   const nat = n.relayPath?.natType || self?.natType || "unknown";
-  const members = r ? `${(r.peers ?? []).length + 1} 位成员` : "加载中";
   const routes = ownerInfo[n.networkId]?.routes ?? r?.routes ?? [];
   const activeRoutes = routes.filter((rt) => rt.status === "active").length;
+  const memberCount = r ? (r.peers ?? []).length + 1 : 0;
   const rolePill = role === "owner"
     ? '<span class="pill owner">创建者</span>'
     : '<span class="pill off">成员</span>';
@@ -1967,27 +1937,26 @@ function networkDetailHTML(n: NetInfo): string {
   return `<div class="net-detail-head">
     <div class="detail-heading">
       <div class="detail-title-row"><div class="detail-title">${esc(n.name || n.networkId)}</div>${rolePill}</div>
-      <div class="detail-sub">${esc(n.networkId)} · ↑ ${fmtSpeed(status?.txSpeed)} ↓ ${fmtSpeed(status?.rxSpeed)}</div>
-      <div class="detail-badges">
-        <span class="detail-badge"><span>IP</span><code>${esc(selfIp)}</code></span>
-        <span class="detail-badge"><span>NAT</span><b>${esc(nat)}</b></span>
-        <span class="detail-badge"><span>生效路由</span><b>${activeRoutes}</b></span>
+      <div class="detail-meta-line">
+        <span>${esc(n.networkId)}</span>
+        <span>↑ ${fmtSpeed(status?.txSpeed)} · ↓ ${fmtSpeed(status?.rxSpeed)}</span>
+        <span>IP ${esc(selfIp)}</span>
+        <span>NAT ${esc(nat)}</span>
+        <span>${activeRoutes} 条生效路由</span>
+        ${memberCount ? `<span>${memberCount} 位成员</span>` : ""}
       </div>
     </div>
-    <label class="switch detail-conn-switch" title="连接 / 断开">
-      <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
-      <span class="slider"></span>
-    </label>
-    ${canManage ? '<button type="button" class="btn ghost sm" id="detail-invite" data-detail-act="invite">邀请</button>' : ""}
-    ${more}
-  </div>
-  <section class="card detail-section network-members-card">
-    <div class="detail-section-head">
-      <div class="detail-section-title"><h3>网络成员与拓扑</h3><span class="hint">${members}</span></div>
+    <div class="detail-head-actions">
+      <label class="switch detail-conn-switch" title="连接 / 断开">
+        <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
+        <span class="slider"></span>
+      </label>
+      ${canManage ? '<button type="button" class="btn ghost sm" id="detail-invite" data-detail-act="invite">邀请</button>' : ""}
+      ${more}
     </div>
-    ${topologySummaryHTML(n, r)}
-    ${memberTableHTML(n, r, canManage, role, routes)}
-  </section>`;
+  </div>
+  ${cgnatCompactHTML()}
+  ${memberCardsHTML(n, r, canManage, role, routes)}`;
 }
 
 function pendingDetailHTML(p: NonNullable<DaemonStatus["pendingJoins"]>[number]): string {
