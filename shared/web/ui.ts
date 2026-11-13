@@ -1216,6 +1216,11 @@ function openJoinModal() {
       const linkInput = body.querySelector<HTMLInputElement>("#m-link")!;
       const scanBtn = body.querySelector<HTMLButtonElement>("#m-scan");
 
+      // The join button only makes sense with a link in the field.
+      const syncSubmit = () => { submit.disabled = !linkInput.value.trim(); };
+      linkInput.addEventListener("input", syncSubmit);
+      syncSubmit();
+
       // People copy the invite link right before pasting it, so offer the
       // clipboard content once the field gets the focus.
       let pasteTried = false;
@@ -1227,6 +1232,7 @@ function openJoinModal() {
           const text = (await navigator.clipboard.readText()).trim();
           if (!text || !/^snet:\/\//i.test(text)) return;
           linkInput.value = text;
+          syncSubmit();
           toast("已粘贴剪贴板中的邀请链接");
         } catch { /* clipboard read not permitted */ }
       });
@@ -1242,6 +1248,7 @@ function openJoinModal() {
             return;
           }
           linkInput.value = text;
+          syncSubmit();
           toast("已读取邀请链接");
           submit.focus();
         } catch (e) {
@@ -1279,8 +1286,8 @@ function openJoinModal() {
         } catch (e) {
           result.className = "msg";
           result.textContent = `加入失败: ${e}`;
-          submit.disabled = false;
           submit.innerHTML = "加入";
+          syncSubmit();
         }
       });
     },
