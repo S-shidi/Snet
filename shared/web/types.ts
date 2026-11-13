@@ -159,6 +159,8 @@ export interface Backend {
   detectLocalSubnets(): Promise<string[]>;
   /** Ping a peer IP and return loss percentage and average RTT */
   ping(target: string): Promise<{ loss: number; avgRtt: number }>;
+  /** Send a short UDP probe through the tunnel to wake a peer */
+  poke(target: string): Promise<void>;
   /** Fetch recent daemon diagnostic logs */
   logs(): Promise<string>;
   /** Ensure daemon is running (Desktop only, Web returns error) */

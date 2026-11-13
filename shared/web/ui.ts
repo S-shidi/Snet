@@ -1796,19 +1796,20 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const selfV6 = nd.publicIPv6 || nd.endpointV6 || "";
     const public6 = isSelf ? (selfV6 || "未检测到IPv6信息") : (pd?.ipv6 || nd.endpointV6 || "-");
     const showPublic6 = isSelf ? true : public6 !== "-" && public6 !== public4;
-    const last = isSelf ? "" : lastActiveLabel(pd, online);
+    const last = isSelf ? "当前设备" : lastActiveLabel(pd, online);
+    const poke = isSelf
+      ? ""
+      : `<button type="button" class="btn ghost sm member-poke" data-detail-poke="${esc(nd.id)}" data-poke-target="${esc(nd.ip || "")}" title="发送探测包唤醒节点"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>唤醒</button>`;
     const diag = isSelf
       ? ""
       : `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button><span class="ping-result" data-ping-result="${esc(nd.id)}"></span>`;
     const kick = !isSelf && canManage
       ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}">踢出</button>`
       : "";
-    const foot = isSelf
-      ? ""
-      : `<div class="member-card-foot">
-          <span class="member-card-last">${esc(last)}</span>
-          <span class="member-card-actions">${diag}${kick}</span>
-        </div>`;
+    const foot = `<div class="member-card-foot">
+      <span class="member-card-last">${esc(last)}</span>
+      <span class="member-card-actions">${poke}${diag}${kick}</span>
+    </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
         <div class="member-card-name">${deviceLabel(nd)}</div>
@@ -1828,33 +1829,61 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
 
 async function runPeerPing(btn: HTMLButtonElement) {
   const target = btn.dataset.pingTarget || "";
-  const result = btn.closest("td")?.querySelector<HTMLElement>("[data-ping-result]");
+  const card = btn.closest<HTMLElement>(".member-card");
+  const result = card?.querySelector<HTMLElement>("[data-ping-result]");
   if (!target) {
-    if (result) { result.className = "ping-result err"; result.textContent = "无 IP"; }
+    if (result) { result.className = "ping-result err"; result.textContent = "诊断失败：无 IP"; }
     return;
   }
-  const original = btn.textContent || "📡 诊断";
+  const original = btn.innerHTML;
   btn.disabled = true;
-  btn.textContent = "诊断中…";
+  btn.innerHTML = `${SPIN} 诊断中…`;
   if (result) { result.className = "ping-result"; result.textContent = ""; }
   try {
     const r = await backend.ping(target);
     const loss = Math.max(0, Number(r.loss) || 0);
     const avg = Math.max(0, Number(r.avgRtt) || 0);
+    if (loss >= 100) throw new Error("目标不可达");
     const cls = loss >= 50 || avg >= 200 ? "err" : loss > 0 || avg >= 80 ? "warn" : "ok";
     if (result) {
       result.className = "ping-result " + cls;
-      result.textContent = `${loss.toFixed(0)}% 丢包 / ${avg > 0 ? `${avg.toFixed(0)}ms` : "超时"}`;
+      result.textContent = `延迟: ${avg > 0 ? `${avg.toFixed(0)}ms` : "-"} / 丢包: ${loss.toFixed(0)}%`;
+      window.setTimeout(() => {
+        if (result.textContent?.startsWith("延迟:")) {
+          result.textContent = "";
+          result.className = "ping-result";
+        }
+      }, 3000);
     }
   } catch (e) {
     if (result) {
       result.className = "ping-result err";
-      result.textContent = "诊断失败";
+      result.textContent = `诊断失败：${String(e).includes("目标不可达") ? "目标不可达" : String(e)}`;
     }
-    toast(String(e), "err");
+    toast("诊断失败：目标不可达", "err");
   } finally {
     btn.disabled = false;
-    btn.textContent = original;
+    btn.innerHTML = original;
+  }
+}
+
+async function runPoke(btn: HTMLButtonElement) {
+  const target = btn.dataset.pokeTarget || "";
+  if (!target) return;
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `${SPIN} 唤醒中…`;
+  toast("正在尝试唤醒该节点…");
+  try {
+    await backend.poke(target);
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    await refresh();
+    toast("已发送唤醒探测包");
+  } catch (e) {
+    toast(`唤醒失败：${e}`, "err");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
   }
 }
 
@@ -2140,6 +2169,11 @@ function bindNetworkDetailEvents() {
       } catch (err) {
         toast(String(err), "err");
       }
+      return;
+    }
+    const pokeEl = target.closest<HTMLButtonElement>("[data-detail-poke]");
+    if (pokeEl && detailNid) {
+      await runPoke(pokeEl);
       return;
     }
     const pingEl = target.closest<HTMLButtonElement>("[data-detail-ping]");

@@ -2647,6 +2647,44 @@ func (d *Daemon) leaveLocked(nid string) {
 	delete(d.retryAttempts, nid)
 }
 
+// Poke sends a few UDP datagrams to a peer's virtual IP. The packets are
+// routed through the WireGuard TUN, which forces the peer to re-handshake and
+// refreshes both sides' NAT mappings when a direct path has gone stale.
+func (d *Daemon) Poke(target string) error {
+	ip := net.ParseIP(strings.TrimSpace(target))
+	if ip == nil || ip.To4() == nil {
+		return errors.New("目标必须是有效的 IPv4 地址")
+	}
+	d.mu.Lock()
+	found := false
+	for _, nc := range d.cfg.Networks {
+		if nc == nil || !nc.Active || nc.Subnet == "" || nc.IP == target {
+			continue
+		}
+		if _, subnet, err := net.ParseCIDR(nc.Subnet); err == nil && subnet.Contains(ip) {
+			found = true
+			break
+		}
+	}
+	d.mu.Unlock()
+	if !found {
+		return errors.New("目标不在已连接的虚拟网络中")
+	}
+	conn, err := net.DialTimeout("udp", net.JoinHostPort(target, "9"), 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("唤醒失败：%w", err)
+	}
+	defer conn.Close()
+	for i := 0; i < 3; i++ {
+		if _, err := conn.Write([]byte{0}); err != nil {
+			return fmt.Errorf("唤醒失败：%w", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
+}
+
+// Rejoin brings a network's tunnel back up.
 // Rejoin brings a network's tunnel back up.
 func (d *Daemon) Rejoin(nid string) error {
 	d.mu.Lock()

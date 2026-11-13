@@ -188,6 +188,10 @@ const backend: Backend = {
     return api("/ping", jsonPost("/ping", { target }));
   },
 
+  async poke(target: string): Promise<void> {
+    await api("/poke", jsonPost("/poke", { target }));
+  },
+
   async logs(): Promise<string> {
     const headers: Record<string, string> = {};
     if (authToken) headers["Authorization"] = "Bearer " + authToken;

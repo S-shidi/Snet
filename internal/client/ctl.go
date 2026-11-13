@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -43,6 +44,18 @@ var (
 	pingLossRE = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%\s+(?:packet )?loss`)
 	pingAvgRE  = regexp.MustCompile(`(?:rtt|round-trip)[^=]*=\s*[0-9.]+\/([0-9.]+)\/`)
 )
+
+func pingBinary() string {
+	if p, err := exec.LookPath("ping"); err == nil {
+		return p
+	}
+	for _, p := range []string{"/sbin/ping", "/bin/ping", "/usr/bin/ping", "/usr/local/bin/ping"} {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
 
 func parsePingOutput(out string) (float64, float64) {
 	loss, avg := 100.0, 0.0
@@ -216,19 +229,45 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			writeCtlErr(w, 400, errors.New("target must be an IP address"))
 			return
 		}
+		bin := pingBinary()
+		if bin == "" {
+			writeCtlErr(w, 500, errors.New("诊断失败：容器内未找到 ping 命令，请更新客户端镜像"))
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 		defer cancel()
 		wait := "2"
 		if runtime.GOOS == "darwin" {
 			wait = "2000"
 		}
-		out, err := exec.CommandContext(ctx, "ping", "-c", "3", "-W", wait, target).CombinedOutput()
+		out, err := exec.CommandContext(ctx, bin, "-c", "3", "-W", wait, target).CombinedOutput()
 		if err != nil && len(out) == 0 {
-			writeCtlErr(w, 500, err)
+			writeCtlErr(w, 500, fmt.Errorf("诊断失败：无法执行 ping：%w", err))
 			return
 		}
 		loss, avg := parsePingOutput(string(out))
+		if loss >= 100 {
+			writeCtlErr(w, 502, errors.New("诊断失败：目标不可达"))
+			return
+		}
 		writeCtlJSON(w, 200, map[string]any{"loss": loss, "avgRtt": avg})
+	})
+
+	// Poke sends a few UDP datagrams through the tunnel to force WireGuard to
+	// re-handshake with a sleeping peer and refresh NAT mappings.
+	mux.HandleFunc("POST /ctl/poke", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Target string `json:"target"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.Poke(strings.TrimSpace(req.Target)); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
 	})
 
 	mux.HandleFunc("GET /ctl/logs", func(w http.ResponseWriter, r *http.Request) {
