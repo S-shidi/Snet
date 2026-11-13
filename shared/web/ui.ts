@@ -221,7 +221,6 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
         <div class="net-meta">
           <span>IP <code>${esc(n.ip ?? "-")}</code></span>
           <span>网段 <code>${esc(n.subnet ?? "-")}</code></span>
-          <span>ID <code>${esc(n.networkId)}</code></span>
         </div>
         <div class="net-stats">${memberLine}<span>收 <b>${fmtBytes(rx)}</b></span><span>发 <b>${fmtBytes(tx)}</b></span></div>
       </div>
@@ -255,7 +254,6 @@ function buildNetMenu(nid: string, isOwner: boolean, gone: boolean): HTMLElement
   const iconInvite = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>';
   const iconSettings = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
   const iconSubnets = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>';
-  const iconCode = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>';
   const iconInfo = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
   const iconTrash = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
   const iconExit = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>';
@@ -271,7 +269,6 @@ function buildNetMenu(nid: string, isOwner: boolean, gone: boolean): HTMLElement
       <button type="button" data-act="invite" data-nid="${esc(nid)}">${iconInvite} 邀请</button>
       <button type="button" data-act="settings" data-nid="${esc(nid)}">${iconSettings} 设置</button>
       <button type="button" data-act="subnets" data-nid="${esc(nid)}">${iconSubnets} 子网路由</button>
-      <button type="button" data-act="code" data-nid="${esc(nid)}">${iconCode} 查看配对码</button>
       <hr/>
       <button type="button" data-act="delete" data-nid="${esc(nid)}" class="danger">${iconTrash} 删除网络</button>`;
   } else {
@@ -348,7 +345,7 @@ function openNetworkChooser() {
       <button type="button" class="network-choice-card" id="choice-join">
         <span class="choice-icon">→</span>
         <b>加入现有网络</b>
-        <small>使用邀请链接或配对码加入已有网络</small>
+        <small>粘贴邀请链接加入已有网络</small>
       </button>
     </div>`,
     footer: `<button data-close class="btn ghost">取消</button>`,
@@ -541,15 +538,13 @@ async function onAction(act: string, nid: string, btn: HTMLButtonElement) {
     switch (act) {
       case "info": {
         setPending("查询中…");
-        const r = await backend.netinfo(nid);
-        openModal({ title: `网络详情 · ${nid}`, body: `<pre class="json">${esc(JSON.stringify(r, null, 2))}</pre>`, wide: true });
+        await openNetworkDetailModal(nid);
         break;
       }
       case "members": { setPending("查询中…"); await showMembers(nid); break; }
       case "settings": { await openNetworkSettings(nid); break; }
       case "subnets": { await openSubnetRouteModal(nid); break; }
       case "invite": { setPending("生成中…"); await openInviteModal(nid); break; }
-      case "code": { setPending("查询中…"); await openCodeModal(nid); break; }
       case "delete": {
         if (!(await confirmDialog("删除网络", "删除将断开所有成员并释放网段，不可恢复。确定？", true))) return;
         setPending("删除中…");
@@ -845,85 +840,14 @@ async function openSubnetRouteModal(nid: string) {
   });
 }
 
-/* ── Code modal ───────────────────────────────────────────────── */
-async function openCodeModal(nid: string) {
-  let code = "";
-  try {
-    const detail = await backend.netinfo(nid);
-    code = detail.pairingCode || "";
-  } catch (e) {
-    toast(`获取配对码失败: ${e}`, "err");
-    return;
-  }
-  if (!code) {
-    const nr = await ctlOrClean(nid, "查看配对码", () => backend.resetCode(nid));
-    if (nr === null) return;
-    code = nr.pairingCode;
-    toast("原配对码不可用，已生成新码（旧码作废）", "warn");
-  }
-  openModal({
-    title: `查看配对码 · ${nid}`,
-    body: `
-      <div class="kv"><span>配对码</span><code id="pc-code" style="letter-spacing:1.5px">${esc(code)}</code></div>
-      <p class="hint" id="pc-note">配对码含有效次数与时限；复制后分享给其他设备即可加入。</p>
-      <p class="msg" id="pc-result"></p>`,
-    footer: `<button data-close class="btn ghost">关闭</button><button id="pc-copy" class="btn">复制配对码</button><button id="pc-reset" class="btn danger">重置配对码</button>`,
-    onBody: (m) => {
-      const codeEl = m.querySelector<HTMLElement>("#pc-code")!;
-      const result = m.querySelector<HTMLElement>("#pc-result")!;
-      const note = m.querySelector<HTMLElement>("#pc-note")!;
-      const copy = m.querySelector<HTMLButtonElement>("#pc-copy")!;
-      const reset = m.querySelector<HTMLButtonElement>("#pc-reset")!;
-      copy.addEventListener("click", () => void copyText(code, copy));
-      reset.addEventListener("click", async () => {
-        if (!(await confirmDialog("重置配对码", "作废旧配对码并生成新码？旧码立即失效，已加入成员不受影响。", true))) return;
-        reset.disabled = true;
-        reset.innerHTML = `${SPIN} 生成中…`;
-        try {
-          const r = await ctlOrClean(nid, "重置配对码", () => backend.resetCode(nid));
-          if (r === null) { reset.disabled = false; reset.textContent = "重置配对码"; return; }
-          code = r.pairingCode;
-          codeEl.textContent = code;
-          result.className = "msg ok";
-          result.textContent = "旧码已失效，已加入成员不受影响。";
-          note.textContent = "";
-          toast("已生成新配对码");
-        } catch (e) {
-          result.className = "msg";
-          result.textContent = `重置失败: ${e}`;
-        } finally {
-          reset.disabled = false;
-          reset.textContent = "重置配对码";
-        }
-        await refresh();
-      });
-    },
-  });
-}
-
 /* ── Invite modal ─────────────────────────────────────────────── */
-async function openInviteModal(nid: string) {
-  let detail: NetInfoDetail;
-  try {
-    detail = await backend.netinfo(nid);
-  } catch (e) {
-    toast(`获取邀请信息失败: ${e}`, "err");
-    return;
-  }
-  let code = detail.pairingCode;
-  if (!code) {
-    const nr = await ctlOrClean(nid, "邀请加入", () => backend.resetCode(nid));
-    if (nr === null) return;
-    code = nr.pairingCode;
-    toast("原配对码不可用，已生成新码（旧码作废）", "warn");
-  }
-  const netId = detail.id || detail.networkId;
-  if (!netId) { toast("获取网络ID失败", "err"); return; }
-  const name = detail.name || netId;
-  let link = `snet://join?nid=${encodeURIComponent(netId)}&code=${encodeURIComponent(code)}`;
-  if (name) link += `&name=${encodeURIComponent(name)}`;
+async function openInviteModal(nid: string, known?: { link: string; name?: string }) {
+  const info = known ?? (await inviteInfo(nid));
+  if (!info) return;
+  const name = info.name || "";
+  const link = info.link;
   openModal({
-    title: `邀请加入 · ${name}`,
+    title: name ? `邀请加入 · ${name}` : "邀请加入",
     wide: true,
     body: `
       <div class="invite-layout">
@@ -932,26 +856,49 @@ async function openInviteModal(nid: string) {
           <p class="hint">扫描二维码加入</p>
         </div>
         <div class="invite-info">
-          <p class="hint invite-lede">被邀请设备扫码，或在 App 中选择「加入网络」粘贴邀请链接。</p>
-          <div class="invite-field">
-            <span>邀请链接</span>
-            <code class="invite-link">${esc(link)}</code>
+          <p class="hint invite-lede">把邀请链接发给对方，对方在「加入网络」里粘贴即可加入。</p>
+          <div class="invite-link-box">
+            <span class="invite-link-label">邀请链接</span>
+            <code class="invite-link" id="m-link">${esc(link)}</code>
           </div>
-          <div class="invite-meta">
-            <div class="invite-field"><span>网络 ID</span><code>${esc(netId)}</code></div>
-            <div class="invite-field"><span>配对码</span><code>${esc(code)}</code></div>
-          </div>
-          <p class="hint">配对码含有效次数与时限，可在卡片上「查看配对码」随时查看或作废重发。</p>
+          <button type="button" class="btn invite-copy" id="m-copy">复制邀请链接</button>
+          <p class="hint invite-note">链接可随时重置：重置后旧链接立即失效，已加入的成员不受影响。</p>
         </div>
       </div>`,
-    footer: `<button data-close class="btn ghost">关闭</button><button id="m-copy" class="btn">复制邀请链接</button>`,
+    footer: `<button data-close class="btn ghost">关闭</button><button type="button" class="btn danger ghost" id="m-reset">重置邀请链接</button>`,
     onBody: (body) => {
       renderQR(body.querySelector<HTMLElement>("#qr")!, link);
       body.querySelector("#m-copy")?.addEventListener("click", async (e) => {
         await copyText(link, e.currentTarget as HTMLButtonElement);
       });
+      body.querySelector("#m-reset")?.addEventListener("click", async () => {
+        const fresh = await rotateInviteLink(nid);
+        if (!fresh) return;
+        // The confirmation dialog replaced this modal, so reopen it with the
+        // freshly generated link.
+        closeModal();
+        openInviteModal(nid, fresh);
+      });
     },
   });
+}
+
+/* ── Rotate the invite link ───────────────────────────────────── */
+// Replaces the pairing code behind the invite link, so every link shared
+// before the rotation stops working. The new link is copied right away.
+async function rotateInviteLink(nid: string): Promise<{ link: string; name?: string } | null> {
+  if (!(await confirmDialog("重置邀请链接", "重置后，旧的邀请链接将立即失效，确定要重置吗？", true))) return null;
+  try {
+    const r = await ctlOrClean(nid, "重置邀请链接", () => backend.rotateInvite(nid));
+    if (r === null) return null;
+    await copyText(r.link, null, true);
+    toast("新链接已生成并复制");
+    await refresh();
+    return { link: r.link, name: r.name };
+  } catch (e) {
+    toast(`重置失败: ${e}`, "err");
+    return null;
+  }
 }
 
 /* ── Pending approval modal ───────────────────────────────────── */
@@ -1207,9 +1154,10 @@ function openCreateModal() {
             <div class="create-ok">
               <p class="msg ok">网络创建成功，邀请其他设备加入：</p>
               <div class="qr" id="qr"></div>
-              <div class="kv"><span>网络ID</span><code>${esc(r.networkId)}</code></div>
-              <div class="kv"><span>配对码</span><code>${esc(r.pairingCode)}</code></div>
-              <div class="kv"><span>邀请链接</span><code>${esc(r.link)}</code></div>
+              <div class="invite-link-box">
+                <span class="invite-link-label">邀请链接</span>
+                <code class="invite-link">${esc(r.link)}</code>
+              </div>
             </div>`;
           renderQR(mBody.querySelector<HTMLElement>("#qr")!, r.link);
           detailNid = r.networkId;
@@ -1231,6 +1179,9 @@ function openCreateModal() {
 }
 
 /* ── Join modal ───────────────────────────────────────────────── */
+// The link glyph above the invite-link field.
+const ICON_LINK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
+
 function linkServerOf(link: string): string | undefined {
   try {
     const u = new URL(link);
@@ -1245,28 +1196,48 @@ function openJoinModal() {
   const s = loadSettings();
   openModal({
     title: "加入网络",
-    body: `<div class="row"><label>邀请链接</label>
-      <div class="subnet-input join-link-row">
-        <input class="join-link-input" id="m-link" type="text" placeholder="snet://join?nid=...&code=..." />
+    body: `
+      <div class="join-hero">
+        <div class="join-hero-icon" aria-hidden="true">${ICON_LINK}</div>
+        <p class="join-hero-title">粘贴邀请链接即可加入</p>
+        <p class="join-hero-sub">向网络创建者索取 snet:// 邀请链接</p>
+      </div>
+      <div class="join-link-box">
+        <input class="join-link-input" id="m-link" type="text" spellcheck="false" autocomplete="off"
+               placeholder="粘贴 snet:// 邀请链接..." />
         ${backend.scanQR ? '<button id="m-scan" class="btn ghost" type="button" title="扫描二维码加入">扫码</button>' : ""}
-      </div></div>
-      <p class="hint" style="text-align:center">或手动输入</p>
-      <div class="row"><label>网络ID</label><input id="m-nid" type="text" placeholder="6 位网络ID" /></div>
-      <div class="row"><label>配对码</label><input id="m-code" type="text" placeholder="12 位配对码" /></div>
+      </div>
+      <p class="hint join-tip">请向网络创建者索要邀请链接，在上方粘贴后点击「加入」。</p>
       <p class="msg" id="m-result"></p>`,
-    footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn">加入</button>`,
+    footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn join-submit">加入</button>`,
     onBody: (body) => {
       const submit = body.querySelector<HTMLButtonElement>("#m-submit")!;
       const result = body.querySelector<HTMLElement>("#m-result")!;
       const linkInput = body.querySelector<HTMLInputElement>("#m-link")!;
       const scanBtn = body.querySelector<HTMLButtonElement>("#m-scan");
+
+      // People copy the invite link right before pasting it, so offer the
+      // clipboard content once the field gets the focus.
+      let pasteTried = false;
+      linkInput.addEventListener("focus", async () => {
+        if (pasteTried || linkInput.value.trim()) return;
+        pasteTried = true;
+        try {
+          if (!navigator.clipboard?.readText) return;
+          const text = (await navigator.clipboard.readText()).trim();
+          if (!text || !/^snet:\/\//i.test(text)) return;
+          linkInput.value = text;
+          toast("已粘贴剪贴板中的邀请链接");
+        } catch { /* clipboard read not permitted */ }
+      });
+
       scanBtn?.addEventListener("click", async () => {
         if (!backend.scanQR) return;
         scanBtn.disabled = true;
         scanBtn.textContent = "扫描中…";
         try {
           const text = (await backend.scanQR()).trim();
-          if (!/^snet:\/\/join\?/.test(text)) {
+          if (!/^snet:\/\/join\?/i.test(text)) {
             toast("不是有效的加入邀请链接", "err");
             return;
           }
@@ -1287,20 +1258,15 @@ function openJoinModal() {
         result.className = "msg";
         result.textContent = "";
         try {
-          let link = linkInput.value.trim();
-          if (!link) {
-            const nid = (body.querySelector("#m-nid") as HTMLInputElement).value.trim();
-            const code = (body.querySelector("#m-code") as HTMLInputElement).value.trim();
-            if (!nid || !code) throw new Error("请输入邀请链接，或网络ID + 配对码");
-            link = `snet://join?nid=${nid}&code=${code}`;
-          }
+          const link = linkInput.value.trim();
+          if (!link) throw new Error("请粘贴邀请链接");
           const server = linkServerOf(link) || currentServer();
           const r: JoinResp = await backend.join({ server, port: s.wgport, link });
           result.className = "msg ok";
           if (r.status === "pending") {
             result.innerHTML = `<p>已提交加入请求，等待网络创建者批准。</p><p class="hint">批准后本机会自动加入并连接；也可在上方「待批准 · 加入请求」卡片中取消。</p>`;
           } else {
-            result.textContent = `已加入: IP ${r.ip ?? "-"}，网络 ${r.networkId ?? "-"}`;
+            result.textContent = `已加入，分配的地址为 ${r.ip ?? "-"}`;
             if (r.networkId) detailNid = r.networkId;
           }
           if (r.status === "pending" && r.pendingId) {
@@ -1831,11 +1797,20 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
   return `<div class="member-grid">${cards}</div>`;
 }
 
+function showPingModal(text: string, cls: string) {
+  openModal({
+    title: "诊断结果",
+    body: `<div class="ping-modal ${esc(cls)}"><span class="ping-modal-icon">${cls === "ok" ? "✓" : "!"}</span><div><div class="ping-modal-title">${cls === "ok" ? "连接正常" : "诊断失败"}</div><div class="ping-modal-text">${esc(text)}</div></div></div>`,
+    footer: `<button data-close class="btn ghost">关闭</button>`,
+  });
+}
+
 async function runPeerPing(btn: HTMLButtonElement) {
   const target = btn.dataset.pingTarget || "";
   const nodeID = btn.dataset.detailPing || target || "unknown";
   if (!target) {
     pingResults[nodeID] = { text: "诊断失败：无 IP", cls: "err" };
+    showPingModal(pingResults[nodeID].text, "err");
     renderNetworkDetail();
     return;
   }
@@ -1853,70 +1828,61 @@ async function runPeerPing(btn: HTMLButtonElement) {
       text: `延迟: ${avg > 0 ? `${avg.toFixed(0)}ms` : "-"} / 丢包: ${loss.toFixed(0)}%`,
       cls,
     };
+    showPingModal(pingResults[nodeID].text, cls);
   } catch (e) {
     pingResults[nodeID] = {
       text: `诊断失败：${String(e).includes("目标不可达") ? "目标不可达" : String(e)}`,
       cls: "err",
     };
+    showPingModal(pingResults[nodeID].text, "err");
     toast("诊断失败：目标不可达", "err");
   } finally {
     btn.disabled = false;
     btn.innerHTML = original;
     renderNetworkDetail();
-    window.setTimeout(() => {
-      if (pingResults[nodeID]?.text.startsWith("延迟:")) {
-        delete pingResults[nodeID];
-        renderNetworkDetail();
-      }
-    }, 3000);
   }
 }
 
-async function inviteInfo(nid: string): Promise<{ link: string; code: string } | null> {
-  let detail = ownerInfo[nid];
-  if (!detail) {
+async function runPoke(btn: HTMLButtonElement) {
+  const target = btn.dataset.pokeTarget || "";
+  if (!target) {
+    toast("唤醒失败：目标 IP 为空", "err");
+    return;
+  }
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `${SPIN} 唤醒中…`;
+  toast("正在尝试唤醒该节点…");
+  try {
+    await backend.poke(target);
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    await refresh();
+    toast("已发送唤醒探测包");
+  } catch (e) {
+    toast(`唤醒失败：${e}`, "err");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
+}
+
+/* ── Invite link helpers ───────────────────────────────────────── */
+// The invite link is the only artifact a member ever needs. When the server
+// can no longer rebuild it (it stores the pairing code hashed only, so a
+// restart loses the plaintext), a fresh link is issued instead.
+async function inviteInfo(nid: string): Promise<{ link: string; name?: string } | null> {
+  const r = await ctlOrClean(nid, "邀请加入", async () => {
     try {
-      detail = await backend.netinfo(nid);
-      ownerInfo[nid] = detail;
+      return await backend.inviteLink(nid);
     } catch (e) {
-      toast(`获取邀请信息失败: ${e}`, "err");
-      return null;
+      if (!String(e).includes("失效")) throw e;
+      const fresh = await backend.rotateInvite(nid);
+      toast("原邀请链接已失效，已生成新链接", "warn");
+      return fresh;
     }
-  }
-  let code = detail.pairingCode || "";
-  if (!code) {
-    const nr = await ctlOrClean(nid, "邀请加入", () => backend.resetCode(nid));
-    if (nr === null) return null;
-    code = nr.pairingCode;
-    detail.pairingCode = code;
-    ownerInfo[nid] = detail;
-    toast("原配对码不可用，已生成新码（旧码作废）", "warn");
-  }
-  const netId = detail.id || detail.networkId || nid;
-  const name = detail.name || "";
-  let link = `snet://join?nid=${encodeURIComponent(netId)}&code=${encodeURIComponent(code)}`;
-  if (name) link += `&name=${encodeURIComponent(name)}`;
-  return { link, code };
-}
-
-async function copyInviteLink(nid: string, btn: HTMLButtonElement) {
-  btn.disabled = true;
-  try {
-    const info = await inviteInfo(nid);
-    if (info) await copyText(info.link, btn);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function copyPairingCode(nid: string, btn: HTMLButtonElement) {
-  btn.disabled = true;
-  try {
-    const info = await inviteInfo(nid);
-    if (info) await copyText(info.code, btn);
-  } finally {
-    btn.disabled = false;
-  }
+  });
+  if (r === null) return null;
+  return { link: r.link, name: r.name };
 }
 
 async function leaveNetworkFromDetail(nid: string) {
@@ -1935,26 +1901,17 @@ async function leaveNetworkFromDetail(nid: string) {
 async function openNetworkDetailModal(nid: string) {
   try {
     const r = await backend.netinfo(nid);
+    // The pairing code is never exposed to the user: redact it from the
+    // raw debug view.
+    const safe = { ...r, pairingCode: r.pairingCode ? "***" : "" };
     openModal({
-      title: `网络详情 · ${nid}`,
+      title: "网络详情",
       wide: true,
-      body: `<pre class="json">${esc(JSON.stringify(r, null, 2))}</pre>`,
+      body: `<pre class="json">${esc(JSON.stringify(safe, null, 2))}</pre>`,
       footer: `<button data-close class="btn ghost">关闭</button>`,
     });
   } catch (e) {
     toast(`获取网络详情失败: ${e}`, "err");
-  }
-}
-
-async function resetPairingCode(nid: string) {
-  if (!(await confirmDialog("重置配对码", "作废旧配对码并生成新码？旧码立即失效，已加入成员不受影响。", true))) return;
-  try {
-    const r = await ctlOrClean(nid, "重置配对码", () => backend.resetCode(nid));
-    if (r === null) return;
-    toast("已生成新配对码");
-    await refresh();
-  } catch (e) {
-    toast(String(e), "err");
   }
 }
 
@@ -1997,7 +1954,7 @@ function networkDetailHTML(n: NetInfo): string {
       <button type="button" data-detail-act="detail">网络详情</button>
       ${canManage ? '<button type="button" data-detail-act="settings">编辑网络</button>' : ""}
       ${canManage ? '<button type="button" data-detail-act="subnets">子网路由管理</button>' : ""}
-      ${canManage ? '<button type="button" data-detail-act="reset-code">重置配对码</button>' : ""}
+      ${canManage ? '<button type="button" data-detail-act="rotate-invite">重置邀请链接</button>' : ""}
       ${canManage ? "" : '<button type="button" data-detail-act="leave">退出网络</button>'}
       ${canManage ? '<button type="button" class="danger" data-detail-act="delete">删除网络</button>' : ""}
     </div>
@@ -2006,7 +1963,6 @@ function networkDetailHTML(n: NetInfo): string {
     <div class="detail-heading">
       <div class="detail-title-row"><div class="detail-title">${esc(n.name || n.networkId)}</div>${rolePill}</div>
       <div class="detail-meta-line">
-        <span>${esc(n.networkId)}</span>
         <span>↑ ${fmtSpeed(status?.txSpeed)} · ↓ ${fmtSpeed(status?.rxSpeed)}</span>
         <span>NAT ${esc(nat)}</span>
         <span>${activeRoutes} 条生效路由</span>
@@ -2194,7 +2150,7 @@ function bindNetworkDetailEvents() {
       case "invite": await openInviteModal(nid); break;
       case "settings": await openNetworkSettings(nid); break;
       case "subnets": await openSubnetRouteModal(nid); break;
-      case "reset-code": await resetPairingCode(nid); break;
+      case "rotate-invite": await rotateInviteLink(nid); break;
       case "leave": await leaveNetworkFromDetail(nid); break;
       case "delete": await deleteNetworkFromDetail(nid, el as HTMLButtonElement); break;
     }
