@@ -1761,11 +1761,24 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       : nd.relayError
         ? `<span class="pill warn" title="${esc(nd.relayError)}">网关不可用</span>`
         : "";
-    const endpoint = isSelf ? "" : pathAddr(pd) !== "-" ? pathAddr(pd) : (nd.endpoint || "-");
+    const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
+    const roleText = roleLabel(role);
+    const public4 = pd?.public || pd?.addr || pd?.lan || nd.endpoint || "-";
+    const public6 = pd?.ipv6 || "-";
+    const showPublic6 = public6 !== "-" && public6 !== public4;
     const last = isSelf ? "" : lastActiveLabel(pd, online);
     const diag = isSelf
       ? ""
       : `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button><span class="ping-result" data-ping-result="${esc(nd.id)}"></span>`;
+    const kick = !isSelf && canManage
+      ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}">踢出</button>`
+      : "";
+    const foot = isSelf
+      ? ""
+      : `<div class="member-card-foot">
+          <span class="member-card-last">${esc(last)}</span>
+          <span class="member-card-actions">${kick}${diag}</span>
+        </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
         <div class="member-card-name">${deviceLabel(nd)}</div>
@@ -1773,13 +1786,12 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       </div>
       <div class="member-card-body">
         <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${path}</div>
-        ${isSelf ? "" : `<div class="member-card-line"><span class="member-card-label">Endpoint</span><code class="member-endpoint">${esc(endpoint)}</code></div>`}
-        <div class="member-card-tags">${routeCell}${relay}</div>
+        <div class="member-card-line"><span class="member-card-label">身份</span><span class="member-card-value">${roleText}</span></div>
+        ${isSelf ? "" : `<div class="member-card-line member-card-public"><span class="member-card-label">公网 IP</span><span class="member-card-value"><code class="member-endpoint">${esc(public4)}</code>${showPublic6 ? `<code class="member-endpoint member-endpoint-v6">${esc(public6)}</code>` : ""}</span></div>`}
+        <div class="member-card-line"><span class="member-card-label">子网路由</span><span class="member-card-value">${routeCell}</span></div>
+        <div class="member-card-line"><span class="member-card-label">中继网关</span><span class="member-card-value">${relay || '<span class="muted">-</span>'}</span></div>
       </div>
-      <div class="member-card-foot">
-        <span class="member-card-last">${esc(last)}</span>
-        <span class="member-card-actions">${diag}</span>
-      </div>
+      ${foot}
     </article>`;
   }).join("");
   return `<div class="member-grid">${cards}</div>`;
