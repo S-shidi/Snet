@@ -1,7 +1,7 @@
 /* ── Web adapter: fetch HTTP → shared UI ────────────────────────
  * Thin adapter: provides Backend + auth flow, delegates UI to shared/ui.ts.
  */
-import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute } from "../../../shared/web/types.js";
+import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute, InviteLinkResp, RotateInviteResp } from "../../../shared/web/types.js";
 import { DEFAULT_SERVER } from "../../../shared/web/types.js";
 import { init } from "../../../shared/web/ui.js";
 
@@ -175,8 +175,12 @@ const backend: Backend = {
     await api("/cancel-pending", jsonPost("/cancel-pending", { pendingId }));
   },
 
-  async resetCode(nid: string): Promise<{ pairingCode: string }> {
-    return api("/reset-code", jsonPost("/reset-code", { nid }));
+  async inviteLink(nid: string): Promise<InviteLinkResp> {
+    return api("/invite?nid=" + encodeURIComponent(nid));
+  },
+
+  async rotateInvite(nid: string): Promise<RotateInviteResp> {
+    return api("/rotate-invite", jsonPost("/rotate-invite", { nid }));
   },
 
   async detectLocalSubnets(): Promise<string[]> {

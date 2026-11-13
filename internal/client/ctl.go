@@ -101,7 +101,6 @@ type CtlReq struct {
 	Port   int    `json:"port"`
 	Link   string `json:"link"`
 	Nid    string `json:"nid"`
-	Code   string `json:"code"`
 	Name   string `json:"name"`
 	Subnet string `json:"subnet"`
 	NodeID string `json:"nodeId"`
@@ -118,6 +117,16 @@ type CtlReq struct {
 	Description *string   `json:"description"`
 	Tags        *[]string `json:"tags"`
 	Visibility  *string   `json:"visibility"`
+}
+
+// CtlJoinReq is the request body of the join endpoint. An invite link is the
+// only accepted way in: the network id, the pairing code and the target
+// server all travel inside the link, so nothing can be tampered with one by
+// one.
+type CtlJoinReq struct {
+	Server string `json:"server"`
+	Port   int    `json:"port"`
+	Link   string `json:"link"`
 }
 
 // ServeCtl exposes the local control API for snetctl and the Tauri UI.
@@ -177,20 +186,17 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 	})
 
 	mux.HandleFunc("POST /ctl/join", func(w http.ResponseWriter, r *http.Request) {
-		var req CtlReq
+		var req CtlJoinReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeCtlErr(w, 400, err)
 			return
 		}
-		nid, code := req.Nid, req.Code
-		linkServer := ""
-		if req.Link != "" {
-			var err error
-			nid, code, linkServer, _, err = protocol.ParseLink(req.Link)
-			if err != nil {
-				writeCtlErr(w, 400, err)
-				return
-			}
+		// The invite link is the only accepted credential: it carries the
+		// network id, the pairing code and the server to join.
+		nid, code, linkServer, _, err := protocol.ParseInviteLink(req.Link)
+		if err != nil {
+			writeCtlErr(w, 400, fmt.Errorf("邀请链接无效: %w", err))
+			return
 		}
 		// An invite link that carries its own server address wins over the
 		// request field: the join targets the network's own server. Both must
@@ -200,6 +206,42 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			server = resolveServer(linkServer)
 		}
 		resp, err := d.Join(server, req.Port, nid, code)
+		if err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		writeCtlJSON(w, 200, resp)
+	})
+
+	// InviteLink returns the current invite link of a network. The pairing
+	// code and the network id are never handed out separately.
+	mux.HandleFunc("GET /ctl/invite", func(w http.ResponseWriter, r *http.Request) {
+		nid := r.URL.Query().Get("nid")
+		if nid == "" {
+			writeCtlErr(w, 400, errors.New("nid is required"))
+			return
+		}
+		resp, err := d.InviteLink(nid)
+		if err != nil {
+			if errors.Is(err, ErrInviteExpired) {
+				writeCtlErr(w, 409, err)
+				return
+			}
+			writeCtlErr(w, 500, err)
+			return
+		}
+		writeCtlJSON(w, 200, resp)
+	})
+
+	// RotateInvite replaces the invite link of a network. Every link shared
+	// before the rotation stops working immediately.
+	mux.HandleFunc("POST /ctl/rotate-invite", func(w http.ResponseWriter, r *http.Request) {
+		var req CtlReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		resp, err := d.RotateInvite(req.Nid)
 		if err != nil {
 			writeCtlErr(w, 500, err)
 			return

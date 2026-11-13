@@ -3791,6 +3791,38 @@ func (s *Store) ResetCode(token string) (string, error) {
 	return ns.n.PairingCode, nil
 }
 
+// RotateInvite issues a fresh invite link for a network this node owns. The
+// new pairing code replaces the previous one in the persisted record, so every
+// link shared before the rotation stops matching and the join is rejected.
+// The returned link carries no server address: only the client knows the
+// public address of the coordination server the joiner has to reach.
+func (s *Store) RotateInvite(token string) (protocol.RotateInviteResp, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return protocol.RotateInviteResp{}, err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return protocol.RotateInviteResp{}, err
+	}
+	code, err := randomString(codeLen)
+	if err != nil {
+		return protocol.RotateInviteResp{}, err
+	}
+	ns.n.PairingCode = protocol.NormalizeCode(code)
+	ns.pairing = newPairing(ns, code)
+	if err := s.persistNetwork(ns); err != nil {
+		return protocol.RotateInviteResp{}, err
+	}
+	return protocol.RotateInviteResp{
+		NetworkID:   ns.n.ID,
+		Name:        ns.n.Name,
+		PairingCode: ns.n.PairingCode,
+		Link:        protocol.BuildLink(ns.n.ID, ns.n.PairingCode, "", ns.n.Name),
+	}, nil
+}
+
 // KickNode removes a member node from the network. The owner node itself
 // cannot be kicked.
 func (s *Store) KickNode(token, nodeID string) error {

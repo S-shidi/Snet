@@ -130,12 +130,14 @@ func main() {
 	case "join":
 		fs := flag.NewFlagSet("join", flag.ExitOnError)
 		port := fs.Int("port", 51820, "wireguard listen port")
-		link := fs.String("link", "", "snet:// join link")
-		nid := fs.String("nid", "", "network id")
-		code := fs.String("code", "", "pairing code")
+		link := fs.String("link", "", "snet:// invite link")
 		fs.Parse(args[1:])
+		if strings.TrimSpace(*link) == "" {
+			fmt.Fprintln(os.Stderr, "usage: snetctl join --link 'snet://join?nid=...&code=...'")
+			os.Exit(2)
+		}
 		var out map[string]any
-		if err := c.do(http.MethodPost, "/ctl/join", map[string]any{"port": *port, "link": *link, "nid": *nid, "code": *code}, &out); err != nil {
+		if err := c.do(http.MethodPost, "/ctl/join", map[string]any{"port": *port, "link": *link}, &out); err != nil {
 			fatal(err)
 		}
 		printJSON(out)
@@ -315,6 +317,34 @@ func main() {
 		}
 		printJSON(out)
 
+	case "invite":
+		fs := flag.NewFlagSet("invite", flag.ExitOnError)
+		nid := fs.String("nid", "", "network id")
+		fs.Parse(args[1:])
+		if *nid == "" {
+			fmt.Fprintln(os.Stderr, "usage: snetctl invite --nid <networkId>")
+			os.Exit(2)
+		}
+		var out map[string]any
+		if err := c.do(http.MethodGet, "/ctl/invite?nid="+*nid, nil, &out); err != nil {
+			fatal(err)
+		}
+		printJSON(out)
+
+	case "rotate-invite":
+		fs := flag.NewFlagSet("rotate-invite", flag.ExitOnError)
+		nid := fs.String("nid", "", "network id")
+		fs.Parse(args[1:])
+		if *nid == "" {
+			fmt.Fprintln(os.Stderr, "usage: snetctl rotate-invite --nid <networkId>")
+			os.Exit(2)
+		}
+		var out map[string]any
+		if err := c.do(http.MethodPost, "/ctl/rotate-invite", map[string]any{"nid": *nid}, &out); err != nil {
+			fatal(err)
+		}
+		printJSON(out)
+
 	case "netinfo":
 		fs := flag.NewFlagSet("netinfo", flag.ExitOnError)
 		nid := fs.String("nid", "", "network id")
@@ -372,7 +402,7 @@ func usage() {
 commands:
   version
   create     [--port N] [--name NAME] [--subnet CIDR] [--approval]
-  join       --link snet:// | --nid NID --code CODE
+  join       --link 'snet://join?nid=...&code=...'
   status
   networks
   leave      --nid NID (empty leaves all)
@@ -386,6 +416,8 @@ commands:
   delete     --nid NID
   kick       --nid NID --node NODEID
   reset-code --nid NID
+  invite     --nid NID
+  rotate-invite --nid NID
   netinfo    --nid NID
   device-id  [--set ID]
   claim      --nid NID

@@ -78,10 +78,11 @@ export function toast(msg: string, kind: "ok" | "err" | "warn" = "ok") {
 }
 
 /* ── Clipboard ────────────────────────────────────────────────── */
-export async function copyText(text: string, btn?: HTMLElement | null) {
+// quiet suppresses the toast, for callers that report the copy themselves.
+export async function copyText(text: string, btn?: HTMLElement | null, quiet = false) {
   try {
     await navigator.clipboard.writeText(text);
-    toast("已复制到剪贴板");
+    if (!quiet) toast("已复制到剪贴板");
   } catch {
     const ta = document.createElement("textarea");
     ta.value = text;
@@ -91,7 +92,7 @@ export async function copyText(text: string, btn?: HTMLElement | null) {
     ta.select();
     try {
       document.execCommand("copy");
-      toast("已复制到剪贴板");
+      if (!quiet) toast("已复制到剪贴板");
     } catch {
       toast("复制失败，请手动复制", "err");
     }

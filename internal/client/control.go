@@ -217,6 +217,15 @@ func (c *apiClient) ResetCode(nid, token string) (string, error) {
 	return out.PairingCode, err
 }
 
+// RotateInvite replaces the pairing code of a network the caller owns and
+// returns the fresh invite link. Links shared before the rotation stop
+// working.
+func (c *apiClient) RotateInvite(nid, token string) (protocol.RotateInviteResp, error) {
+	var out protocol.RotateInviteResp
+	err := c.do(http.MethodPost, "/api/v1/networks/"+nid+"/rotate-invite", token, nil, &out)
+	return out, err
+}
+
 func (c *apiClient) SetEndpointFor(nid, nodeID, token, endpoint, localEndpoint string, mapped bool) error {
 	return c.do(http.MethodPut, "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/endpoint",
 		token, protocol.SetEndpointReq{Endpoint: endpoint, LocalEndpoint: localEndpoint, EndpointMapped: mapped}, nil)

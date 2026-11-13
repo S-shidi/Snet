@@ -3186,6 +3186,64 @@ func (d *Daemon) ResetCode(nid string) (string, error) {
 	return code, wrapNetGone(err)
 }
 
+// ErrInviteExpired reports that the invite link can no longer be rebuilt:
+// the server lost the plaintext pairing code (it only stores a hash), e.g.
+// after a restart. The owner has to rotate the link to get a working one.
+var ErrInviteExpired = errors.New("邀请链接已失效，请重置邀请链接")
+
+// inviteLinkLocked builds the shareable invite link of a network. The
+// coordination server address is embedded in the link only when the network
+// does not live on the official server, so a joiner always reaches the right
+// one. Callers must hold d.mu.
+func (d *Daemon) inviteLinkLocked(nid, code, name string) string {
+	server := ""
+	if addr := d.serverAddrLocked(); addr != "" && !strings.EqualFold(addr, constants.DefaultServer) {
+		server = addr
+	}
+	return protocol.BuildLink(nid, code, server, name)
+}
+
+// InviteLink returns the current invite link of a network this node owns.
+// The pairing code and the network id stay internal: only the link is handed
+// out, so joining always goes through an invite link.
+func (d *Daemon) InviteLink(nid string) (protocol.InviteLinkResp, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return protocol.InviteLinkResp{}, fmt.Errorf("网络 %s 未找到", nid)
+	}
+	info, err := d.apiLocked().NetworkInfo(nid, nc.Token)
+	if err != nil {
+		return protocol.InviteLinkResp{}, wrapNetGone(err)
+	}
+	if info.PairingCode == "" {
+		return protocol.InviteLinkResp{}, ErrInviteExpired
+	}
+	return protocol.InviteLinkResp{
+		NetworkID: info.ID,
+		Name:      info.Name,
+		Link:      d.inviteLinkLocked(info.ID, info.PairingCode, info.Name),
+	}, nil
+}
+
+// RotateInvite issues a fresh invite link for a network this node owns. Every
+// link shared before the rotation stops working immediately.
+func (d *Daemon) RotateInvite(nid string) (protocol.RotateInviteResp, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return protocol.RotateInviteResp{}, fmt.Errorf("网络 %s 未找到", nid)
+	}
+	resp, err := d.apiLocked().RotateInvite(nid, nc.Token)
+	if err != nil {
+		return resp, wrapNetGone(err)
+	}
+	resp.Link = d.inviteLinkLocked(resp.NetworkID, resp.PairingCode, resp.Name)
+	return resp, nil
+}
+
 // Info fetches full network info from the server (owner details included).
 func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 	d.mu.Lock()

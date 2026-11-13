@@ -109,6 +109,12 @@ export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: s
 export type PeersResp = { peers?: NetNode[]; self?: NetNode; subnet?: string; approvalRequired?: boolean; routes?: RelayRoute[] };
 export type CreateResp = { networkId: string; ip: string; pairingCode: string; link: string };  
 export type JoinResp = { ip?: string; networkId?: string; status?: string; pendingId?: string };
+/** The current invite link of a network. The pairing code behind it is never
+ *  exposed: the link is the only thing a member needs to join. */
+export type InviteLinkResp = { networkId: string; name?: string; link: string };
+/** The result of rotating the invite link: the previous link is dead, the
+ *  returned one replaces it. */
+export type RotateInviteResp = { networkId: string; name?: string; pairingCode?: string; link: string };
 export type ShareMeta = { description?: string; tags?: string[]; visibility?: string };
 
 /* ── Backend interface: platform adapters implement this ──────── */
@@ -153,8 +159,10 @@ export interface Backend {
   deny(params: { nid: string; pendingId: string }): Promise<void>;
   /** Cancel a pending join request */
   cancelPending(pendingId: string): Promise<void>;
-  /** Reset pairing code */
-  resetCode(nid: string): Promise<{ pairingCode: string }>;
+  /** Get the current invite link of a network (owner only) */
+  inviteLink(nid: string): Promise<InviteLinkResp>;
+  /** Rotate the invite link of a network (owner only); old links stop working */
+  rotateInvite(nid: string): Promise<RotateInviteResp>;
   /** Detect local subnets */
   detectLocalSubnets(): Promise<string[]>;
   /** Ping a peer IP and return loss percentage and average RTT */

@@ -462,6 +462,21 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		writeJSON(w, http.StatusOK, protocol.ResetCodeResp{PairingCode: code})
 	}))
 
+	// Rotate the invite link (owner only). A fresh pairing code replaces the
+	// persisted one, so links shared before the rotation no longer match and
+	// the join is refused. The response carries the ready-to-share link.
+	mux.HandleFunc("POST /api/v1/networks/{nid}/rotate-invite", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if !ownerNID(w, r) {
+			return
+		}
+		resp, err := s.RotateInvite(tokenOf(r))
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}))
+
 	mux.HandleFunc("DELETE /api/v1/networks/{nid}/members/{nodeID}", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		if !ownerNID(w, r) {
 			return
