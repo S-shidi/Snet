@@ -33,7 +33,7 @@ a { color: var(--accent2); }
 /* ── header ─────────────────────────────── */
 header {
   display: block;
-  border-bottom: 0;
+  border-bottom: 1px solid var(--border);
   background: rgba(22,28,41,.72);
   backdrop-filter: blur(8px);
   position: sticky; top: 0; z-index: 20;
@@ -81,8 +81,8 @@ header {
 }
 .network-tab:hover { color: var(--text); background: rgba(255,255,255,.055); }
 .network-tab.active {
-  color: var(--text); font-weight: 600; background: var(--bg);
-  border-color: var(--border); border-bottom-color: var(--bg); margin-bottom: -1px;
+  position: relative; z-index: 1; color: var(--text); font-weight: 600; background: var(--bg);
+  border-color: var(--border); border-bottom: 1px solid var(--bg); margin-bottom: -1px;
 }
 .network-tab.pending { color: var(--warn); }
 .network-dot {
@@ -514,6 +514,8 @@ body.empty-mode { overflow: hidden; }
 .member-card-name { min-width: 0; font-size: 14px; font-weight: 700; line-height: 1.45; }
 .member-card-body { display: flex; flex-direction: column; gap: 8px; }
 .member-card-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--dim); font-size: 12px; }
+.member-card-public { flex-wrap: nowrap; align-items: flex-start; }
+.member-card-public .member-card-value { flex: 1 1 auto; min-width: 0; }
 .member-card-label { width: 62px; flex: 0 0 62px; color: var(--faint); font-size: 11px; }
 .member-card-line code { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .member-card-line .member-endpoint { color: var(--dim); overflow-wrap: anywhere; }

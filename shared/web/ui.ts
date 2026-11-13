@@ -1763,8 +1763,12 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
         : "";
     const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
     const roleText = roleLabel(role);
-    const public4 = pd?.public || pd?.addr || pd?.lan || nd.endpoint || "-";
-    const public6 = pd?.ipv6 || "-";
+    const public4 = isSelf
+      ? (nd.publicIPv4 || nd.endpoint || "-")
+      : (pd?.public || pd?.addr || pd?.lan || nd.endpoint || "-");
+    const public6 = isSelf
+      ? (nd.publicIPv6 || nd.endpointV6 || "-")
+      : (pd?.ipv6 || nd.endpointV6 || "-");
     const showPublic6 = public6 !== "-" && public6 !== public4;
     const last = isSelf ? "" : lastActiveLabel(pd, online);
     const diag = isSelf
@@ -1777,7 +1781,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       ? ""
       : `<div class="member-card-foot">
           <span class="member-card-last">${esc(last)}</span>
-          <span class="member-card-actions">${kick}${diag}</span>
+          <span class="member-card-actions">${diag}${kick}</span>
         </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
@@ -1787,9 +1791,8 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       <div class="member-card-body">
         <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${path}</div>
         <div class="member-card-line"><span class="member-card-label">身份</span><span class="member-card-value">${roleText}</span></div>
-        ${isSelf ? "" : `<div class="member-card-line member-card-public"><span class="member-card-label">公网 IP</span><span class="member-card-value"><code class="member-endpoint">${esc(public4)}</code>${showPublic6 ? `<code class="member-endpoint member-endpoint-v6">${esc(public6)}</code>` : ""}</span></div>`}
-        <div class="member-card-line"><span class="member-card-label">子网路由</span><span class="member-card-value">${routeCell}</span></div>
-        <div class="member-card-line"><span class="member-card-label">中继网关</span><span class="member-card-value">${relay || '<span class="muted">-</span>'}</span></div>
+        <div class="member-card-line member-card-public"><span class="member-card-label">公网 IP</span><span class="member-card-value"><code class="member-endpoint">${esc(public4)}</code>${showPublic6 ? `<code class="member-endpoint member-endpoint-v6">${esc(public6)}</code>` : ""}</span></div>
+        <div class="member-card-line"><span class="member-card-label">子网路由</span><span class="member-card-value">${routeCell}${relay}</span></div>
       </div>
       ${foot}
     </article>`;
@@ -1963,7 +1966,6 @@ function networkDetailHTML(n: NetInfo): string {
       <div class="detail-meta-line">
         <span>${esc(n.networkId)}</span>
         <span>↑ ${fmtSpeed(status?.txSpeed)} · ↓ ${fmtSpeed(status?.rxSpeed)}</span>
-        <span>IP ${esc(selfIp)}</span>
         <span>NAT ${esc(nat)}</span>
         <span>${activeRoutes} 条生效路由</span>
         ${memberCount ? `<span>${memberCount} 位成员</span>` : ""}
