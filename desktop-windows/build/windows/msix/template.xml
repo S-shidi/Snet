@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MsixPackagingToolTemplate
+    xmlns="http://schemas.microsoft.com/msix/packaging/msixpackagingtool/template/2022">
+    <Settings
+        AllowTelemetry="false"
+        ApplyACLsToPackageFiles="true"
+        GenerateCommandLineFile="true"
+        AllowPromptForPassword="false">
+    </Settings>
+    <Installer
+        Path="snetmac"
+        Arguments=""
+        InstallLocation="C:\Program Files\SNET\SnetWindows">
+    </Installer>
+    <PackageInformation
+        PackageName="SnetWindows"
+        PackageDisplayName="SnetWindows"
+        PublisherName="CN=SNET"
+        PublisherDisplayName="SNET"
+        Version="1.1.6.0"
+        PackageDescription="SNET Windows client">
+        <Capabilities>
+            <Capability Name="runFullTrust" />
+            
+        </Capabilities>
+        <Applications>
+            <Application
+                Id="com.snet.snetmac"
+                Description="SNET Windows client"
+                DisplayName="SnetWindows"
+                ExecutableName="snetmac"
+                EntryPoint="Windows.FullTrustApplication">
+                
+            </Application>
+        </Applications>
+        <Resources>
+            <Resource Language="en-us" />
+        </Resources>
+        <Dependencies>
+            <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+        </Dependencies>
+        <Properties>
+            <Framework>false</Framework>
+            <DisplayName>SnetWindows</DisplayName>
+            <PublisherDisplayName>SNET</PublisherDisplayName>
+            <Description>SNET Windows client</Description>
+            <Logo>Assets\AppIcon.png</Logo>
+        </Properties>
+    </PackageInformation>
+    <SaveLocation PackagePath="snetmac.msix" />
+    <PackageIntegrity>
+        <CertificatePath></CertificatePath>
+    </PackageIntegrity>
+</MsixPackagingToolTemplate>

@@ -45,6 +45,8 @@ function currentServer(): string {
 /* ── Refresh ──────────────────────────────────────────────────── */
 let refreshing = false;
 let refreshAgain = false;
+let desktopDaemon = { running: false, starting: false, error: "" };
+let desktopPollTimer: number | undefined;
 let detailNid: string | null = null;
 let detailPendingId: string | null = null;
 let lastNetHTML = "";
@@ -169,6 +171,10 @@ function initWailsWindowDrag() {
 
 /* ── Header ───────────────────────────────────────────────────── */
 /* ── Header ───────────────────────────────────────────────────── */
+function isWailsWindows(): boolean {
+  return backend.hasDaemonControl && /Windows/i.test(`${navigator.userAgent} ${navigator.platform}`);
+}
+
 function renderHeader() {
   const dot = $("#daemon-state") as HTMLElement;
   const ver = $("#app-version") as HTMLElement | null;
@@ -183,6 +189,22 @@ function renderHeader() {
   }
   if (!dot) return;
   if (backend.hasDaemonControl) {
+    const btn = $("#header-svc-btn") as HTMLButtonElement;
+    if (isWailsWindows()) {
+      const err = desktopDaemon.error;
+      dot.className = status ? "live-dot ok" : err ? "live-dot err" : "live-dot";
+      dot.textContent = status ? "运行中" : err ? "服务启动失败" : "正在连接服务…";
+      if (btn) {
+        btn.hidden = !err;
+        btn.disabled = false;
+        if (err) {
+          btn.textContent = "重试";
+          btn.title = err;
+          btn.onclick = () => void retryDesktopDaemon();
+        }
+      }
+      return;
+    }
     if (status) {
       dot.className = "live-dot ok";
       dot.textContent = "运行中";
@@ -190,7 +212,6 @@ function renderHeader() {
       dot.className = "live-dot err";
       dot.textContent = "未运行";
     }
-    const btn = $("#header-svc-btn") as HTMLButtonElement;
     if (btn) {
       btn.hidden = !!status;
       btn.disabled = false;
@@ -1489,7 +1510,7 @@ function openSettingsModal() {
               <div class="settings-row-title">后台服务</div>
               <div class="settings-row-desc">snetd 守护进程</div>
             </div>
-            ${backend.hasDaemonControl ? (status ? '<span class="live-dot ok">运行中</span>' : '<button id="s-start-daemon" class="btn ghost sm">启动</button>') : '<span class="live-dot ok">snetd</span>'}
+            ${backend.hasDaemonControl ? (status ? '<span class="live-dot ok">运行中</span>' : isWailsWindows() ? `<span class="live-dot ${desktopDaemon.error ? "err" : ""}">${desktopDaemon.error ? "启动失败，请点击右上角重试" : "正在连接服务…"}</span>` : '<button id="s-start-daemon" class="btn ghost sm">启动</button>') : '<span class="live-dot ok">snetd</span>'}
           </div>
         </div>
       </section>
@@ -1871,11 +1892,16 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
   const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
   const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
 
+  // A stopped network has no live tunnel, so peer snapshots from before the
+  // disconnect must not keep rendering "online"/"relay" labels.
+  const connected = n.active === true && n.serverState !== "gone";
   const cards = list.map((nd) => {
     const isSelf = nd.ip === n.ip || (!!self && nd.id === self.id);
-    const online = !!nd.online;
+    const online = connected && !!nd.online;
     const pd = directMap[nd.id];
-    const path = isSelf ? '<span class="path-badge self">本机</span>' : pathBadge(pd, relayReady);
+    const path = isSelf
+      ? '<span class="path-badge self">本机</span>'
+      : online ? pathBadge(pd, relayReady) : "";
     const routeCell = nodeRouteCell(routes, nd.id);
     const relay = nd.allowRelay
       ? '<span class="pill ok">中继网关</span>'
@@ -1890,7 +1916,9 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const selfV6 = nd.publicIPv6 || nd.endpointV6 || "";
     const public6 = isSelf ? (selfV6 || "未检测到IPv6信息") : (pd?.ipv6 || nd.endpointV6 || "-");
     const showPublic6 = isSelf ? true : public6 !== "-" && public6 !== public4;
-    const last = isSelf ? "当前设备" : lastActiveLabel(pd, online);
+    const last = isSelf
+      ? (connected ? "当前设备" : "已断开")
+      : (connected ? lastActiveLabel(pd, online) : "未连接");
     const poke = isSelf
       ? ""
       : `<button type="button" class="btn ghost sm member-poke" data-detail-poke="${esc(nd.id)}" data-poke-target="${esc(nd.ip || "")}" title="发送探测包唤醒节点"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>唤醒</button>`;
@@ -1916,7 +1944,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
         <div class="member-card-name"><span class="member-name-text">${deviceLabel(nd)}</span>${rename}</div>
-        <div class="member-card-status">${path}${online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>'}</div>
+        <div class="member-card-status">${path}${!connected ? `<span class="pill off">${isSelf ? "已断开" : "未连接"}</span>` : online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>'}</div>
       </div>
       <div class="member-card-body">
         <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${editIP}</div>
@@ -2532,6 +2560,45 @@ function renderStatus() {
   }
 }
 
+/* ── Desktop daemon supervisor ────────────────────────────────── */
+async function pollDesktopDaemon(): Promise<void> {
+  if (!isWailsWindows() || !backend.daemonStatus) return;
+  if (desktopPollTimer !== undefined) {
+    window.clearTimeout(desktopPollTimer);
+    desktopPollTimer = undefined;
+  }
+  try {
+    const st = await backend.daemonStatus();
+    desktopDaemon = { running: !!st.running, starting: !!st.starting, error: st.error || "" };
+    renderHeader();
+    if (st.running) {
+      await refresh();
+      return;
+    }
+    if (st.error) return;
+    desktopPollTimer = window.setTimeout(() => void pollDesktopDaemon(), 1000);
+  } catch {
+    desktopPollTimer = window.setTimeout(() => void pollDesktopDaemon(), 1500);
+  }
+}
+
+async function retryDesktopDaemon(): Promise<void> {
+  if (!isWailsWindows()) return;
+  desktopDaemon = { running: false, starting: true, error: "" };
+  renderHeader();
+  try {
+    await backend.ensureDaemon();
+  } catch {
+    // /desktop/status carries the actionable error.
+  }
+  await pollDesktopDaemon();
+}
+
+function startDesktopDaemonWatch(): void {
+  if (!isWailsWindows()) return;
+  void pollDesktopDaemon();
+}
+
 /* ── Ensure daemon ────────────────────────────────────────────── */
 async function ensureDaemon() {
   const btn = $("#header-svc-btn") as HTMLButtonElement;
@@ -2615,6 +2682,7 @@ export async function init(b: Backend) {
     if (lo) lo.style.display = "none";
     document.querySelectorAll<HTMLElement>("[data-action=\"logout\"]").forEach((el) => { el.style.display = "none"; });
   }
+  startDesktopDaemonWatch();
   refresh();
   setInterval(() => {
     if (!document.hidden && !refreshing) refresh();

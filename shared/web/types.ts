@@ -116,6 +116,8 @@ export type InviteLinkResp = { networkId: string; name?: string; link: string };
  *  returned one replaces it. */
 export type RotateInviteResp = { networkId: string; name?: string; pairingCode?: string; link: string };
 export type ShareMeta = { description?: string; tags?: string[]; visibility?: string };
+/** Desktop daemon supervisor state (Windows Wails only). */
+export type DesktopDaemonStatus = { running: boolean; starting: boolean; error?: string };
 
 /* ── Backend interface: platform adapters implement this ──────── */
 export interface Backend {
@@ -179,6 +181,8 @@ export interface Backend {
   logs(): Promise<string>;
   /** Ensure daemon is running (Desktop only, Web returns error) */
   ensureDaemon(): Promise<void>;
+  /** Desktop supervisor state (Windows Wails only) */
+  daemonStatus?(): Promise<DesktopDaemonStatus>;
   /** Scan a QR code and return the decoded text (Android native only) */
   scanQR?(): Promise<string>;
   /** Whether the backend supports daemon lifecycle management */

@@ -104,7 +104,7 @@ func runDaemon(cfg *client.Config, configPath, ctlAddr, deviceIDFile string) {
 		if err := setupServiceLog(); err != nil {
 			log.Printf("service log: %v", err)
 		}
-		if err := svc.Run("snetd", &daemonService{cfg: cfg, configPath: configPath, ctlAddr: ctlAddr, deviceIDFile: deviceIDFile}); err != nil {
+		if err := svc.Run(windowsServiceName, &daemonService{cfg: cfg, configPath: configPath, ctlAddr: ctlAddr, deviceIDFile: deviceIDFile}); err != nil {
 			log.Fatalf("service run: %v", err)
 		}
 		return

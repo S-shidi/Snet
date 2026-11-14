@@ -3000,10 +3000,12 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 	for id, n := range ns.nodes {
 		if id != te.NodeID {
 			n2 := *n
-			// 普通成员只看到对端设备名、IP、在线状态与设备 ID，不暴露角色。
+			// 普通成员只看到对端设备名、IP、在线状态与设备 ID；创建者身份
+			// 需要公开，否则成员视角无法区分创建者。普通成员的 role 仍然
+			// 不暴露。
 			// 注意：publicKey 必须保留——WireGuard 直连/中继都依赖对端公钥建立
 			// 隧道，隐藏它会让成员端无法配置任何 peer。
-			if !isOwner {
+			if !isOwner && n2.Role != "owner" {
 				n2.Role = ""
 			}
 			fillNodeView(&n2)
