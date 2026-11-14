@@ -2003,7 +2003,7 @@ function openEditIPModal(nid: string, nodeId: string, current: string) {
             closeModal();
             await refreshAfterDeviceChange();
           } catch (e) {
-            result.className = "msg"; result.textContent = `保存失败: ${String(e).replace(/^Error:\s*/, "")}`;
+            result.className = "msg"; result.textContent = `保存失败: ${String(e).replace(/^Error:\s*/, "").replace(/^server \d+:\s*/, "")}`;
             btn.disabled = false;
           }
         } catch (e) {
