@@ -649,6 +649,23 @@ body.empty-mode { overflow: hidden; }
 .qr { max-width: 220px; margin: 0 auto; }
 .qr svg { display: block; width: 100%; height: auto; }
 
+/* ── segmented IP editor ────────────────── */
+.ip-edit-row { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+.ip-edit-row > label { flex: 0 0 72px; color: var(--dim); font-size: 12px; }
+.ip-segmented { display: flex; align-items: center; gap: 6px; }
+.ip-segmented > span { color: var(--faint); font-size: 18px; line-height: 1; }
+.ip-octet {
+  width: 58px; height: 38px; padding: 0 8px; text-align: center;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+  color: var(--text); font: 600 15px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  outline: none;
+}
+.ip-octet:focus { border-color: var(--accent); box-shadow: var(--ring); }
+@media (max-width: 480px) {
+  .ip-edit-row { flex-direction: column; align-items: flex-start; gap: 7px; }
+  .ip-octet { width: 50px; height: 36px; }
+}
+
 /* ── invite modal ───────────────────────── */
 .invite-layout { display: flex; gap: 22px; align-items: flex-start; }
 .invite-qr-side { flex: 0 0 210px; text-align: center; }

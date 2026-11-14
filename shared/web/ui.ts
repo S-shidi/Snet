@@ -1891,34 +1891,82 @@ function openRenameDeviceModal(current: string, target?: { nid: string; nodeId: 
 }
 
 function openEditIPModal(nid: string, nodeId: string, current: string) {
+  const octets = current.split(".");
+  const initial = [0, 1, 2, 3].map((i) => /^\d{1,3}$/.test(octets[i] || "") ? octets[i] : "");
+  const segment = (i: number) => `<input class="ip-octet" inputmode="numeric" pattern="[0-9]*" maxlength="3" value="${esc(initial[i])}" aria-label="IP 第 ${i + 1} 段" data-octet="${i}" />`;
   openModal({
     title: "修改虚拟 IP",
-    body: `<div class="row"><label>虚拟 IP</label><input id="edit-node-ip" type="text" value="${esc(current)}" placeholder="10.88.0.10" autocomplete="off" spellcheck="false" /></div>
+    body: `<div class="ip-edit-row">
+        <label>虚拟 IP</label>
+        <div class="ip-segmented">${segment(0)}<span>.</span>${segment(1)}<span>.</span>${segment(2)}<span>.</span>${segment(3)}</div>
+      </div>
       <p class="hint">IP 必须位于当前网络网段内，且不能与其他成员重复。</p>
       <p class="msg" id="edit-node-ip-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="edit-node-ip-save" class="btn">保存</button>`,
     onBody: (body) => {
-      const input = body.querySelector<HTMLInputElement>("#edit-node-ip")!;
+      const inputs = Array.from(body.querySelectorAll<HTMLInputElement>(".ip-octet"));
       const result = body.querySelector<HTMLElement>("#edit-node-ip-result")!;
       const btn = body.querySelector<HTMLButtonElement>("#edit-node-ip-save")!;
+
+      const normalize = (input: HTMLInputElement) => {
+        input.value = input.value.replace(/\D/g, "").slice(0, 3);
+      };
+      inputs.forEach((input, idx) => {
+        input.addEventListener("input", () => {
+          normalize(input);
+          if (input.value.length >= 3 && idx < inputs.length - 1) inputs[idx + 1].focus();
+        });
+        input.addEventListener("keydown", (e) => {
+          if (e.key === ".") {
+            e.preventDefault();
+            if (idx < inputs.length - 1) inputs[idx + 1].focus();
+          } else if (e.key === "Backspace" && input.value === "" && idx > 0) {
+            e.preventDefault();
+            inputs[idx - 1].focus();
+          } else if (e.key === "ArrowLeft" && input.selectionStart === 0 && idx > 0) {
+            inputs[idx - 1].focus();
+          } else if (e.key === "ArrowRight" && input.selectionStart === input.value.length && idx < inputs.length - 1) {
+            inputs[idx + 1].focus();
+          }
+        });
+        input.addEventListener("paste", (e) => {
+          const text = (e.clipboardData?.getData("text") || "").trim();
+          if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(text)) return;
+          e.preventDefault();
+          const parts = text.split(".");
+          inputs.forEach((el, i) => { el.value = parts[i] || ""; });
+          inputs[3].focus();
+        });
+      });
+
+      const readIP = (): string => {
+        const values = inputs.map((i) => i.value.trim());
+        if (values.some((v) => v === "")) throw new Error("请填写完整的 IPv4 地址");
+        const nums = values.map((v) => Number(v));
+        if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) throw new Error("每段必须在 0–255 之间");
+        return nums.join(".");
+      };
+
       const save = async () => {
-        const ip = input.value.trim();
-        if (!ip) { result.textContent = "请输入虚拟 IP"; return; }
-        btn.disabled = true;
-        result.className = "msg"; result.textContent = "保存中…";
         try {
-          await backend.setNodeIP({ nid, nodeId, ip });
-          toast("虚拟 IP 已更新");
-          closeModal();
-          await refreshAfterDeviceChange();
+          const ip = readIP();
+          btn.disabled = true;
+          result.className = "msg"; result.textContent = "保存中…";
+          try {
+            await backend.setNodeIP({ nid, nodeId, ip });
+            toast("虚拟 IP 已更新");
+            closeModal();
+            await refreshAfterDeviceChange();
+          } catch (e) {
+            result.className = "msg"; result.textContent = `保存失败: ${e}`;
+            btn.disabled = false;
+          }
         } catch (e) {
-          result.className = "msg"; result.textContent = `保存失败: ${e}`;
-          btn.disabled = false;
+          result.className = "msg"; result.textContent = String(e);
         }
       };
       btn.addEventListener("click", () => void save());
-      input.addEventListener("keydown", (e) => { if (e.key === "Enter") void save(); });
-      setTimeout(() => input.focus(), 30);
+      inputs[0]?.focus();
     },
   });
 }
