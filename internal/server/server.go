@@ -167,7 +167,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		resp, err := s.Join(nid, req.Code, req.PublicKey, req.DeviceID)
+		resp, err := s.JoinWithOptions(nid, req.Code, req.PublicKey, req.DeviceID, req.UseHub)
 		switch {
 		case errors.Is(err, ErrNotFound):
 			writeErr(w, http.StatusNotFound, err)
@@ -527,6 +527,38 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
+	}))
+
+	// Gateway discovery and standard WireGuard config export. Both are
+	// owner-only: the gateway choice and exported client are owner actions.
+	mux.HandleFunc("GET /api/v1/networks/{nid}/gateways", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if !ownerNID(w, r) {
+			return
+		}
+		gateways, err := s.Gateways(tokenOf(r))
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, gateways)
+	}))
+
+	mux.HandleFunc("POST /api/v1/networks/{nid}/wireguard-config", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if !ownerNID(w, r) {
+			return
+		}
+		var req protocol.WireGuardConfigReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		cfg, err := s.GenerateWireGuardConfig(tokenOf(r), req.GatewayNodeID)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(cfg))
 	}))
 
 	mux.HandleFunc("DELETE /api/v1/networks/{nid}/members/{nodeID}", requireToken(func(w http.ResponseWriter, r *http.Request) {
@@ -1234,6 +1266,8 @@ func handleStoreErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrRouteCIDRConflict):
 		writeErr(w, http.StatusBadRequest, err)
 	case errors.Is(err, ErrNodeIPInvalid):
+		writeErr(w, http.StatusBadRequest, err)
+	case errors.Is(err, ErrGatewayUnavailable):
 		writeErr(w, http.StatusBadRequest, err)
 	case errors.Is(err, ErrAuthCodeInvalid):
 		writeErr(w, http.StatusNotFound, errors.New("无效的设备授权码"))

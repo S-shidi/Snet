@@ -3,7 +3,7 @@
  * Platform adapters (Desktop/Web/Android) provide a Backend implementation
  * and call init() to wire everything up.
  */
-import { DEFAULT_SERVER, type Backend, type DaemonStatus, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode, type RelayRoute } from "./types.js";
+import { DEFAULT_SERVER, type Backend, type DaemonStatus, type GatewayInfo, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode, type RelayRoute } from "./types.js";
 import { $, esc, SPIN, fmtBytes, onlineCount, toast, copyText, renderQR, loadQR, openModal, closeModal, confirmDialog, initTabs } from "./utils.js";
 import { subnetCheck, subnetWidgetHTML, subnetWidgetInit } from "./subnet.js";
 
@@ -1909,7 +1909,10 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
         ? `<span class="pill warn" title="${esc(nd.relayError)}">网关不可用</span>`
         : "";
     const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
-    const roleText = roleLabel(role);
+    const roleText = nd.isHub ? "中继" : roleLabel(role);
+    const hubName = nd.isHub
+      ? '<span class="hub-name"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6.5 6.5 0 0 0 5.2 12.2 3.5 3.5 0 0 0 6.5 19h11Z"/></svg> 官方中继</span>'
+      : deviceLabel(nd);
     const public4 = isSelf
       ? (nd.publicIPv4 || nd.endpoint || "-")
       : (pd?.public || pd?.addr || pd?.lan || nd.endpoint || "-");
@@ -1926,15 +1929,15 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       ? ""
       : `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button>`;
     const kick = !isSelf && canManage
-      ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}">踢出</button>`
+      ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}" ${nd.isHub ? 'data-hub="1"' : ""}>${nd.isHub ? "移除" : "踢出"}</button>`
       : "";
     const renameIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
-    const rename = (!canManage && !isSelf)
+    const rename = nd.isHub || (!canManage && !isSelf)
       ? ""
       : isSelf
         ? `<button type="button" class="member-edit" data-detail-rename="${esc(nd.deviceName || "")}" title="重命名设备" aria-label="重命名设备">${renameIcon}</button>`
         : `<button type="button" class="member-edit" data-detail-rename-node="${esc(nd.id)}" data-rename-name="${esc(nd.deviceName || "")}" data-rename-nid="${esc(n.networkId)}" title="重命名设备" aria-label="重命名设备">${renameIcon}</button>`;
-    const editIP = canManage
+    const editIP = canManage && !nd.isHub
       ? `<button type="button" class="member-edit" data-detail-edit-ip="${esc(nd.id)}" data-edit-ip-nid="${esc(n.networkId)}" data-current-ip="${esc(nd.ip || "")}" title="修改虚拟 IP" aria-label="修改虚拟 IP">${renameIcon}</button>`
       : "";
     const foot = `<div class="member-card-foot">
@@ -1943,7 +1946,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
-        <div class="member-card-name"><span class="member-name-text">${deviceLabel(nd)}</span>${rename}</div>
+        <div class="member-card-name"><span class="member-name-text">${hubName}</span>${rename}</div>
         <div class="member-card-status">${path}${!connected ? `<span class="pill off">${isSelf ? "已断开" : "未连接"}</span>` : online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>'}</div>
       </div>
       <div class="member-card-body">
@@ -2247,6 +2250,95 @@ async function deleteNetworkFromDetail(nid: string, btn: HTMLButtonElement) {
   }
 }
 
+async function openWireGuardExportModal(nid: string) {
+  let gateways: GatewayInfo[] = [];
+  try {
+    gateways = await backend.gateways(nid);
+  } catch (e) {
+    toast(`加载网关失败: ${e}`, "err");
+    return;
+  }
+  if (!gateways.length) {
+    toast("当前没有可用的 WireGuard 网关", "err");
+    return;
+  }
+  const options = gateways.map((g) => {
+    const suffix = g.isHub && !g.joined ? " [未加入，选择后自动接入]" : "";
+    return `<option value="${esc(g.id)}">${esc(g.name)}${suffix}</option>`;
+  }).join("");
+  const preferred = gateways.find((g) => g.isHub && g.canBeGateway) ?? gateways.find((g) => g.isHub) ?? gateways[0];
+  openModal({
+    title: "导出 WireGuard 配置",
+    wide: true,
+    body: `<div id="wg-step-gateway">
+        <div class="form-stack">
+          <div class="form-field">
+            <label for="wg-gateway">出口网关</label>
+            <select id="wg-gateway" class="form-control">${options}</select>
+          </div>
+          <p class="hint">配置将通过该节点的公网入口接入网络。官方 Hub 未加入时会自动接入。</p>
+          <p class="msg" id="wg-gateway-state"></p>
+        </div>
+      </div>
+      <div id="wg-step-config" hidden class="wg-export-result">
+        <div class="wg-export-text">
+          <div class="wg-export-head"><b>WireGuard 配置</b><button type="button" class="btn ghost sm" id="wg-copy">复制</button></div>
+          <textarea id="wg-config" readonly spellcheck="false"></textarea>
+        </div>
+        <div class="wg-export-qr"><div class="qr" id="wg-qr"></div><p class="hint">扫码导入</p></div>
+      </div>`,
+    footer: `<button data-close class="btn ghost">关闭</button><button id="wg-generate" class="btn" disabled>生成配置</button>`,
+    onBody: (body) => {
+      const select = body.querySelector<HTMLSelectElement>("#wg-gateway")!;
+      const state = body.querySelector<HTMLElement>("#wg-gateway-state")!;
+      const generate = body.querySelector<HTMLButtonElement>("#wg-generate")!;
+      const gatewayStep = body.querySelector<HTMLElement>("#wg-step-gateway")!;
+      const configStep = body.querySelector<HTMLElement>("#wg-step-config")!;
+      const configArea = body.querySelector<HTMLTextAreaElement>("#wg-config")!;
+      const qr = body.querySelector<HTMLElement>("#wg-qr")!;
+      const foot = body.querySelector<HTMLElement>(".modal-foot")!;
+      select.value = preferred.id;
+      const update = () => {
+        const g = gateways.find((x) => x.id === select.value);
+        if (!g) {
+          state.className = "msg";
+          state.textContent = "";
+          generate.disabled = true;
+          return;
+        }
+        state.className = g.canBeGateway ? "msg ok" : "msg err";
+        state.textContent = g.canBeGateway ? "✓ 该节点具备公网入口，可以生成配置。" : `✗ 无法生成：${g.reason || "该节点不可用"}`;
+        generate.disabled = !g.canBeGateway;
+      };
+      select.addEventListener("change", update);
+      update();
+      generate.addEventListener("click", async () => {
+        generate.disabled = true;
+        generate.innerHTML = `${SPIN} 生成中…`;
+        try {
+          const cfg = await backend.wireguardConfig(nid, select.value);
+          configArea.value = cfg;
+          configStep.hidden = false;
+          gatewayStep.hidden = true;
+          renderQR(qr, cfg);
+          foot.innerHTML = `<button data-close class="btn ghost">关闭</button><button id="wg-copy-foot" class="btn">复制配置</button>`;
+          foot.querySelector("[data-close]")?.addEventListener("click", closeModal);
+          const copy = async (btn: HTMLButtonElement) => {
+            await copyText(cfg, btn);
+          };
+          foot.querySelector<HTMLButtonElement>("#wg-copy-foot")?.addEventListener("click", (e) => void copy(e.currentTarget as HTMLButtonElement));
+          body.querySelector<HTMLButtonElement>("#wg-copy")?.addEventListener("click", (e) => void copy(e.currentTarget as HTMLButtonElement));
+        } catch (e) {
+          generate.disabled = false;
+          generate.textContent = "生成配置";
+          state.className = "msg err";
+          state.textContent = `生成失败：${e}`;
+        }
+      });
+    },
+  });
+}
+
 function networkDetailHTML(n: NetInfo): string {
   const r = peerDetails[n.networkId];
   const self = r?.self;
@@ -2266,6 +2358,7 @@ function networkDetailHTML(n: NetInfo): string {
     <button type="button" class="btn ghost sm" id="detail-more-btn">${iconMore}更多</button>
     <div class="detail-more-menu" id="detail-more-menu" hidden>
       <button type="button" data-detail-act="detail">网络详情</button>
+      ${canManage ? '<button type="button" data-detail-act="wg-export">导出 WireGuard 配置</button>' : ""}
       ${canManage ? '<button type="button" data-detail-act="settings">编辑网络</button>' : ""}
       ${canManage ? '<button type="button" data-detail-act="subnets">子网路由管理</button>' : ""}
       ${canManage ? "" : '<button type="button" data-detail-act="leave">退出网络</button>'}
@@ -2473,7 +2566,12 @@ function bindNetworkDetailEvents() {
     if (!el || !detailNid) return;
     const nid = detailNid;
     if (el.dataset.detailKick) {
-      if (!(await confirmDialog("移除成员", "移除该成员？该设备将立即断开。", true))) return;
+      const isHub = el.dataset.hub === "1";
+      const title = isHub ? "移除官方 Hub" : "移除成员";
+      const message = isHub
+        ? "移除官方 Hub 后，通过该 Hub 接入的第三方设备将断开连接，确定吗？"
+        : "移除该成员？该设备将立即断开。";
+      if (!(await confirmDialog(title, message, true))) return;
       const btn = el as HTMLButtonElement;
       const orig = btn.textContent;
       btn.disabled = true;
@@ -2497,6 +2595,7 @@ function bindNetworkDetailEvents() {
     try {
       switch (el.dataset.detailAct) {
         case "detail": await openNetworkDetailModal(nid); break;
+        case "wg-export": await openWireGuardExportModal(nid); break;
         case "invite": await openInviteModal(nid); break;
         case "settings": await openNetworkSettings(nid); break;
         case "subnets": await openSubnetRouteModal(nid); break;
@@ -2678,6 +2777,7 @@ export async function init(b: Backend) {
   bindEvents();
   // Hide logout button on Desktop/Android (not needed without login)
   if (backend.hasDaemonControl) {
+    document.documentElement.classList.add("wails-desktop", isWailsWindows() ? "wails-windows" : "wails-macos");
     const lo = $("#btn-logout") as HTMLElement | null;
     if (lo) lo.style.display = "none";
     document.querySelectorAll<HTMLElement>("[data-action=\"logout\"]").forEach((el) => { el.style.display = "none"; });

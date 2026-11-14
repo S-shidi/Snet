@@ -107,6 +107,9 @@ header {
 
 /* macOS Wails: leave room for traffic lights and make the header draggable. */
 .wails-desktop { --header-left-padding: 80px; }
+/* Windows has no traffic-light controls on the left, so the brand aligns with
+   the network tabs instead of reserving macOS window-control space. */
+.wails-desktop.wails-windows { --header-left-padding: var(--content-padding-x); }
 .wails-drag-strip { display: none; }
 .wails-desktop .wails-drag-strip {
   display: block; position: absolute; top: 0; left: 0; right: 0; height: 68px;
@@ -1380,3 +1383,20 @@ pre.code { user-select: all; }
   .header-more { display: none; }
   .header-actions { display: flex; gap: 10px; }
 }
+
+/* ── WireGuard export ─────────────────────────────────────────── */
+.wg-export-result { display: grid; grid-template-columns: minmax(0,1fr) 220px; gap: 18px; align-items: start; }
+.wg-export-text { min-width: 0; }
+.wg-export-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.wg-export-text textarea {
+  width: 100%; min-height: 330px; resize: vertical; padding: 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-s);
+  background: var(--bg2); color: var(--text); font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.wg-export-qr { display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 28px; }
+.wg-export-qr .qr { width: 200px; height: 200px; }
+@media (max-width: 720px) {
+  .wg-export-result { grid-template-columns: 1fr; }
+  .wg-export-qr { padding-top: 0; }
+}
+.hub-name { display: inline-flex; align-items: center; gap: 6px; color: var(--accent2); font-weight: 600; }

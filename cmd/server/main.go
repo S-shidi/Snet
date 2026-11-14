@@ -64,6 +64,9 @@ func main() {
 		return
 	}
 
+	if err := store.SetHubNode(os.Getenv("SNET_HUB_NODE_ID"), os.Getenv("SNET_HUB_PUBLIC_KEY"), os.Getenv("SNET_HUB_ENDPOINT")); err != nil {
+		log.Fatalf("official hub config: %v", err)
+	}
 	store.SetRelay(*relayHost, *relayBase, *relayCount)
 	if *relayAlternates != "" {
 		store.SetRelayAlternates(strings.Split(*relayAlternates, ","))

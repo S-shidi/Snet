@@ -3016,6 +3016,29 @@ func (d *Daemon) SetNodeIP(nid, nodeID, ip string) error {
 	return wrapNetGone(d.apiLocked().SetNodeIP(nid, nodeID, nc.Token, ip))
 }
 
+// Gateways returns gateway candidates for a network the caller owns.
+func (d *Daemon) Gateways(nid string) ([]protocol.GatewayInfo, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return nil, fmt.Errorf("网络 %s 未找到", nid)
+	}
+	return d.apiLocked().Gateways(nid, nc.Token)
+}
+
+// WireGuardConfig exports a standard WireGuard configuration through the
+// selected gateway node.
+func (d *Daemon) WireGuardConfig(nid, gatewayNodeID string) (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return "", fmt.Errorf("网络 %s 未找到", nid)
+	}
+	return d.apiLocked().WireGuardConfig(nid, nc.Token, gatewayNodeID)
+}
+
 // SetRoutes replaces the network's delegated relay routes. Only the network
 // SetRoutes replaces the network's delegated relay routes. Only the network
 // owner may delegate routes; the server keeps them pending until the target

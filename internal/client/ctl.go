@@ -595,6 +595,34 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		w.WriteHeader(204)
 	})
 
+	mux.HandleFunc("GET /ctl/gateways", func(w http.ResponseWriter, r *http.Request) {
+		nid := r.URL.Query().Get("nid")
+		gateways, err := d.Gateways(nid)
+		if err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		writeCtlJSON(w, 200, gateways)
+	})
+
+	mux.HandleFunc("POST /ctl/wireguard-config", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Nid           string `json:"nid"`
+			GatewayNodeID string `json:"gatewayNodeID"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		cfg, err := d.WireGuardConfig(req.Nid, req.GatewayNodeID)
+		if err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(cfg))
+	})
+
 	mux.HandleFunc("GET /ctl/netinfo", func(w http.ResponseWriter, r *http.Request) {
 		nid := r.URL.Query().Get("nid")
 		info, err := d.Info(nid)

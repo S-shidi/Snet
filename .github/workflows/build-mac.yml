@@ -75,6 +75,7 @@ jobs:
           test -f scripts/install-daemon.sh
           cp ../dist/snetd-darwin-arm64 "$APP_DIR/Contents/Resources/snetd"
           cp scripts/install-daemon.sh "$APP_DIR/Contents/Resources/install-daemon.sh"
+          cp build/darwin/icons.icns "$APP_DIR/Contents/Resources/icon.icns"
           chmod +x "$APP_DIR/Contents/Resources/snetd" "$APP_DIR/Contents/Resources/install-daemon.sh"
 
           cat > "$APP_DIR/Contents/Info.plist" <<EOF
@@ -90,6 +91,8 @@ jobs:
               <string>SnetMac</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
+              <key>CFBundleIconFile</key>
+              <string>icon.icns</string>
               <key>CFBundleShortVersionString</key>
               <string>${{ steps.vars.outputs.VERSION }}</string>
               <key>CFBundleVersion</key>

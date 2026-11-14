@@ -95,6 +95,42 @@ func (c *apiClient) do(method, path string, token string, body any, out any) err
 	return nil
 }
 
+// doText is do for endpoints that return a plain-text body (WireGuard .conf).
+func (c *apiClient) doText(method, path, token string, body any) (string, error) {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return "", err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(c.ctx, method, c.server+path, rdr)
+	if err != nil {
+		return "", err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set(protocol.VersionHeader, fmt.Sprint(protocol.APIVersion))
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	c.noteServerVersion(resp.Header.Get(protocol.VersionHeader))
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var e protocol.ErrResp
+		_ = json.Unmarshal(data, &e)
+		return "", &httpStatusErr{code: resp.StatusCode, msg: e.Error}
+	}
+	return string(data), nil
+}
+
 // noteServerVersion records the API major version the server advertises and
 // logs a one-time warning when it is incompatible with this client, so a
 // mismatch surfaces instead of silently misbehaving. A missing header means a
@@ -266,6 +302,19 @@ func (c *apiClient) SetDirectEndpointsFor(nid, nodeID, token, endpoint, endpoint
 			DirectEndpointV6: endpointV6,
 			NATType:          natType,
 		}, nil)
+}
+
+// Gateways returns owner-only gateway candidates for a network.
+func (c *apiClient) Gateways(nid, token string) ([]protocol.GatewayInfo, error) {
+	var out []protocol.GatewayInfo
+	err := c.do(http.MethodGet, "/api/v1/networks/"+nid+"/gateways", token, nil, &out)
+	return out, err
+}
+
+// WireGuardConfig requests a standard WireGuard client config from the server.
+func (c *apiClient) WireGuardConfig(nid, token, gatewayNodeID string) (string, error) {
+	return c.doText(http.MethodPost, "/api/v1/networks/"+nid+"/wireguard-config", token,
+		protocol.WireGuardConfigReq{GatewayNodeID: gatewayNodeID})
 }
 
 // PeersState returns peers plus the caller's own node (with current IP) and
