@@ -45,6 +45,8 @@ function currentServer(): string {
 /* ── Refresh ──────────────────────────────────────────────────── */
 let refreshing = false;
 let refreshAgain = false;
+let desktopDaemon = { running: false, starting: false, error: "" };
+let desktopPollTimer: number | undefined;
 let detailNid: string | null = null;
 let detailPendingId: string | null = null;
 let lastNetHTML = "";
@@ -169,6 +171,10 @@ function initWailsWindowDrag() {
 
 /* ── Header ───────────────────────────────────────────────────── */
 /* ── Header ───────────────────────────────────────────────────── */
+function isWailsWindows(): boolean {
+  return backend.hasDaemonControl && /Windows/i.test(`${navigator.userAgent} ${navigator.platform}`);
+}
+
 function renderHeader() {
   const dot = $("#daemon-state") as HTMLElement;
   const ver = $("#app-version") as HTMLElement | null;
@@ -183,6 +189,22 @@ function renderHeader() {
   }
   if (!dot) return;
   if (backend.hasDaemonControl) {
+    const btn = $("#header-svc-btn") as HTMLButtonElement;
+    if (isWailsWindows()) {
+      const err = desktopDaemon.error;
+      dot.className = status ? "live-dot ok" : err ? "live-dot err" : "live-dot";
+      dot.textContent = status ? "运行中" : err ? "服务启动失败" : "正在连接服务…";
+      if (btn) {
+        btn.hidden = !err;
+        btn.disabled = false;
+        if (err) {
+          btn.textContent = "重试";
+          btn.title = err;
+          btn.onclick = () => void retryDesktopDaemon();
+        }
+      }
+      return;
+    }
     if (status) {
       dot.className = "live-dot ok";
       dot.textContent = "运行中";
@@ -190,7 +212,6 @@ function renderHeader() {
       dot.className = "live-dot err";
       dot.textContent = "未运行";
     }
-    const btn = $("#header-svc-btn") as HTMLButtonElement;
     if (btn) {
       btn.hidden = !!status;
       btn.disabled = false;
@@ -1489,7 +1510,7 @@ function openSettingsModal() {
               <div class="settings-row-title">后台服务</div>
               <div class="settings-row-desc">snetd 守护进程</div>
             </div>
-            ${backend.hasDaemonControl ? (status ? '<span class="live-dot ok">运行中</span>' : '<button id="s-start-daemon" class="btn ghost sm">启动</button>') : '<span class="live-dot ok">snetd</span>'}
+            ${backend.hasDaemonControl ? (status ? '<span class="live-dot ok">运行中</span>' : isWailsWindows() ? `<span class="live-dot ${desktopDaemon.error ? "err" : ""}">${desktopDaemon.error ? "启动失败，请点击右上角重试" : "正在连接服务…"}</span>` : '<button id="s-start-daemon" class="btn ghost sm">启动</button>') : '<span class="live-dot ok">snetd</span>'}
           </div>
         </div>
       </section>
@@ -2539,6 +2560,45 @@ function renderStatus() {
   }
 }
 
+/* ── Desktop daemon supervisor ────────────────────────────────── */
+async function pollDesktopDaemon(): Promise<void> {
+  if (!isWailsWindows() || !backend.daemonStatus) return;
+  if (desktopPollTimer !== undefined) {
+    window.clearTimeout(desktopPollTimer);
+    desktopPollTimer = undefined;
+  }
+  try {
+    const st = await backend.daemonStatus();
+    desktopDaemon = { running: !!st.running, starting: !!st.starting, error: st.error || "" };
+    renderHeader();
+    if (st.running) {
+      await refresh();
+      return;
+    }
+    if (st.error) return;
+    desktopPollTimer = window.setTimeout(() => void pollDesktopDaemon(), 1000);
+  } catch {
+    desktopPollTimer = window.setTimeout(() => void pollDesktopDaemon(), 1500);
+  }
+}
+
+async function retryDesktopDaemon(): Promise<void> {
+  if (!isWailsWindows()) return;
+  desktopDaemon = { running: false, starting: true, error: "" };
+  renderHeader();
+  try {
+    await backend.ensureDaemon();
+  } catch {
+    // /desktop/status carries the actionable error.
+  }
+  await pollDesktopDaemon();
+}
+
+function startDesktopDaemonWatch(): void {
+  if (!isWailsWindows()) return;
+  void pollDesktopDaemon();
+}
+
 /* ── Ensure daemon ────────────────────────────────────────────── */
 async function ensureDaemon() {
   const btn = $("#header-svc-btn") as HTMLButtonElement;
@@ -2622,6 +2682,7 @@ export async function init(b: Backend) {
     if (lo) lo.style.display = "none";
     document.querySelectorAll<HTMLElement>("[data-action=\"logout\"]").forEach((el) => { el.style.display = "none"; });
   }
+  startDesktopDaemonWatch();
   refresh();
   setInterval(() => {
     if (!document.hidden && !refreshing) refresh();

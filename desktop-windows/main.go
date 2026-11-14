@@ -74,12 +74,15 @@ func main() {
 		trayWatchOnce.Do(func() {
 			go watchTrayStatus(statusItem, ipItem, subnetItem)
 		})
+		// Start the daemon off the UI thread. The window is already visible
+		// and the frontend polls /desktop/status while UAC/startup completes.
+		go func() {
+			log.Printf("SnetWindows: starting snetd")
+			if err := svc.StartDaemon(); err != nil {
+				log.Printf("snetd: %v", err)
+			}
+		}()
 	})
-
-	log.Printf("SnetWindows: starting snetd")
-	if err := svc.StartDaemon(); err != nil {
-		log.Printf("snetd: %v", err)
-	}
 
 	log.Printf("SnetWindows: entering app.Run")
 	if err := app.Run(); err != nil {

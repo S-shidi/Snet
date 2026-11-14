@@ -1,7 +1,7 @@
 /* ── Web adapter: fetch HTTP → shared UI ────────────────────────
  * Thin adapter: provides Backend + auth flow, delegates UI to shared/ui.ts.
  */
-import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute, InviteLinkResp, RotateInviteResp } from "../../../shared/web/types.js";
+import type { Backend, DaemonStatus, DesktopDaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute, InviteLinkResp, RotateInviteResp } from "../../../shared/web/types.js";
 import { DEFAULT_SERVER } from "../../../shared/web/types.js";
 import { init } from "../../../shared/web/ui.js";
 
@@ -224,6 +224,12 @@ const backend: Backend = {
       const text = await res.text();
       throw new Error(text || ("启动服务失败: HTTP " + res.status));
     }
+  },
+
+  async daemonStatus(): Promise<DesktopDaemonStatus> {
+    const res = await fetch("/desktop/status", { cache: "no-store" });
+    if (!res.ok) throw new Error(await res.text() || ("HTTP " + res.status));
+    return await res.json() as DesktopDaemonStatus;
   },
 };
 
