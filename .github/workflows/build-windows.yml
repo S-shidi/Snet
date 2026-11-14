@@ -40,6 +40,15 @@ jobs:
           $env:PATH = "$env:PATH;$wailsBin"
           wails3 version
 
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            $env:PATH = "$env:PATH;C:\Program Files (x86)\NSIS"
+          }
+          makensis /VERSION
+
       - name: Fetch Wintun DLL
         shell: pwsh
         run: |
@@ -80,6 +89,13 @@ jobs:
           if (Test-Path bin) { Remove-Item -Recurse -Force bin }
           wails3 build GOOS=windows GOARCH=amd64
           if (-not (Test-Path bin/SnetWindows.exe)) { throw "bin/SnetWindows.exe not produced" }
+          Copy-Item ../dist/snetd.exe bin/snetd.exe -Force
+          Copy-Item ../dist/snetctl.exe bin/snetctl.exe -Force
+          Copy-Item assets/wintun.dll bin/wintun.dll -Force
+          wails3 package GOOS=windows GOARCH=amd64
+          $setup = "bin/SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe"
+          if (-not (Test-Path $setup)) { throw "installer not produced: $setup" }
+          Copy-Item $setup ../SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe -Force
 
       - name: Package Windows app
         shell: pwsh
@@ -95,13 +111,12 @@ jobs:
           Copy-Item desktop-windows/assets/wintun.dll $stage/
 
           @"
-          SNET Windows client
-          ===================
+          SNET Windows client (portable/debug folder)
+          ===========================================
 
-          1. Extract the whole archive to one folder.
-          2. Run SnetWindows.exe.
-          3. Allow the UAC prompt so snetd can create the Wintun adapter.
-          4. Keep snetd.exe and wintun.dll in the same folder as SnetWindows.exe.
+          For normal use, run SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe.
+          The installer registers the SNetDaemon Windows service; this portable
+          folder only works after that service has been installed.
 
           Logs:
             C:\ProgramData\SNET\SnetWindows-startup.log
@@ -110,17 +125,21 @@ jobs:
 
           Compress-Archive -Path "$stage/*" -DestinationPath Snet-windows-amd64.zip -Force
           Get-FileHash Snet-windows-amd64.zip -Algorithm SHA256 | Format-List
+          Get-FileHash "SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe" -Algorithm SHA256 | Format-List
 
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Snet-windows-amd64
-          path: Snet-windows-amd64.zip
+          name: SnetWindows-v${{ steps.vars.outputs.VERSION }}
+          path: |
+            SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe
+            Snet-windows-amd64.zip
           retention-days: 7
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: Snet-windows-amd64.zip
+          files: |
+            SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe
           fail_on_unmatched_files: true

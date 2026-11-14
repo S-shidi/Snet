@@ -6,12 +6,22 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 
 	"snet/internal/buildinfo"
 	"snet/internal/client"
 )
 
 func main() {
+	if handled, code := handleServiceCommand(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+	// "service" is an explicit alias for the SCM-started mode. The SCM itself
+	// invokes snetd with no arguments.
+	if len(os.Args) > 1 && strings.EqualFold(os.Args[1], "service") {
+		os.Args = append(os.Args[:1], os.Args[2:]...)
+	}
+
 	ctlAddr := flag.String("ctl", "127.0.0.1:19432", "local control API address")
 	configPath := flag.String("config", "", "config file path (default: user config dir)")
 	deviceIDFile := flag.String("device-id-file", client.DefaultDeviceIDFile, "path to the stable device identity file (empty to disable)")

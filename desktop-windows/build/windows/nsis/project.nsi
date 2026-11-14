@@ -11,18 +11,18 @@ Unicode true
 ## > wails build --target windows/amd64 --nsis
 ## Then you can call makensis on this file with specifying the path to your binary:
 ## For a AMD64 only installer:
-## > makensis -DARG_WAILS_AMD64_BINARY=..\..\bin\app.exe
+## > makensis -DARG_WAILS_AMD64_BINARY=../../bin/app.exe
 ## For a ARM64 only installer:
-## > makensis -DARG_WAILS_ARM64_BINARY=..\..\bin\app.exe
+## > makensis -DARG_WAILS_ARM64_BINARY=../../bin/app.exe
 ## For a installer with both architectures:
-## > makensis -DARG_WAILS_AMD64_BINARY=..\..\bin\app-amd64.exe -DARG_WAILS_ARM64_BINARY=..\..\bin\app-arm64.exe
+## > makensis -DARG_WAILS_AMD64_BINARY=../../bin/app-amd64.exe -DARG_WAILS_ARM64_BINARY=../../bin/app-arm64.exe
 ####
 ## The following information is taken from the wails_tools.nsh file, but they can be overwritten here.
 ####
 ## !define INFO_PROJECTNAME    "my-project" # Default "SnetWindows"
 ## !define INFO_COMPANYNAME    "My Company" # Default "SNET"
 ## !define INFO_PRODUCTNAME    "My Product Name" # Default "SnetWindows"
-## !define INFO_PRODUCTVERSION "1.0.0"     # Default "1.1.5"
+## !define INFO_PRODUCTVERSION "1.0.0"     # Default "1.1.6"
 ## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© 2026, My Company"
 ###
 ## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"
@@ -34,6 +34,7 @@ Unicode true
 ## Include the wails tools
 ####
 !include "wails_tools.nsh"
+!include "LogicLib.nsh"
 
 # The version information for this two must consist of 4 parts
 VIProductVersion "${INFO_PRODUCTVERSION}.0"
@@ -51,8 +52,8 @@ ManifestDPIAware true
 
 !include "MUI.nsh"
 
-!define MUI_ICON "..\icon.ico"
-!define MUI_UNICON "..\icon.ico"
+!define MUI_ICON "../icon.ico"
+!define MUI_UNICON "../icon.ico"
 # !define MUI_WELCOMEFINISHPAGE_BITMAP "resources\leftimage.bmp" #Include this to add a bitmap on the left side of the Welcome Page. Must be a size of 164x314
 !define MUI_FINISHPAGE_NOAUTOCLOSE # Wait on the INSTFILES page so the user can take a look into the details of the installation steps
 !define MUI_ABORTWARNING # This will warn the user if they exit from the installer.
@@ -72,11 +73,11 @@ ManifestDPIAware true
 #!finalize 'signtool --file "%1"'
 
 Name "${INFO_PRODUCTNAME}"
-OutFile "..\..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the installer's file.
+OutFile "../../../bin/${INFO_PROJECTNAME}-Setup-v${INFO_PRODUCTVERSION}.exe" # Name of the installer's file.
 !if "${WAILS_INSTALL_SCOPE}" == "user"
     InstallDir "$LOCALAPPDATA\Programs\${INFO_PRODUCTNAME}"
 !else
-    InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
+    InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}"
 !endif
 ShowInstDetails show # This will always show the installation details.
 
@@ -93,6 +94,23 @@ Section
     
     !insertmacro wails.files
 
+    # Upgrade path: stop and remove the old service before overwriting its
+    # locked snetd.exe, then install the new service after all files land.
+    ${If} ${FileExists} "$INSTDIR\snetd.exe"
+        nsExec::ExecToLog '"$INSTDIR\snetd.exe" uninstall'
+        Pop $0
+    ${EndIf}
+
+    File "/oname=snetd.exe" "../../../bin/snetd.exe"
+    File "/oname=snetctl.exe" "../../../bin/snetctl.exe"
+    File "/oname=wintun.dll" "../../../bin/wintun.dll"
+
+    nsExec::ExecToLog '"$INSTDIR\snetd.exe" install'
+    Pop $0
+    ${If} $0 != 0
+        MessageBox MB_ICONEXCLAMATION|MB_OK "SNET 后台服务安装失败（代码 $0）。请以管理员身份重新运行安装包。"
+    ${EndIf}
+
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
@@ -104,6 +122,12 @@ SectionEnd
 
 Section "uninstall" 
     !insertmacro wails.setShellContext
+
+    # Remove the service first so snetd.exe is not locked while $INSTDIR is
+    # deleted. The service owns no data outside ProgramData.
+    nsExec::ExecToLog '"$INSTDIR\snetd.exe" uninstall'
+    Pop $0
+    RMDir /r "C:\ProgramData\SNET"
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 

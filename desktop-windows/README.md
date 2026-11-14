@@ -47,9 +47,11 @@ wintun.dll
 1. 交叉编译 `snetd.exe`、`snetctl.exe`
 2. 下载并校验 `wintun.dll`
 3. 构建共享 Web UI
-4. 执行 `wails3 build -platform windows/amd64`
+4. 执行 `wails3 build GOOS=windows GOARCH=amd64`
 5. 将运行文件复制到 `desktop-windows/bin/`
-6. 生成 `dist/SnetWindows-v1.1.5-amd64.zip`
+6. 执行 `wails3 package` 生成 NSIS 安装包
+7. 生成 `dist/SnetWindows-Setup-v1.1.6.exe`
+8. 生成 `dist/SnetWindows-v1.1.6-amd64.zip`
 
 产物：
 
@@ -58,12 +60,24 @@ desktop-windows/bin/SnetWindows.exe
 desktop-windows/bin/snetd.exe
 desktop-windows/bin/snetctl.exe
 desktop-windows/bin/wintun.dll
-dist/SnetWindows-v1.1.5-amd64.zip
+dist/SnetWindows-Setup-v1.1.6.exe
+dist/SnetWindows-v1.1.6-amd64.zip
 ```
 
-## 手动运行
+## 安装运行
 
-把 `desktop-windows/bin/` 整个目录复制到 Windows 电脑，双击
-`SnetWindows.exe`。首次启动由 UAC 拉起 `snetd.exe`，允许后即可创建/加入网络。
+运行 `dist/SnetWindows-Setup-v1.1.6.exe`。安装器会写入：
+
+```text
+C:\Program Files\SNET\SnetWindows.exe
+C:\Program Files\SNET\snetd.exe
+C:\Program Files\SNET\wintun.dll
+```
+
+并注册自动启动的 `SNetDaemon` 服务、创建桌面和开始菜单快捷方式。之后从快捷方式
+启动 GUI 不再需要 UAC。
+
+正式版通过安装包安装 `SNetDaemon` Windows 服务；服务启动无需 UAC。
+便携目录仅用于调试，运行前需要先由安装包注册服务。
 
 Windows 10/11 需要 WebView2 Runtime（系统通常已预装）。

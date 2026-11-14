@@ -33,10 +33,20 @@ cp "$ROOT/dist/snetd-windows-amd64.exe" "$BIN/snetd.exe"
 cp "$ROOT/dist/snetctl-windows-amd64.exe" "$BIN/snetctl.exe"
 cp "$ROOT/dist/wintun.dll" "$BIN/wintun.dll"
 
+echo "==> NSIS installer"
+wails3 package GOOS=windows GOARCH=amd64
+
+SETUP="$BIN/SnetWindows-Setup-v${VERSION}.exe"
+if [ ! -f "$SETUP" ]; then
+  echo "installer not produced: $SETUP" >&2
+  exit 1
+fi
+cp "$SETUP" "$ROOT/dist/"
+
 ZIP="$ROOT/dist/SnetWindows-v${VERSION}-amd64.zip"
 rm -f "$ZIP"
 (cd "$BIN" && zip -q -9 "$ZIP" SnetWindows.exe snetd.exe snetctl.exe wintun.dll)
 
 echo
 echo "Build complete:"
-ls -lh "$BIN/SnetWindows.exe" "$BIN/snetd.exe" "$BIN/snetctl.exe" "$BIN/wintun.dll" "$ZIP"
+ls -lh "$BIN/SnetWindows.exe" "$BIN/snetd.exe" "$BIN/snetctl.exe" "$BIN/wintun.dll" "$ROOT/dist/SnetWindows-Setup-v${VERSION}.exe" "$ZIP"

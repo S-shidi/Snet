@@ -10,17 +10,20 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
-const ctlAddr = "127.0.0.1:19432"
+const (
+	ctlAddr           = "127.0.0.1:19432"
+	daemonServiceName = "SNetDaemon"
+)
 
 type SnetService struct {
 	shutdownOnce sync.Once
@@ -63,23 +66,7 @@ func configDir() string {
 	return `C:\ProgramData\SNET`
 }
 
-func daemonConfigPath() string { return filepath.Join(configDir(), "config.json") }
-func ctlTokenPath() string     { return filepath.Join(configDir(), "ctl-token") }
-
-func binaryVersion(path string) (string, error) {
-	cmd := exec.Command(path, "-version")
-	// snetd is a console binary. Hiding this probe prevents a console flash
-	// when the GUI starts.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: windows.CREATE_NO_WINDOW,
-	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%s: %w (%s)", path, err, strings.TrimSpace(string(out)))
-	}
-	return strings.TrimSpace(string(out)), nil
-}
+func ctlTokenPath() string { return filepath.Join(configDir(), "ctl-token") }
 
 func (s *SnetService) ShutdownDaemon() {
 	s.shutdownOnce.Do(func() {
@@ -113,112 +100,56 @@ func (s *SnetService) ensureDaemon() error {
 		return err
 	}
 
-	daemon, err := findDaemonBinary()
-	if err != nil {
+	if err := startDaemonService(); err != nil {
 		return fail(err)
 	}
-	if err := os.MkdirAll(configDir(), 0o700); err != nil {
-		return fail(fmt.Errorf("创建配置目录失败: %w", err))
-	}
-	if _, err := binaryVersion(daemon); err != nil {
-		return fail(fmt.Errorf("snetd 无法运行: %w", err))
-	}
-	if err := launchElevated(daemon, daemonConfigPath()); err != nil {
-		return fail(err)
-	}
-	if err := waitForCtl(60 * time.Second); err != nil {
-		return fail(fmt.Errorf("UAC 已授权，但 snetd 未就绪: %w", err))
+	if err := waitForCtl(30 * time.Second); err != nil {
+		return fail(fmt.Errorf("SNetDaemon 服务已启动，但控制端口未就绪: %w", err))
 	}
 	s.setStartState(false, "")
 	return nil
 }
 
-// launchElevated starts snetd.exe through a UAC prompt using ShellExecuteEx
-// directly. This avoids spawning powershell.exe (which briefly creates a
-// console window) and starts the daemon hidden. WorkingDirectory is essential:
-// wintun-go loads wintun.dll from the executable's application directory,
-// which must therefore contain both snetd.exe and wintun.dll.
-func launchElevated(daemon, configPath string) error {
-	dir := filepath.Dir(daemon)
-	if _, err := os.Stat(filepath.Join(dir, "wintun.dll")); err != nil {
-		return fmt.Errorf("缺少 wintun.dll，请将其放在 %s", dir)
+// startDaemonService asks the SCM to start SNetDaemon. The installer grants
+// authenticated users SERVICE_START, so this path needs no UAC prompt.
+func startDaemonService() error {
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return fmt.Errorf("打开服务管理器失败: %w", err)
 	}
+	defer windows.CloseServiceHandle(scm)
 
-	args := strings.Join([]string{
-		"-config", quoteWindowsArg(configPath),
-		"-log-file", quoteWindowsArg(filepath.Join(configDir(), "daemon.log")),
-	}, " ")
-	verb, err := windows.UTF16PtrFromString("runas")
+	name, err := windows.UTF16PtrFromString(daemonServiceName)
 	if err != nil {
 		return err
 	}
-	file, err := windows.UTF16PtrFromString(daemon)
+	h, err := windows.OpenService(scm, name, windows.SERVICE_START|windows.SERVICE_QUERY_STATUS)
 	if err != nil {
-		return err
-	}
-	params, err := windows.UTF16PtrFromString(args)
-	if err != nil {
-		return err
-	}
-	cwd, err := windows.UTF16PtrFromString(dir)
-	if err != nil {
-		return err
-	}
-	if err := windows.ShellExecute(0, verb, file, params, cwd, windows.SW_HIDE); err != nil {
-		if errors.Is(err, windows.ERROR_CANCELLED) {
-			return errors.New("已取消管理员授权，后台服务未启动")
+		if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+			return errors.New("后台服务未安装，请运行 SnetWindows 安装包")
 		}
-		return fmt.Errorf("启动 snetd 提权进程失败: %w", err)
+		return fmt.Errorf("打开后台服务失败: %w", err)
+	}
+	s := &mgr.Service{Name: daemonServiceName, Handle: h}
+	defer s.Close()
+
+	st, err := s.Query()
+	if err != nil {
+		return fmt.Errorf("查询后台服务状态失败: %w", err)
+	}
+	for st.State == svc.StopPending {
+		time.Sleep(200 * time.Millisecond)
+		st, err = s.Query()
+		if err != nil {
+			return fmt.Errorf("等待后台服务停止失败: %w", err)
+		}
+	}
+	if st.State == svc.Stopped {
+		if err := s.Start(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
+			return fmt.Errorf("启动后台服务失败: %w", err)
+		}
 	}
 	return nil
-}
-
-// quoteWindowsArg quotes one CreateProcess argument. Paths under ProgramData
-// and the application directory normally need no quotes, but quoting keeps
-// the command line valid if the app is unpacked into a path with spaces.
-func quoteWindowsArg(s string) string {
-	if s != "" && !strings.ContainsAny(s, " \t\n\v\"") {
-		return s
-	}
-	var b strings.Builder
-	b.WriteByte('"')
-	backslashes := 0
-	for _, r := range s {
-		switch r {
-		case '\\':
-			backslashes++
-		case '"':
-			b.WriteString(strings.Repeat("\\", backslashes*2+1))
-			b.WriteRune(r)
-			backslashes = 0
-		default:
-			b.WriteString(strings.Repeat("\\", backslashes))
-			backslashes = 0
-			b.WriteRune(r)
-		}
-	}
-	b.WriteString(strings.Repeat("\\", backslashes*2))
-	b.WriteByte('"')
-	return b.String()
-}
-
-func findDaemonBinary() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("无法定位应用目录: %w", err)
-	}
-	dir := filepath.Dir(exe)
-	candidates := []string{
-		filepath.Join(dir, "snetd.exe"),
-		filepath.Join(dir, "resources", "snetd.exe"),
-		filepath.Join(dir, "..", "snetd.exe"),
-	}
-	for _, p := range candidates {
-		if st, statErr := os.Stat(p); statErr == nil && !st.IsDir() {
-			return filepath.Clean(p), nil
-		}
-	}
-	return "", errors.New("应用目录缺少 snetd.exe")
 }
 
 func ctlPortOpen() bool {

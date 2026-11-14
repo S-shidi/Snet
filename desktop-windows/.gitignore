@@ -6,3 +6,6 @@ frontend/node_modules
 
 # Downloaded Wintun driver (CI fetches the pinned version)
 assets/wintun.dll
+
+# Wails downloads this into the NSIS directory during packaging
+MicrosoftEdgeWebview2Setup.exe
