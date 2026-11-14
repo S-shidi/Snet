@@ -1028,7 +1028,7 @@ function roleLabel(role: string): string {
 // deviceLabel renders "设备名称 (短ID)"; falls back to whichever part is present.
 function deviceLabel(nd: { deviceName?: string; deviceId?: string }): string {
   const name = nd.deviceName?.trim();
-  const id = nd.deviceId ? nd.deviceId.slice(0, 8) : "";
+  const id = nd.deviceId || "";
   if (name && id) return `${esc(name)} <span class="muted mono">(${esc(id)})</span>`;
   if (name) return esc(name);
   if (id) return `<span class="muted mono">${esc(id)}</span>`;
@@ -1037,7 +1037,7 @@ function deviceLabel(nd: { deviceName?: string; deviceId?: string }): string {
 
 function deviceLabelText(nd: { deviceName?: string; deviceId?: string }): string {
   const name = nd.deviceName?.trim();
-  const id = nd.deviceId ? nd.deviceId.slice(0, 8) : "";
+  const id = nd.deviceId || "";
   if (name && id) return `${name} (${id})`;
   if (name) return name;
   if (id) return id;
@@ -1390,6 +1390,21 @@ function openSettingsModal() {
     title: "设置",
     body: `<div class="settings-shell">
       <section class="settings-panel">
+        <div class="settings-panel-head"><h3>设备</h3><span class="hint">本机身份</span></div>
+        <div class="settings-list">
+          <div class="settings-row">
+            <div class="settings-row-main">
+              <div class="settings-row-title">设备 ID</div>
+              <div class="settings-row-desc">用于在服务端和成员列表中识别这台设备</div>
+            </div>
+            <div class="settings-row-actions">
+              <code class="settings-device-id" id="s-device-id">${esc(status?.deviceId || "-")}</code>
+              <button type="button" id="s-copy-device" class="btn icon sm" title="复制设备 ID" aria-label="复制设备 ID">⧉</button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="settings-panel">
         <div class="settings-panel-head"><h3>连接</h3><span class="hint">连接与端口</span></div>
         <div class="settings-list">
           <div class="settings-row">
@@ -1527,6 +1542,9 @@ function openSettingsModal() {
 
       serverBtn.addEventListener("click", () => saveServer(serverInput.value.trim()));
       serverReset?.addEventListener("click", () => saveServer(""));
+      body.querySelector("#s-copy-device")?.addEventListener("click", async (e) => {
+        await copyText(status?.deviceId || "", e.currentTarget as HTMLButtonElement);
+      });
 
       const natInput = body.querySelector<HTMLInputElement>("#s-nat");
       const natState = body.querySelector<HTMLElement>("#s-nat-state");
@@ -1889,7 +1907,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
-        <div class="member-card-name">${deviceLabel(nd)}${rename}</div>
+        <div class="member-card-name"><span class="member-name-text">${deviceLabel(nd)}</span>${rename}</div>
         <div class="member-card-status">${path}${online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>'}</div>
       </div>
       <div class="member-card-body">
@@ -2370,16 +2388,20 @@ function bindNetworkDetailEvents() {
       const nid = pendingAction.dataset.pendingNid || detailNid;
       const deny = !!pendingAction.dataset.pendingDeny;
       if (!pid) return;
+      const original = pendingAction.innerHTML;
       pendingAction.disabled = true;
+      pendingAction.innerHTML = `${SPIN} ${deny ? "拒绝中…" : "批准中…"}`;
       try {
         if (deny) await backend.deny({ nid, pendingId: pid });
         else await backend.approve({ nid, pendingId: pid });
         toast(deny ? "已拒绝加入请求" : "已批准加入");
-        await refreshOwnerInfo(true);
-        await refresh();
+        // Bypass the peer/owner caches so the new member card and the removed
+        // pending banner update together.
+        await refreshAfterDeviceChange();
       } catch (e) {
         toast(String(e), "err");
         pendingAction.disabled = false;
+        pendingAction.innerHTML = original;
       }
       return;
     }
@@ -2488,6 +2510,8 @@ function renderStatus() {
     return;
   }
   if (deviceId) deviceId.textContent = status.deviceId || "-";
+  const emptyDeviceId = $("#empty-device-id");
+  if (emptyDeviceId) emptyDeviceId.textContent = status.deviceId || "-";
   if (svcWgport) svcWgport.textContent = String(status.wgPort ?? "-");
   const nets = status.networks ?? [];
   if (svcNat) {
