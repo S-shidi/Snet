@@ -1269,19 +1269,17 @@ function openJoinModal() {
   const s = loadSettings();
   openModal({
     title: "加入网络",
-    body: `
-      <div class="join-hero">
-        <div class="join-hero-icon" aria-hidden="true">${ICON_LINK}</div>
-        <p class="join-hero-title">粘贴邀请链接即可加入</p>
-        <p class="join-hero-sub">向网络创建者索取 snet:// 邀请链接</p>
-      </div>
+    body: `<div class="join-compact">
+      <label class="join-field-label" for="m-link">邀请链接</label>
       <div class="join-link-box">
+        <span class="join-link-icon" aria-hidden="true">${ICON_LINK}</span>
         <input class="join-link-input" id="m-link" type="text" spellcheck="false" autocomplete="off"
                placeholder="粘贴 snet:// 邀请链接..." />
         ${backend.scanQR ? '<button id="m-scan" class="btn ghost" type="button" title="扫描二维码加入">扫码</button>' : ""}
       </div>
-      <p class="hint join-tip">请向网络创建者索要邀请链接，在上方粘贴后点击「加入」。</p>
-      <p class="msg" id="m-result"></p>`,
+      <p class="hint join-tip">向网络创建者索取邀请链接，粘贴后点击「加入」。</p>
+      <p class="msg" id="m-result"></p>
+    </div>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn join-submit">加入</button>`,
     onBody: (body) => {
       const submit = body.querySelector<HTMLButtonElement>("#m-submit")!;
@@ -1812,28 +1810,26 @@ function lastActiveLabel(pd: PeerDirect | undefined, online: boolean): string {
   return `最后活跃 ${fmtAgo(sec)}`;
 }
 
-function pendingCardsHTML(nid: string, pending: NetInfoDetail["pending"]): string {
+function pendingBannersHTML(nid: string, pending: NetInfoDetail["pending"]): string {
   if (!pending?.length) return "";
-  return pending.map((p) => {
+  // A device can retry while an older request is still pending. Keep only the
+  // newest request per device so the owner sees one row per physical device.
+  const latest = new Map<string, NonNullable<NetInfoDetail["pending"]>[number]>();
+  for (const p of pending) {
+    const key = p.deviceId || p.publicKey || p.id;
+    const cur = latest.get(key);
+    if (!cur || String(p.createdAt || "") > String(cur.createdAt || "")) latest.set(key, p);
+  }
+  return [...latest.values()].map((p) => {
     const label = p.deviceName || p.deviceId || p.publicKey.slice(0, 12);
-    const id = p.deviceId ? p.deviceId.slice(0, 8) : p.publicKey.slice(0, 10);
-    return `<article class="member-card pending-card" data-member-id="${esc(p.id)}">
-      <div class="member-card-head">
-        <div class="member-card-name">${esc(label)}</div>
-        <span class="pill warn">待审批</span>
-      </div>
-      <div class="pending-reminder">
-        <span class="pending-reminder-mark">!</span>
-        <span>请求加入网络，等待你的批准</span>
-        <span class="pending-reminder-actions">
-          <button type="button" class="btn ghost sm" data-pending-deny="${esc(p.id)}" data-pending-nid="${esc(nid)}">拒绝</button>
-          <button type="button" class="btn sm" data-pending-approve="${esc(p.id)}" data-pending-nid="${esc(nid)}">批准</button>
-        </span>
-      </div>
-      <div class="member-card-body">
-        <div class="member-card-line"><span class="member-card-label">设备 ID</span><code>${esc(id)}…</code></div>
-      </div>
-    </article>`;
+    return `<div class="pending-request-banner">
+      <span class="pending-request-mark">!</span>
+      <span class="pending-request-text"><b>${esc(label)}</b> 请求加入网络，等待你的批准</span>
+      <span class="pending-request-actions">
+        <button type="button" class="btn ghost sm" data-pending-deny="${esc(p.id)}" data-pending-nid="${esc(nid)}">拒绝</button>
+        <button type="button" class="btn sm" data-pending-approve="${esc(p.id)}" data-pending-nid="${esc(nid)}">批准</button>
+      </span>
+    </div>`;
   }).join("");
 }
 
@@ -1907,8 +1903,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       ${foot}
     </article>`;
   }).join("");
-  const pending = canManage ? pendingCardsHTML(n.networkId, ownerInfo[n.networkId]?.pending) : "";
-  return `<div class="member-grid">${cards}${pending}</div>`;
+  return `<div class="member-grid">${cards}</div>`;
 }
 
 function openRenameDeviceModal(current: string, target?: { nid: string; nodeId: string }) {
@@ -2244,6 +2239,7 @@ function networkDetailHTML(n: NetInfo): string {
       ${more}
     </div>
   </div>
+  ${canManage ? pendingBannersHTML(n.networkId, ownerInfo[n.networkId]?.pending) : ""}
   ${cgnatCompactHTML()}
   ${memberCardsHTML(n, r, canManage, role, routes)}`;
 }

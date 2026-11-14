@@ -3803,6 +3803,12 @@ func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
 	}
 	pending := make([]protocol.PendingNode, 0, len(ns.pending))
 	for _, p := range ns.pending {
+		// Only unresolved requests belong in the owner view. Approved/denied
+		// records are kept for the requester's polling but must not be rendered
+		// as fresh pending cards.
+		if p.Status != "pending" {
+			continue
+		}
 		pending = append(pending, protocol.PendingNode{
 			ID:        p.ID,
 			PublicKey: p.PublicKey,
