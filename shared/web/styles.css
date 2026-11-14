@@ -6,7 +6,8 @@
   --err:#e05252; --err-soft:rgba(224,82,82,.14);
   --warn:#d9a13a; --warn-soft:rgba(217,161,58,.14);
   --radius:12px; --radius-s:8px;
-  --header-padding-x:18px;
+  --content-padding-x:24px;
+  --header-left-padding:24px;
   --shadow:0 10px 34px rgba(0,0,0,.35);
   --ring:0 0 0 3px rgba(79,140,255,.35);
 }
@@ -40,7 +41,8 @@ header {
 }
 .header-inner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  width: 100%; max-width: 1200px; margin: 0 auto; padding: 12px var(--header-padding-x);
+  width: 100%; max-width: 1200px; margin: 0 auto;
+  padding: 12px var(--content-padding-x) 12px var(--header-left-padding);
 }
 .brand { flex: none; }
 .brand { display: flex; align-items: center; gap: 10px; }
@@ -69,7 +71,7 @@ header {
 #header-svc-btn[hidden] { display: none !important; }
 .network-tabs {
   display: flex; align-items: flex-end; gap: 2px; width: 100%; max-width: 1200px; min-width: 0;
-  margin: 0 auto; padding: 0 var(--header-padding-x); overflow-x: auto; white-space: nowrap;
+  margin: 0 auto; padding: 0 var(--content-padding-x); overflow-x: auto; white-space: nowrap;
   scrollbar-width: none;
 }
 .network-tabs::-webkit-scrollbar { display: none; }
@@ -104,11 +106,22 @@ header {
 .network-tab-add:hover { color: var(--accent); border-color: var(--accent); }
 
 /* macOS Wails: leave room for traffic lights and make the header draggable. */
-.wails-desktop { --header-padding-x: 80px; }
+.wails-desktop { --header-left-padding: 80px; }
+.wails-drag-strip { display: none; }
+.wails-desktop .wails-drag-strip {
+  display: block; position: absolute; top: 0; left: 0; right: 0; height: 68px;
+  --wails-draggable: drag !important; z-index: 0;
+}
 .wails-desktop .header-inner {
+  position: relative; z-index: 1; pointer-events: none;
   --wails-draggable: drag !important;
   user-select: none;
 }
+.wails-desktop .header-inner .brand,
+.wails-desktop .header-inner .header-right,
+.wails-desktop .header-inner .header-actions,
+.wails-desktop .header-inner .header-more { pointer-events: auto; }
+.wails-desktop .network-tabs { position: relative; z-index: 1; }
 .wails-desktop header {
   --wails-draggable: drag !important;
   user-select: none;
@@ -236,7 +249,7 @@ header {
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
-#app-main { width: 100%; max-width: 1200px; margin: 0 auto; padding: 20px 24px 60px; }
+#app-main { width: 100%; max-width: 1200px; margin: 0 auto; padding: 20px var(--content-padding-x) 60px; }
 #app-main[hidden], .empty-state[hidden] { display: none; }
 body.empty-mode { overflow: hidden; }
 .empty-state {
@@ -1298,15 +1311,15 @@ pre.code { user-select: all; }
   .header-more { display: block !important; }
 
   .brand .sub { display: none; }
-  :root { --header-padding-x: 14px; }
-  .header-inner { padding: 12px var(--header-padding-x); }
+  :root { --content-padding-x: 14px; --header-left-padding: 14px; }
+  .header-inner { padding: 12px var(--content-padding-x) 12px var(--header-left-padding); }
   .tabs { padding: 0 14px; }
   #app-main { padding: 16px 14px 50px; }
   .empty-state { padding: 32px 18px 60px; height: calc(100vh - 60px); }
   .empty-state h2 { font-size: 23px; }
   .network-choice { grid-template-columns: 1fr; }
   .status-grid.info-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .network-tabs { gap: 2px; padding-left: var(--header-padding-x); padding-right: var(--header-padding-x); }
+  .network-tabs { gap: 2px; padding-left: var(--content-padding-x); padding-right: var(--content-padding-x); }
   .network-tab { padding: 8px 9px 7px; font-size: 12px; }
   .kv { flex-wrap: wrap; }
 
