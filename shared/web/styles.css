@@ -110,7 +110,7 @@ header {
 .wails-drag-strip { display: none; }
 .wails-desktop .wails-drag-strip {
   display: block; position: absolute; top: 0; left: 0; right: 0; height: 68px;
-  --wails-draggable: drag !important; z-index: 0;
+  --wails-draggable: drag !important; -webkit-app-region: drag; z-index: 0;
 }
 .wails-desktop .header-inner {
   position: relative; z-index: 1; pointer-events: none;

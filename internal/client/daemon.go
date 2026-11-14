@@ -3320,6 +3320,7 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 	api := d.apiLocked()
 	token := nc.Token
 	owner := nc.Owner
+	deviceID := d.cfg.DeviceID
 	d.mu.Unlock()
 	var resp protocol.NetworkInfoResp
 	var err error
@@ -3327,6 +3328,24 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 		resp, err = api.NetworkInfo(nid, token)
 	} else {
 		resp, err = api.MemberNetworkInfo(nid, token)
+		if err == nil {
+			// A server-side ownership change (or a config written by an older
+			// client) can leave the local Owner flag stale. Detect the role from
+			// the member-safe node list, persist it, and reload the owner view so
+			// pending join requests become visible immediately.
+			for _, node := range resp.Nodes {
+				if node.DeviceID == deviceID && node.Role == "owner" {
+					d.mu.Lock()
+					if current := d.cfg.Networks[nid]; current != nil {
+						current.Owner = true
+						_ = d.save()
+					}
+					d.mu.Unlock()
+					resp, err = api.NetworkInfo(nid, token)
+					break
+				}
+			}
+		}
 	}
 	return resp, wrapNetGone(err)
 }

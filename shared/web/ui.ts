@@ -611,12 +611,7 @@ async function openNetworkSettings(nid: string) {
   const curSubnet = detail.subnet || "";
   openModal({
     title: `网络设置 · ${nid}`,
-    wide: true,
     body: `<div class="network-form">
-      <div class="network-form-hero">
-        <div class="network-form-icon">⚙</div>
-        <div><div class="network-form-title">网络设置</div><p>修改网络名称、网段或加入审批策略。</p></div>
-      </div>
       <div class="form-stack">
         <div class="form-field"><label for="s-name">网络名称</label><input id="s-name" class="form-control" type="text" value="${esc(curName)}" placeholder="留空保持不变" maxlength="64" /></div>
         <div class="form-field"><label>虚拟网段</label>${subnetWidgetHTML({ id: "s-subnet", value: curSubnet, placeholder: "留空保持不变", emptyHint: "留空保持不变" })}</div>
@@ -1179,12 +1174,7 @@ function openCreateModal() {
   const serverHint = `<div class="form-context"><span>协调服务</span><code>${srv ? esc(srv) : "官方 SnetServ"}</code></div>`;
   openModal({
     title: "创建网络",
-    wide: true,
     body: `<div class="network-form">
-      <div class="network-form-hero">
-        <div class="network-form-icon">+</div>
-        <div><div class="network-form-title">创建新的虚拟网络</div><p>创建后即可邀请其他设备加入你的私有网络。</p></div>
-      </div>
       ${hint}
       <div class="form-stack">
         <div class="form-field"><label for="m-name">网络名称</label><input id="m-name" class="form-control" type="text" placeholder="例如：家庭网络" maxlength="64" /></div>
