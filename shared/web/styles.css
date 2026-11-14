@@ -517,6 +517,19 @@ body.empty-mode { overflow: hidden; }
 .member-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .member-card-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; font-size: 14px; font-weight: 700; line-height: 1.45; }
 .member-card-status { display: flex; align-items: center; gap: 6px; flex: none; }
+.member-card.pending-card { border-color: rgba(217,161,58,.42); background: rgba(217,161,58,.045); }
+.pending-reminder {
+  display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 9px;
+  border: 1px solid rgba(217,161,58,.3); border-radius: 7px;
+  background: rgba(217,161,58,.10); color: var(--warn); font-size: 11.5px;
+}
+.pending-reminder-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%;
+  background: var(--warn); color: #1b1408; font-weight: 800; font-size: 12px;
+}
+.pending-reminder-actions { display: flex; align-items: center; gap: 5px; margin-left: auto; flex: none; }
+.pending-reminder-actions .btn { padding: 3px 8px; font-size: 11px; }
 .member-card-status .path-badge { font-size: 11px; }
 .member-edit {
   display: inline-flex; align-items: center; justify-content: center;
@@ -726,6 +739,57 @@ body.empty-mode { overflow: hidden; }
 .join-link-box .btn { flex-shrink: 0; white-space: nowrap; }
 .join-tip { margin: 10px 0 0; text-align: center; }
 .join-submit { min-width: 104px; }
+
+/* ── network create/edit forms ──────────── */
+.network-form { display: flex; flex-direction: column; gap: 14px; }
+.network-form-hero { display: flex; align-items: flex-start; gap: 12px; }
+.network-form-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 42px; height: 42px; flex: 0 0 42px; border-radius: 12px;
+  background: var(--accent-soft); color: var(--accent2); font-size: 25px; line-height: 1;
+}
+.network-form-title { color: var(--text); font-size: 15px; font-weight: 700; }
+.network-form-hero p { margin: 4px 0 0; color: var(--dim); font-size: 12px; line-height: 1.5; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.form-field { min-width: 0; }
+.form-field > label { display: block; margin-bottom: 6px; color: var(--dim); font-size: 12px; font-weight: 500; }
+.form-field .form-control, .form-field .subnet-wrap { width: 100%; }
+.form-context {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg2); color: var(--dim); font-size: 11.5px;
+}
+.form-context code { color: var(--text); font-size: 11.5px; }
+.form-warning {
+  padding: 9px 12px; border: 1px solid rgba(217,161,58,.4); border-radius: 8px;
+  background: var(--warn-soft); color: var(--warn); font-size: 12px; line-height: 1.5;
+}
+.form-switch-row { margin: 0; padding: 11px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.create-ok-head { display: flex; align-items: flex-start; gap: 10px; }
+.create-ok-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 50%; background: var(--ok-soft); color: var(--ok); font-size: 16px; font-weight: 800; }
+.create-ok-head b { color: var(--text); font-size: 14px; }
+.create-ok-head p { margin: 3px 0 0; color: var(--dim); font-size: 12px; }
+@media (max-width: 560px) { .form-grid { grid-template-columns: 1fr; } }
+
+/* ── pending approvals / member request ─── */
+.pending-approval-section { margin: 0 0 18px; padding: 14px 16px; border: 1px solid rgba(217,161,58,.3); border-radius: 14px; background: rgba(217,161,58,.055); }
+.pending-approval-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.pending-approval-head h3 { margin: 0; color: var(--warn); font-size: 13px; font-weight: 600; }
+.pending-approval-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.pending-approval-card { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border: 1px solid rgba(217,161,58,.24); border-radius: 10px; background: rgba(22,28,41,.82); }
+.pending-card-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 50%; background: var(--warn-soft); color: var(--warn); font-weight: 800; }
+.pending-card-main { flex: 1; min-width: 0; }
+.pending-card-name { color: var(--text); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.pending-card-id { margin-top: 2px; color: var(--faint); font-size: 11px; }
+.pending-card-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.pending-state-card { display: flex; gap: 16px; max-width: 760px; margin: 18px auto; padding: 22px 24px; border: 1px solid var(--border); border-radius: 16px; background: rgba(22,28,41,.82); box-shadow: 0 10px 28px rgba(0,0,0,.12); }
+.pending-state-icon { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; flex: 0 0 42px; border-radius: 12px; background: var(--warn-soft); color: var(--warn); font-size: 19px; font-weight: 800; }
+.pending-state-main { min-width: 0; }
+.pending-state-title { color: var(--text); font-size: 17px; font-weight: 700; }
+.pending-state-main p { margin: 6px 0 12px; color: var(--dim); font-size: 12.5px; line-height: 1.6; }
+.pending-state-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--faint); font-size: 11.5px; }
+.pending-state-meta code { color: var(--text); padding: 2px 6px; border-radius: 4px; background: var(--bg2); }
+.pending-state-actions { margin-top: 14px; }
 
 /* ── settings sheet ─────────────────────── */
 .settings-shell { display: flex; flex-direction: column; gap: 14px; }

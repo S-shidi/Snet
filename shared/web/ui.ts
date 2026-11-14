@@ -339,13 +339,14 @@ function renderNetworkTabs(nets: NetInfo[]) {
 }
 
 function openNetworkChooser() {
+  const hasOwner = (status?.networks ?? []).some((n) => n.owner && n.serverState !== "gone");
   openModal({
     title: "添加网络",
     body: `<div class="network-choice">
-      <button type="button" class="network-choice-card" id="choice-create">
+      <button type="button" class="network-choice-card${hasOwner ? " disabled" : ""}" id="choice-create" ${hasOwner ? 'aria-disabled="true"' : ""}>
         <span class="choice-icon">+</span>
         <b>创建新网络</b>
-        <small>创建一个新的虚拟网络并邀请设备加入</small>
+        <small>${hasOwner ? "你已创建网络，不支持再创建" : "创建一个新的虚拟网络并邀请设备加入"}</small>
       </button>
       <button type="button" class="network-choice-card" id="choice-join">
         <span class="choice-icon">→</span>
@@ -356,6 +357,7 @@ function openNetworkChooser() {
     footer: `<button data-close class="btn ghost">取消</button>`,
     onBody: (body) => {
       body.querySelector("#choice-create")?.addEventListener("click", () => {
+        if (hasOwner) { toast("你已创建网络，不支持再创建", "warn"); return; }
         closeModal();
         openCreateModal();
       });
@@ -609,12 +611,23 @@ async function openNetworkSettings(nid: string) {
   const curSubnet = detail.subnet || "";
   openModal({
     title: `网络设置 · ${nid}`,
-    body: `
-      <div class="row"><label>网络名称</label><input id="s-name" type="text" value="${esc(curName)}" placeholder="留空保持不变" /></div>
-      <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "s-subnet", value: curSubnet, placeholder: "留空保持不变", emptyHint: "留空保持不变" })}</div>
-      <div class="row"><label class="inline"><input id="s-approval" type="checkbox" ${detail.approvalRequired ? "checked" : ""} /> 新成员加入需创建者批准</label></div>
+    wide: true,
+    body: `<div class="network-form">
+      <div class="network-form-hero">
+        <div class="network-form-icon">⚙</div>
+        <div><div class="network-form-title">网络设置</div><p>修改网络名称、网段或加入审批策略。</p></div>
+      </div>
+      <div class="form-grid">
+        <div class="form-field"><label for="s-name">网络名称</label><input id="s-name" class="form-control" type="text" value="${esc(curName)}" placeholder="留空保持不变" maxlength="64" /></div>
+        <div class="form-field"><label>虚拟网段</label>${subnetWidgetHTML({ id: "s-subnet", value: curSubnet, placeholder: "留空保持不变", emptyHint: "留空保持不变" })}</div>
+      </div>
+      <div class="settings-row form-switch-row">
+        <div class="settings-row-main"><div class="settings-row-title">新成员加入需创建者批准</div><div class="settings-row-desc">开启后，成员加入请求会出现在待审批列表。</div></div>
+        <label class="switch"><input id="s-approval" type="checkbox" ${detail.approvalRequired ? "checked" : ""} /><span class="slider"></span></label>
+      </div>
       <p class="msg" id="s-warn" hidden>修改网段会重新分配所有成员 IP，已加入的 SNET 客户端会自动重连；但手机等外部 WireGuard 设备需手动重新导入新配置。</p>
-      <p class="msg" id="s-result"></p>`,
+      <p class="msg" id="s-result"></p>
+    </div>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn">保存</button>`,
     onBody: (body) => {
       const subnetWidget = subnetWidgetInit(body.querySelector<HTMLElement>(".subnet-wrap")!);
@@ -1158,19 +1171,28 @@ async function showMembers(nid: string) {
 /* ── Create modal ─────────────────────────────────────────────── */
 function openCreateModal() {
   const s = loadSettings();
-  const hasOwner = (status?.networks ?? []).some((n) => n.owner);
+  const hasOwner = (status?.networks ?? []).some((n) => n.owner && n.serverState !== "gone");
   const srv = currentServer();
   const hint = hasOwner
-    ? `<p class="msg">本设备已创建网络（每客户端仅能创建一个）。如需新网络，请先删除或退出当前网络。</p>`
+    ? `<div class="form-warning">你已创建网络，不支持再创建。请先删除当前网络。</div>`
     : "";
-  const serverHint = `<p class="hint">SnetServ${srv ? `: ${esc(srv)}` : ""}</p>`;
+  const serverHint = `<div class="form-context"><span>协调服务</span><code>${srv ? esc(srv) : "官方 SnetServ"}</code></div>`;
   openModal({
     title: "创建网络",
-    body: `${hint}
-      <div class="row"><label>网络名称</label><input id="m-name" type="text" placeholder="例如：家庭网络" /></div>
-      <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "m-subnet", placeholder: "留空自动分配（如 10.88.0.0/24）", emptyHint: "留空自动分配，通常为 10.88.N.0/24" })}</div>
+    wide: true,
+    body: `<div class="network-form">
+      <div class="network-form-hero">
+        <div class="network-form-icon">+</div>
+        <div><div class="network-form-title">创建新的虚拟网络</div><p>创建后即可邀请其他设备加入你的私有网络。</p></div>
+      </div>
+      ${hint}
+      <div class="form-grid">
+        <div class="form-field"><label for="m-name">网络名称</label><input id="m-name" class="form-control" type="text" placeholder="例如：家庭网络" maxlength="64" /></div>
+        <div class="form-field"><label>虚拟网段</label>${subnetWidgetHTML({ id: "m-subnet", placeholder: "留空自动分配（如 10.88.0.0/24）", emptyHint: "留空自动分配，通常为 10.88.N.0/24" })}</div>
+      </div>
       ${serverHint}
-      <p class="msg" id="m-result"></p>`,
+      <p class="msg" id="m-result"></p>
+    </div>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn" ${hasOwner ? "disabled" : ""}>创建</button>`,
     onBody: (body) => {
       const submit = body.querySelector<HTMLButtonElement>("#m-submit")!;
@@ -1194,12 +1216,9 @@ function openCreateModal() {
           const mFoot = modalEl.querySelector<HTMLElement>(".modal-foot")!;
           mBody.innerHTML = `
             <div class="create-ok">
-              <p class="msg ok">网络创建成功，邀请其他设备加入：</p>
+              <div class="create-ok-head"><span class="create-ok-icon">✓</span><div><b>网络创建成功</b><p>把邀请链接发给其他设备，即可加入。</p></div></div>
               <div class="qr" id="qr"></div>
-              <div class="invite-link-box">
-                <span class="invite-link-label">邀请链接</span>
-                <code class="invite-link">${esc(r.link)}</code>
-              </div>
+              <div class="invite-link-box"><code class="invite-link">${esc(r.link)}</code></div>
             </div>`;
           renderQR(mBody.querySelector<HTMLElement>("#qr")!, r.link);
           detailNid = r.networkId;
@@ -1781,6 +1800,31 @@ function lastActiveLabel(pd: PeerDirect | undefined, online: boolean): string {
   return `最后活跃 ${fmtAgo(sec)}`;
 }
 
+function pendingCardsHTML(nid: string, pending: NetInfoDetail["pending"]): string {
+  if (!pending?.length) return "";
+  return pending.map((p) => {
+    const label = p.deviceName || p.deviceId || p.publicKey.slice(0, 12);
+    const id = p.deviceId ? p.deviceId.slice(0, 8) : p.publicKey.slice(0, 10);
+    return `<article class="member-card pending-card" data-member-id="${esc(p.id)}">
+      <div class="member-card-head">
+        <div class="member-card-name">${esc(label)}</div>
+        <span class="pill warn">待审批</span>
+      </div>
+      <div class="pending-reminder">
+        <span class="pending-reminder-mark">!</span>
+        <span>请求加入网络，等待你的批准</span>
+        <span class="pending-reminder-actions">
+          <button type="button" class="btn ghost sm" data-pending-deny="${esc(p.id)}" data-pending-nid="${esc(nid)}">拒绝</button>
+          <button type="button" class="btn sm" data-pending-approve="${esc(p.id)}" data-pending-nid="${esc(nid)}">批准</button>
+        </span>
+      </div>
+      <div class="member-card-body">
+        <div class="member-card-line"><span class="member-card-label">设备 ID</span><code>${esc(id)}…</code></div>
+      </div>
+    </article>`;
+  }).join("");
+}
+
 function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string, routes: RelayRoute[] | undefined): string {
   if (!r) return `<p class="hint member-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
@@ -1851,7 +1895,8 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       ${foot}
     </article>`;
   }).join("");
-  return `<div class="member-grid">${cards}</div>`;
+  const pending = canManage ? pendingCardsHTML(n.networkId, ownerInfo[n.networkId]?.pending) : "";
+  return `<div class="member-grid">${cards}${pending}</div>`;
 }
 
 function openRenameDeviceModal(current: string, target?: { nid: string; nodeId: string }) {
@@ -2192,25 +2237,17 @@ function networkDetailHTML(n: NetInfo): string {
 }
 
 function pendingDetailHTML(p: NonNullable<DaemonStatus["pendingJoins"]>[number]): string {
-  return `<div class="net-detail-head">
-    <div class="detail-heading">
-      <div class="detail-title">${esc(p.networkId)}</div>
-      <div class="detail-sub">加入请求 · 等待批准</div>
-    </div>
-    <div class="detail-more">
-      <button type="button" class="btn ghost sm" id="detail-more-btn">更多</button>
-      <div class="detail-more-menu" id="detail-more-menu" hidden>
-        <button type="button" data-detail-act="cancel-pending">取消加入请求</button>
+  return `<div class="pending-state-card">
+    <div class="pending-state-icon">…</div>
+    <div class="pending-state-main">
+      <div class="pending-state-title">加入请求待审批</div>
+      <p>已向网络创建者提交加入请求。批准后本机将自动加入网络并建立连接。</p>
+      <div class="pending-state-meta"><span>网络</span><code>${esc(p.networkId)}</code><span>状态</span><span class="pill warn">等待批准</span></div>
+      <div class="pending-state-actions">
+        <button type="button" class="btn danger ghost sm" data-detail-act="cancel-pending">取消加入请求</button>
       </div>
     </div>
-  </div>
-  <section class="card detail-section">
-    <div class="detail-section-head"><h3>等待网络创建者批准</h3></div>
-    <p class="muted">请求已提交。网络创建者批准后，该网络会自动出现在上方 Tabs 中并建立连接。</p>
-    <div class="detail-actions">
-      <button type="button" class="btn danger ghost sm" data-detail-act="cancel-pending">取消加入请求</button>
-    </div>
-  </section>`;
+  </div>`;
 }
 
 function renderNetworkDetail() {
@@ -2318,6 +2355,25 @@ function bindNetworkDetailEvents() {
         await refresh();
       } catch (err) {
         toast(String(err), "err");
+      }
+      return;
+    }
+    const pendingAction = target.closest<HTMLButtonElement>("[data-pending-approve], [data-pending-deny]");
+    if (pendingAction && detailNid) {
+      const pid = pendingAction.dataset.pendingApprove || pendingAction.dataset.pendingDeny || "";
+      const nid = pendingAction.dataset.pendingNid || detailNid;
+      const deny = !!pendingAction.dataset.pendingDeny;
+      if (!pid) return;
+      pendingAction.disabled = true;
+      try {
+        if (deny) await backend.deny({ nid, pendingId: pid });
+        else await backend.approve({ nid, pendingId: pid });
+        toast(deny ? "已拒绝加入请求" : "已批准加入");
+        await refreshOwnerInfo(true);
+        await refresh();
+      } catch (e) {
+        toast(String(e), "err");
+        pendingAction.disabled = false;
       }
       return;
     }
