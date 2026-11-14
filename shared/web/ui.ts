@@ -978,7 +978,7 @@ async function showPending(nid: string) {
     }
     const rows = pending.map((p) => {
       return `<tr>
-        <td><code>${p.deviceId ? esc(p.deviceId.slice(0, 12)) + "…" : "-"}</code></td>
+        <td><code>${p.deviceId ? esc(p.deviceId) : "-"}</code></td>
         <td><code>${esc(p.publicKey.slice(0, 12))}…</code></td>
         <td><span class="pill warn">待批准</span></td>
         <td>
@@ -1080,7 +1080,7 @@ async function showMembers(nid: string) {
       return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${roleCtl}</td><td>${routeCell}</td><td>${kick}</td></tr>`;
     }).join("");
     const pendingRows = (r.pending ?? []).map((p) => {
-      return `<tr><td colspan="2"><span class="muted">设备</span> <code>${p.deviceId ? esc(p.deviceId.slice(0, 8)) + "…" : "-"}</code><span class="muted"> 公钥</span> <code>${esc(p.publicKey.slice(0, 12))}…</code></td><td><span class="pill warn">待批准</span></td><td>-</td><td><button data-pend="${esc(p.id)}" class="btn sm" style="background:var(--ok)">批准</button> <button data-pend="${esc(p.id)}" class="btn danger sm">拒绝</button></td></tr>`;
+      return `<tr><td colspan="2"><span class="muted">设备</span> <code>${p.deviceId ? esc(p.deviceId) : "-"}</code><span class="muted"> 公钥</span> <code>${esc(p.publicKey.slice(0, 12))}…</code></td><td><span class="pill warn">待批准</span></td><td>-</td><td><button data-pend="${esc(p.id)}" class="btn sm" style="background:var(--ok)">批准</button> <button data-pend="${esc(p.id)}" class="btn danger sm">拒绝</button></td></tr>`;
     }).join("");
     const pendingSection = pendingRows
       ? `<div class="pending-block"><h4>待批准加入请求</h4><div class="tbl-wrap"><table class="members"><tbody>${pendingRows}</tbody></table></div></div>`
