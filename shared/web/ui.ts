@@ -153,6 +153,23 @@ async function refreshPeerSubnets(force = false) {
   );
 }
 
+function initWailsWindowDrag() {
+  if (!isWailsDesktop()) return;
+  const header = document.querySelector<HTMLElement>("header");
+  if (!header) return;
+  header.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || e.detail !== 1) return;
+    const target = e.target as HTMLElement;
+    if (target.closest("button, a, input, select, label, .network-tabs, .header-dropdown, .switch")) return;
+    const wails = (window as any)._wails;
+    if (typeof wails?.invoke === "function") {
+      e.preventDefault();
+      wails.invoke("wails:drag");
+    }
+  }, true);
+}
+
+/* ── Header ───────────────────────────────────────────────────── */
 /* ── Header ───────────────────────────────────────────────────── */
 function renderHeader() {
   const dot = $("#daemon-state") as HTMLElement;
@@ -2561,6 +2578,7 @@ function bindEvents() {
 export async function init(b: Backend) {
   backend = b;
   await loadQR();
+  initWailsWindowDrag();
   initTabs();
   bindNetListEvents();
   bindNetworkDetailEvents();
