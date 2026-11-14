@@ -1871,11 +1871,16 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
   const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
   const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
 
+  // A stopped network has no live tunnel, so peer snapshots from before the
+  // disconnect must not keep rendering "online"/"relay" labels.
+  const connected = n.active === true && n.serverState !== "gone";
   const cards = list.map((nd) => {
     const isSelf = nd.ip === n.ip || (!!self && nd.id === self.id);
-    const online = !!nd.online;
+    const online = connected && !!nd.online;
     const pd = directMap[nd.id];
-    const path = isSelf ? '<span class="path-badge self">本机</span>' : pathBadge(pd, relayReady);
+    const path = isSelf
+      ? '<span class="path-badge self">本机</span>'
+      : online ? pathBadge(pd, relayReady) : "";
     const routeCell = nodeRouteCell(routes, nd.id);
     const relay = nd.allowRelay
       ? '<span class="pill ok">中继网关</span>'
@@ -1890,7 +1895,9 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const selfV6 = nd.publicIPv6 || nd.endpointV6 || "";
     const public6 = isSelf ? (selfV6 || "未检测到IPv6信息") : (pd?.ipv6 || nd.endpointV6 || "-");
     const showPublic6 = isSelf ? true : public6 !== "-" && public6 !== public4;
-    const last = isSelf ? "当前设备" : lastActiveLabel(pd, online);
+    const last = isSelf
+      ? (connected ? "当前设备" : "已断开")
+      : (connected ? lastActiveLabel(pd, online) : "未连接");
     const poke = isSelf
       ? ""
       : `<button type="button" class="btn ghost sm member-poke" data-detail-poke="${esc(nd.id)}" data-poke-target="${esc(nd.ip || "")}" title="发送探测包唤醒节点"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>唤醒</button>`;
@@ -1916,7 +1923,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
         <div class="member-card-name"><span class="member-name-text">${deviceLabel(nd)}</span>${rename}</div>
-        <div class="member-card-status">${path}${online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>'}</div>
+        <div class="member-card-status">${path}${!connected ? `<span class="pill off">${isSelf ? "已断开" : "未连接"}</span>` : online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>'}</div>
       </div>
       <div class="member-card-body">
         <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${editIP}</div>
