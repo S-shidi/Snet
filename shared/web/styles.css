@@ -516,6 +516,8 @@ body.empty-mode { overflow: hidden; }
 .member-card.offline { background: rgba(22,28,41,.62); }
 .member-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .member-card-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; font-size: 14px; font-weight: 700; line-height: 1.45; }
+.member-card-status { display: flex; align-items: center; gap: 6px; flex: none; }
+.member-card-status .path-badge { font-size: 11px; }
 .member-edit {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 6px;
