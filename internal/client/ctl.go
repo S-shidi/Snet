@@ -399,6 +399,19 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		w.WriteHeader(204)
 	})
 
+	mux.HandleFunc("POST /ctl/rename-device", func(w http.ResponseWriter, r *http.Request) {
+		var req CtlReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.SetDeviceName(req.Name); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
 	// Automatic NAT mapping is a device-wide setting, so it has its own
 	// endpoint instead of overloading the per-network settings API.
 	mux.HandleFunc("POST /ctl/nat", func(w http.ResponseWriter, r *http.Request) {

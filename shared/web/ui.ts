@@ -1789,9 +1789,12 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const kick = !isSelf && canManage
       ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}">踢出</button>`
       : "";
+    const rename = isSelf
+      ? `<button type="button" class="btn ghost sm" data-detail-rename="${esc(nd.deviceName || "")}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>重命名</button>`
+      : "";
     const foot = `<div class="member-card-foot">
       <span class="member-card-last">${esc(last)}</span>
-      <span class="member-card-actions">${poke}${diag}${kick}</span>
+      <span class="member-card-actions">${rename}${poke}${diag}${kick}</span>
     </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
@@ -1808,6 +1811,41 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     </article>`;
   }).join("");
   return `<div class="member-grid">${cards}</div>`;
+}
+
+function openRenameDeviceModal(current: string) {
+  openModal({
+    title: "重命名设备",
+    body: `<div class="row"><label>设备名称</label><input id="rename-device-name" type="text" maxlength="64" value="${esc(current)}" placeholder="例如：办公室 Mac" autocomplete="off" /></div>
+      <p class="hint">名称会同步到所有已加入网络的成员列表。</p>
+      <p class="msg" id="rename-device-result"></p>`,
+    footer: `<button data-close class="btn ghost">取消</button><button id="rename-device-save" class="btn">保存</button>`,
+    onBody: (body) => {
+      const input = body.querySelector<HTMLInputElement>("#rename-device-name")!;
+      const result = body.querySelector<HTMLElement>("#rename-device-result")!;
+      const btn = body.querySelector<HTMLButtonElement>("#rename-device-save")!;
+      const save = async () => {
+        const name = input.value.trim();
+        if (!name) { result.textContent = "设备名称不能为空"; return; }
+        btn.disabled = true;
+        result.className = "msg";
+        result.textContent = "保存中…";
+        try {
+          await backend.renameDevice(name);
+          toast("设备名称已更新");
+          closeModal();
+          await refresh();
+        } catch (e) {
+          result.className = "msg";
+          result.textContent = `保存失败: ${e}`;
+          btn.disabled = false;
+        }
+      };
+      btn.addEventListener("click", () => void save());
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") void save(); });
+      setTimeout(() => input.focus(), 30);
+    },
+  });
 }
 
 function showPingModal(text: string, cls: string) {
@@ -2113,6 +2151,11 @@ function bindNetworkDetailEvents() {
       } catch (err) {
         toast(String(err), "err");
       }
+      return;
+    }
+    const renameEl = target.closest<HTMLButtonElement>("[data-detail-rename]");
+    if (renameEl) {
+      openRenameDeviceModal(renameEl.dataset.detailRename || "");
       return;
     }
     const pokeEl = target.closest<HTMLButtonElement>("[data-detail-poke]");

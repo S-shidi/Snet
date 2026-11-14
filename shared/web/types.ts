@@ -149,6 +149,8 @@ export interface Backend {
   setRole?(params: { nid: string; nodeId: string; role: string }): Promise<void>;
   /** Set the device's relay switches: act as a gateway, and use the network's gateways */
   setRelayOptions(params: { allowRelay: boolean; useRelay: boolean }): Promise<void>;
+  /** Rename this device on every joined network. */
+  renameDevice(name: string): Promise<void>;
   /** Replace the network's delegated relay routes (owner only) */
   setRoutes(params: { nid: string; routes: RelayRoute[] }): Promise<void>;
   /** Kick a node from a network */

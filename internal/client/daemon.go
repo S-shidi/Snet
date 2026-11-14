@@ -541,6 +541,9 @@ func (d *Daemon) publicKeyLocked() string {
 
 // hostnameLocked returns the hostname assuming the caller already holds d.mu.
 func (d *Daemon) hostnameLocked() string {
+	if d.cfg.DeviceName != "" {
+		return d.cfg.DeviceName
+	}
 	if d.hostnameCache != "" {
 		return d.hostnameCache
 	}
@@ -2944,6 +2947,45 @@ func (d *Daemon) RelayOptions() (allowRelay, useRelay bool, relayErr string) {
 	return d.cfg.RelayAllowed(), d.cfg.RelayUsed(), d.relayErr
 }
 
+// SetDeviceName changes this device's display name on every joined network.
+// The name is persisted locally and re-reported on the next startup.
+func (d *Daemon) SetDeviceName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("设备名称不能为空")
+	}
+	if len([]rune(name)) > 64 {
+		return errors.New("设备名称不能超过 64 个字符")
+	}
+	d.mu.Lock()
+	d.cfg.DeviceName = name
+	d.hostnameCache = name
+	type target struct {
+		nid   string
+		token string
+	}
+	targets := make([]target, 0, len(d.cfg.Networks))
+	for nid, nc := range d.cfg.Networks {
+		if nc != nil {
+			targets = append(targets, target{nid: nid, token: nc.Token})
+		}
+	}
+	api := d.apiLocked()
+	if err := d.save(); err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	d.mu.Unlock()
+	var firstErr error
+	for _, t := range targets {
+		if err := api.RenameDevice(t.nid, t.token, name); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("更新设备名称失败: %w", err)
+		}
+	}
+	return firstErr
+}
+
+// SetRoutes replaces the network's delegated relay routes. Only the network
 // SetRoutes replaces the network's delegated relay routes. Only the network
 // owner may delegate routes; the server keeps them pending until the target
 // node confirms it can act as the gateway.

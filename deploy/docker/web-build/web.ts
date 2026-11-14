@@ -155,6 +155,10 @@ const backend: Backend = {
     await api("/relay", jsonPost("/relay", { allowRelay: params.allowRelay, useRelay: params.useRelay }));
   },
 
+  async renameDevice(name: string): Promise<void> {
+    await api("/rename-device", jsonPost("/rename-device", { name }));
+  },
+
   async setRoutes(params: { nid: string; routes: RelayRoute[] }): Promise<void> {
     await api("/routes", jsonPost("/routes", { nid: params.nid, routes: params.routes }));
   },

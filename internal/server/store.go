@@ -3129,6 +3129,34 @@ func (s *Store) RegisterDevice(deviceID, publicKey, name string) error {
 	return s.upsertDeviceLocked(deviceID, publicKey, name)
 }
 
+// RenameDevice updates the display name of the device that owns token.
+func (s *Store) RenameDevice(token, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	node := ns.nodes[te.NodeID]
+	if node == nil || node.DeviceID == "" {
+		return ErrNotFound
+	}
+	d := s.devices[node.DeviceID]
+	if d == nil {
+		return ErrNotFound
+	}
+	name = normalizeName(name)
+	if name == "" {
+		return errors.New("设备名称不能为空")
+	}
+	d.Name = name
+	return s.persistDevice(d)
+}
+
 // SetNodeDevice binds a device identity to one of the caller's own nodes.
 // Only the node's own token may change its binding.
 func (s *Store) SetNodeDevice(token, nodeID, deviceID string) error {

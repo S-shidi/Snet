@@ -139,6 +139,11 @@ func (c *apiClient) RegisterDevice(deviceID, publicKey, name string) error {
 		protocol.RegisterDeviceReq{DeviceID: deviceID, PublicKey: publicKey, Name: name}, nil)
 }
 
+func (c *apiClient) RenameDevice(nid, token, name string) error {
+	return c.do(http.MethodPatch, "/api/v1/networks/"+nid+"/device-name", token,
+		protocol.DeviceNameReq{Name: name}, nil)
+}
+
 func (c *apiClient) SetNodeDevice(nid, nodeID, token, deviceID string) error {
 	return c.do(http.MethodPost, "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/device", token,
 		protocol.SetNodeDeviceReq{DeviceID: deviceID}, nil)

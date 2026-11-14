@@ -406,6 +406,11 @@ type RegisterDeviceReq struct {
 	Name      string `json:"name,omitempty"`
 }
 
+// DeviceNameReq updates the display name of the calling device.
+type DeviceNameReq struct {
+	Name string `json:"name"`
+}
+
 // AdminRenameDeviceReq updates a device's display name in the admin console.
 type AdminRenameDeviceReq struct {
 	Name string `json:"name"`
