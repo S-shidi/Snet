@@ -3,3 +3,6 @@
 bin
 frontend/dist
 frontend/node_modules
+
+# Downloaded Wintun driver (CI fetches the pinned version)
+assets/wintun.dll

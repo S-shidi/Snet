@@ -1,0 +1,126 @@
+name: Build Windows App
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            desktop-windows/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails v3
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+          $wailsBin = Join-Path (go env GOPATH) "bin"
+          $wailsBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:PATH = "$env:PATH;$wailsBin"
+          wails3 version
+
+      - name: Fetch Wintun DLL
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./desktop-windows/scripts/fetch-wintun.ps1
+
+      - name: Get version info
+        id: vars
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $sha = (git rev-parse --short HEAD).Trim()
+          "VERSION=$version" >> $env:GITHUB_OUTPUT
+          "SHORT_SHA=$sha" >> $env:GITHUB_OUTPUT
+
+      - name: Build snetd and snetctl
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ steps.vars.outputs.VERSION }}"
+          $commit = "${{ steps.vars.outputs.SHORT_SHA }}"
+          $date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $ldflags = "-s -w -X snet/internal/buildinfo.Version=$version -X snet/internal/buildinfo.Commit=$commit -X snet/internal/buildinfo.BuildDate=$date"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -trimpath -buildvcs=false -ldflags $ldflags -o dist/snetd.exe ./cmd/client/snetd
+          go build -trimpath -buildvcs=false -ldflags $ldflags -o dist/snetctl.exe ./cmd/client/snetctl
+
+      - name: Build Wails app
+        working-directory: ./desktop-windows
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path bin) { Remove-Item -Recurse -Force bin }
+          wails3 build GOOS=windows GOARCH=amd64
+          if (-not (Test-Path bin/SnetWindows.exe)) { throw "bin/SnetWindows.exe not produced" }
+
+      - name: Package Windows app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = "release-win"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          Copy-Item desktop-windows/bin/SnetWindows.exe $stage/
+          Copy-Item dist/snetd.exe $stage/
+          Copy-Item dist/snetctl.exe $stage/
+          Copy-Item desktop-windows/assets/wintun.dll $stage/
+
+          @"
+          SNET Windows client
+          ===================
+
+          1. Extract the whole archive to one folder.
+          2. Run SnetWindows.exe.
+          3. Allow the UAC prompt so snetd can create the Wintun adapter.
+          4. Keep snetd.exe and wintun.dll in the same folder as SnetWindows.exe.
+
+          Logs:
+            C:\ProgramData\SNET\SnetWindows-startup.log
+            C:\ProgramData\SNET\daemon.log
+          "@ | Set-Content -Path "$stage/README.txt" -Encoding utf8
+
+          Compress-Archive -Path "$stage/*" -DestinationPath Snet-windows-amd64.zip -Force
+          Get-FileHash Snet-windows-amd64.zip -Algorithm SHA256 | Format-List
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snet-windows-amd64
+          path: Snet-windows-amd64.zip
+          retention-days: 7
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Snet-windows-amd64.zip
+          fail_on_unmatched_files: true

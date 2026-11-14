@@ -177,7 +177,10 @@ tasks:
     generates:
       - "windows/icon.ico"
     cmds:
-      - wails3 generate icons -input appicon.png -windowsfilename windows/icon.ico -macfilename ''
+      # Wails always generates a macOS ICNS as well. Write it to a temporary
+      # path (empty quotes are not portable to cmd.exe) and remove it.
+      - wails3 generate icons -input appicon.png -windowsfilename windows/icon.ico -macfilename windows/icon-unused.icns
+      - '{{if eq OS "windows"}}powershell -NoProfile -Command "Remove-Item -Force windows/icon-unused.icns -ErrorAction SilentlyContinue"{{else}}rm -f windows/icon-unused.icns{{end}}'
 
   dev:frontend:
     summary: Runs the frontend in development mode
