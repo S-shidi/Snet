@@ -2865,8 +2865,11 @@ func (d *Daemon) applyRelayGatewayLocked() {
 // The report is sent for all networks because the switch is device-wide: a
 // gateway that forwards for one network can forward for all of them.
 func (d *Daemon) publishRelayCapabilityLocked() {
-	allow := d.cfg.RelayAllowed() && d.relayErr == ""
+	allow := relayGatewaySupported() && d.cfg.RelayAllowed() && d.relayErr == ""
 	relayErr := d.relayErr
+	if !relayGatewaySupported() {
+		relayErr = "当前系统不支持中继网络模式"
+	}
 	for nid, nc := range d.cfg.Networks {
 		if nc == nil {
 			continue
@@ -2885,8 +2888,11 @@ func (d *Daemon) publishRelayCapabilityLocked() {
 func (d *Daemon) publishRelayCapabilityAsync() {
 	go func() {
 		d.mu.Lock()
-		allow := d.cfg.RelayAllowed() && d.relayErr == ""
+		allow := relayGatewaySupported() && d.cfg.RelayAllowed() && d.relayErr == ""
 		relayErr := d.relayErr
+		if !relayGatewaySupported() {
+			relayErr = "当前系统不支持中继网络模式"
+		}
 		type target struct {
 			nid   string
 			token string
@@ -2918,6 +2924,9 @@ func (d *Daemon) publishRelayCapabilityAsync() {
 //
 // The new state is persisted and reported to the server.
 func (d *Daemon) SetRelayOptions(allowRelay, useRelay bool) error {
+	if allowRelay && !relayGatewaySupported() {
+		return errors.New("当前系统不支持中继网络模式")
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.cfg.AllowRelay = allowRelay
@@ -3708,8 +3717,9 @@ func (d *Daemon) Status() (map[string]any, error) {
 		"natMapping":   d.nat.status(),
 		// Relay switches: whether this device may act as a gateway for the
 		// network, and whether it honours the network's delegated routes.
-		"allowRelay": d.cfg.RelayAllowed(),
-		"useRelay":   d.cfg.RelayUsed(),
-		"relayError": d.relayErr,
+		"allowRelay":            d.cfg.RelayAllowed() && relayGatewaySupported(),
+		"relayGatewaySupported": relayGatewaySupported(),
+		"useRelay":              d.cfg.RelayUsed(),
+		"relayError":            d.relayErr,
 	}, nil
 }

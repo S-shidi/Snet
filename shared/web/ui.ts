@@ -1412,7 +1412,8 @@ function openSettingsModal() {
   const natErr = nat?.errors?.[0];
   // Relay switches: whether this device may act as a gateway, and whether it
   // honours the network's delegated routes (enabled by default).
-  const allowRelay = status?.allowRelay === true;
+  const relayGatewaySupported = status?.relayGatewaySupported !== false;
+  const allowRelay = relayGatewaySupported && status?.allowRelay === true;
   const useRelay = status?.useRelay !== false;
   const relayErr = status?.relayError || "";
   openModal({
@@ -1471,7 +1472,8 @@ function openSettingsModal() {
       <section class="settings-panel">
         <div class="settings-panel-head"><h3>中继路由</h3><span class="hint">本机网关与远程子网</span></div>
         <div class="settings-list">
-          <div class="settings-row">
+          ${relayGatewaySupported
+            ? `<div class="settings-row">
             <div class="settings-row-main">
               <div class="settings-row-title">允许本设备作为中继网关</div>
               <div class="settings-row-desc">为其他成员转发流量，需要 IP 转发与 NAT 权限</div>
@@ -1481,7 +1483,8 @@ function openSettingsModal() {
               <span class="slider"></span>
             </label>
           </div>
-          <p class="settings-note ${relayErr ? "err" : allowRelay ? "ok" : ""}" id="s-allow-relay-state">${relayErr ? esc(relayErr) : allowRelay ? "已开启，等待目标节点确认路由" : "已关闭"}</p>
+          <p class="settings-note ${relayErr ? "err" : allowRelay ? "ok" : ""}" id="s-allow-relay-state">${relayErr ? esc(relayErr) : allowRelay ? "已开启，等待目标节点确认路由" : "已关闭"}</p>`
+            : '<p class="settings-note muted">当前系统不支持作为中继网关；仍可使用网络内其他节点提供的中继路由。</p>'}
           <div class="settings-row">
             <div class="settings-row-main">
               <div class="settings-row-title">使用网络内的中继网关</div>

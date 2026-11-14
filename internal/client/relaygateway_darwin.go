@@ -142,3 +142,5 @@ func setupRelayGateway(subnets []string) error {
 	}
 	return nil
 }
+
+func relayGatewaySupported() bool { return true }

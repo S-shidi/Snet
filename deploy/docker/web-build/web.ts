@@ -142,9 +142,11 @@ const backend: Backend = {
   },
 
   async wireguardConfig(nid: string, gatewayNodeID: string): Promise<string> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (authToken) headers.Authorization = "Bearer " + authToken;
     const res = await fetch(NS + "/wireguard-config", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ nid, gatewayNodeID }),
     });
     const text = await res.text();

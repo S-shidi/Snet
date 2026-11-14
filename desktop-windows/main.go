@@ -130,6 +130,9 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 	subnetItem := menu.Add("子网: -").SetEnabled(true).SetBitmap(subnetIcon())
 	subnetItem.SetHidden(true)
 	allowRelayItem := menu.AddCheckbox("允许本设备作为中继网关", false)
+	// Windows cannot host the delegated relay gateway safely; keep the
+	// capability hidden instead of letting users toggle a non-functional option.
+	allowRelayItem.SetHidden(true)
 	useRelayItem := menu.AddCheckbox("使用网络内的中继网关", true)
 	menu.AddSeparator()
 	openItem := menu.Add("打开控制面板")

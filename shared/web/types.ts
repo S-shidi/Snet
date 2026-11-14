@@ -86,6 +86,8 @@ export type DaemonStatus = {
   natMapping?: NatStatus;
   /** Whether this device may act as a relay gateway for the network. */
   allowRelay?: boolean;
+  /** Whether the current platform supports the delegated relay gateway. */
+  relayGatewaySupported?: boolean;
   /** Whether this device honours the network's delegated relay routes. */
   useRelay?: boolean;
   /** Why the local relay gateway setup failed (empty when healthy). */
