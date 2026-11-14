@@ -53,6 +53,12 @@ func (s *Store) GenerateWireGuardConfig(token, gatewayNodeID string) (string, er
 	if gateway == nil {
 		return "", fmt.Errorf("%w: 网关节点不存在", ErrGatewayUnavailable)
 	}
+	if gateway.ID == s.hubNodeID && !ns.n.UseHubNode {
+		ns.n.UseHubNode = true
+		if err := s.persistNetwork(ns); err != nil {
+			return "", err
+		}
+	}
 	endpoint, ok, reason := publicGatewayEndpoint(gateway)
 	if !ok {
 		return "", fmt.Errorf("%w: %s", ErrGatewayUnavailable, reason)
