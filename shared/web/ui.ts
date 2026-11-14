@@ -86,7 +86,7 @@ const ownerInfo: Record<string, NetInfoDetail> = {};
 let lastOwnerFetch = 0;
 async function refreshOwnerInfo(force = false) {
   const now = Date.now();
-  if (!force && now - lastOwnerFetch < 10000) return;
+  if (!force && now - lastOwnerFetch < 4000) return;
   lastOwnerFetch = now;
   if (!status) return;
   const ownerNets = (status.networks ?? []).filter((n) => n.owner);
@@ -617,7 +617,7 @@ async function openNetworkSettings(nid: string) {
         <div class="network-form-icon">⚙</div>
         <div><div class="network-form-title">网络设置</div><p>修改网络名称、网段或加入审批策略。</p></div>
       </div>
-      <div class="form-grid">
+      <div class="form-stack">
         <div class="form-field"><label for="s-name">网络名称</label><input id="s-name" class="form-control" type="text" value="${esc(curName)}" placeholder="留空保持不变" maxlength="64" /></div>
         <div class="form-field"><label>虚拟网段</label>${subnetWidgetHTML({ id: "s-subnet", value: curSubnet, placeholder: "留空保持不变", emptyHint: "留空保持不变" })}</div>
       </div>
@@ -1186,9 +1186,13 @@ function openCreateModal() {
         <div><div class="network-form-title">创建新的虚拟网络</div><p>创建后即可邀请其他设备加入你的私有网络。</p></div>
       </div>
       ${hint}
-      <div class="form-grid">
+      <div class="form-stack">
         <div class="form-field"><label for="m-name">网络名称</label><input id="m-name" class="form-control" type="text" placeholder="例如：家庭网络" maxlength="64" /></div>
         <div class="form-field"><label>虚拟网段</label>${subnetWidgetHTML({ id: "m-subnet", placeholder: "留空自动分配（如 10.88.0.0/24）", emptyHint: "留空自动分配，通常为 10.88.N.0/24" })}</div>
+        <div class="form-toggle-row">
+          <div><div class="form-toggle-title">新成员加入需要审批</div><div class="form-toggle-desc">开启后，加入请求会先出现在待审批列表，由你确认。</div></div>
+          <label class="switch"><input id="m-approval" type="checkbox" /><span class="slider"></span></label>
+        </div>
       </div>
       ${serverHint}
       <p class="msg" id="m-result"></p>
@@ -1210,7 +1214,8 @@ function openCreateModal() {
           const subnet = chk.value;
           const server = currentServer();
           if (!name) throw new Error("请输入网络名称");
-          const r: CreateResp = await backend.create({ server, port: s.wgport, name, subnet, approvalRequired: false });
+          const approvalRequired = (body.querySelector("#m-approval") as HTMLInputElement)?.checked ?? false;
+          const r: CreateResp = await backend.create({ server, port: s.wgport, name, subnet, approvalRequired });
           const modalEl = body;
           const mBody = modalEl.querySelector<HTMLElement>(".modal-body")!;
           const mFoot = modalEl.querySelector<HTMLElement>(".modal-foot")!;
