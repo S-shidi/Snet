@@ -22,7 +22,7 @@ Unicode true
 ## !define INFO_PROJECTNAME    "my-project" # Default "SnetMac"
 ## !define INFO_COMPANYNAME    "My Company" # Default "SNET"
 ## !define INFO_PRODUCTNAME    "My Product Name" # Default "SnetMac"
-## !define INFO_PRODUCTVERSION "1.0.0"     # Default "1.1.4"
+## !define INFO_PRODUCTVERSION "1.0.0"     # Default "1.1.5"
 ## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© 2026, My Company"
 ###
 ## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"
