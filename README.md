@@ -208,7 +208,7 @@ docker exec snetd snetd -version
 服务端可选配置：
 
 ```text
-SNET_HUB_NODE_ID=hub-node-id
+SNET_HUB_NODE_ID=hub-node-id    # Hub 在网络中的 nodeId（不是 deviceId）
 SNET_HUB_PUBLIC_KEY=<base64 WireGuard public key>
 SNET_HUB_ENDPOINT=<public-ip>:51820
 ```
