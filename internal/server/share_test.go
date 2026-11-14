@@ -239,23 +239,30 @@ func TestListPeersRoleScoping(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// plain member's view of peers: role scrubbed, but deviceId, deviceName
-	// (from the device registry) and live online status are shown. The
-	// WireGuard publicKey must remain so the member can build tunnels
-	// (hidden keys would make every peer unreachable by WG).
+	// plain member's view of peers: the creator role is visible so the member
+	// list can show who owns the network, while ordinary member roles stay
+	// scrubbed. deviceId, deviceName (from the device registry) and live online
+	// status are shown. The WireGuard publicKey must remain so the member can
+	// build tunnels (hidden keys would make every peer unreachable by WG).
 	peers, err := s.ListPeers(member.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seen := map[string]protocol.Node{}
+	ownerRoleSeen := false
 	for _, p := range peers.Peers {
 		seen[p.DeviceID+"|"+p.IP] = p
-		if p.Role != "" {
-			t.Fatalf("member peer leaked role: %+v", p)
+		if p.Role == "owner" {
+			ownerRoleSeen = true
+		} else if p.Role != "" {
+			t.Fatalf("member peer leaked non-owner role: %+v", p)
 		}
 		if p.PublicKey == "" {
 			t.Fatalf("member peer missing publicKey (must be able to build tunnels): %+v", p)
 		}
+	}
+	if !ownerRoleSeen {
+		t.Fatalf("member view must expose the creator role: %+v", peers.Peers)
 	}
 	if o := seen["dev-owner|192.168.63.1"]; o.DeviceName != "办公室 Mac" {
 		t.Fatalf("member peer missing deviceName, got %+v", o)
@@ -285,14 +292,21 @@ func TestListPeersRoleScoping(t *testing.T) {
 		t.Fatalf("owner should see full peer details: %+v", peers.Peers)
 	}
 
-	// the previous owner (now a member) sees scrubbed roles
+	// the previous owner (now a member) sees only the new creator role;
+	// ordinary member roles stay scrubbed.
 	peers, err = s.ListPeers(created.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ownerRoleSeen = false
 	for _, p := range peers.Peers {
-		if p.Role != "" {
-			t.Fatalf("former owner peer leaked role: %+v", p)
+		if p.Role == "owner" {
+			ownerRoleSeen = true
+		} else if p.Role != "" {
+			t.Fatalf("former owner peer leaked non-owner role: %+v", p)
 		}
+	}
+	if !ownerRoleSeen {
+		t.Fatalf("former owner must see the new creator role: %+v", peers.Peers)
 	}
 }
