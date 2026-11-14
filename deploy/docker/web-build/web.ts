@@ -158,6 +158,13 @@ const backend: Backend = {
   async renameDevice(name: string): Promise<void> {
     await api("/rename-device", jsonPost("/rename-device", { name }));
   },
+  async renameNodeDevice(params: { nid: string; nodeId: string; name: string }): Promise<void> {
+    await api("/rename-node-device", jsonPost("/rename-node-device", params));
+  },
+
+  async setNodeIP(params: { nid: string; nodeId: string; ip: string }): Promise<void> {
+    await api("/set-node-ip", jsonPost("/set-node-ip", params));
+  },
 
   async setRoutes(params: { nid: string; routes: RelayRoute[] }): Promise<void> {
     await api("/routes", jsonPost("/routes", { nid: params.nid, routes: params.routes }));

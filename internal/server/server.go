@@ -208,6 +208,32 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	// Update a node's WireGuard public key. Used after a client reinstall
 	// when the device generates a new keypair. Authenticated by deviceToken or
 	// by the node's own bearer token (used by periodic client-side rotation).
+	mux.HandleFunc("PATCH /api/v1/networks/{nid}/nodes/{nodeID}/device-name", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.DeviceNameReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.RenameNetworkDevice(tokenOf(r), r.PathValue("nodeID"), req.Name); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	mux.HandleFunc("PATCH /api/v1/networks/{nid}/nodes/{nodeID}/ip", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.SetNodeIPReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.SetNodeIP(tokenOf(r), r.PathValue("nodeID"), req.IP); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
 	mux.HandleFunc("PATCH /api/v1/networks/{nid}/device-name", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.DeviceNameReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

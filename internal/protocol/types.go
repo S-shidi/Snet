@@ -411,6 +411,11 @@ type DeviceNameReq struct {
 	Name string `json:"name"`
 }
 
+// SetNodeIPReq changes a node's virtual IPv4 address (owner only).
+type SetNodeIPReq struct {
+	IP string `json:"ip"`
+}
+
 // AdminRenameDeviceReq updates a device's display name in the admin console.
 type AdminRenameDeviceReq struct {
 	Name string `json:"name"`

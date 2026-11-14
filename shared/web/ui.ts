@@ -852,7 +852,7 @@ async function openInviteModal(nid: string, known?: { link: string; name?: strin
     if (!info) return;
   }
   const name = info.name || "";
-  const link = info.link;
+  let link = info.link;
   openModal({
     title: name ? `邀请加入 · ${name}` : "邀请加入",
     wide: true,
@@ -865,7 +865,6 @@ async function openInviteModal(nid: string, known?: { link: string; name?: strin
         <div class="invite-info">
           <p class="hint invite-lede">把邀请链接发给对方，对方在「加入网络」里粘贴即可加入。</p>
           <div class="invite-link-box">
-            <span class="invite-link-label">邀请链接</span>
             <code class="invite-link" id="m-link">${esc(link)}</code>
           </div>
           <button type="button" class="btn invite-copy" id="m-copy">复制邀请链接</button>
@@ -878,13 +877,41 @@ async function openInviteModal(nid: string, known?: { link: string; name?: strin
       body.querySelector("#m-copy")?.addEventListener("click", async (e) => {
         await copyText(link, e.currentTarget as HTMLButtonElement);
       });
-      body.querySelector("#m-reset")?.addEventListener("click", async () => {
-        const fresh = await rotateInviteLink(nid);
-        if (!fresh) return;
-        // The confirmation dialog replaced this modal, so reopen it with the
-        // freshly generated link.
-        closeModal();
-        openInviteModal(nid, fresh);
+      const linkEl = body.querySelector<HTMLElement>("#m-link");
+      const resetBtn = body.querySelector<HTMLButtonElement>("#m-reset");
+      let resetArmed = false;
+      let resetTimer = 0;
+      resetBtn?.addEventListener("click", async () => {
+        if (!resetArmed) {
+          resetArmed = true;
+          resetBtn.textContent = "再次点击确认重置";
+          resetBtn.classList.add("danger");
+          resetTimer = window.setTimeout(() => {
+            resetArmed = false;
+            resetBtn.textContent = "重置邀请链接";
+            resetBtn.classList.remove("danger");
+          }, 3500);
+          return;
+        }
+        resetArmed = false;
+        window.clearTimeout(resetTimer);
+        resetBtn.disabled = true;
+        resetBtn.textContent = "重置中…";
+        try {
+          const fresh = await backend.rotateInvite(nid);
+          link = fresh.link;
+          if (linkEl) linkEl.textContent = link;
+          const qr = body.querySelector<HTMLElement>("#qr");
+          if (qr) renderQR(qr, link);
+          toast("新邀请链接已生成");
+          await refresh();
+        } catch (e) {
+          toast(`重置失败: ${e}`, "err");
+        } finally {
+          resetBtn.disabled = false;
+          resetBtn.textContent = "重置邀请链接";
+          resetBtn.classList.remove("danger");
+        }
       });
     },
   });
@@ -1789,12 +1816,18 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const kick = !isSelf && canManage
       ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}">踢出</button>`
       : "";
-    const rename = isSelf
-      ? `<button type="button" class="btn ghost sm" data-detail-rename="${esc(nd.deviceName || "")}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>重命名</button>`
+    const renameIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+    const rename = !canManage
+      ? ""
+      : isSelf
+        ? `<button type="button" class="btn ghost sm" data-detail-rename="${esc(nd.deviceName || "")}">${renameIcon}重命名</button>`
+        : `<button type="button" class="btn ghost sm" data-detail-rename-node="${esc(nd.id)}" data-rename-name="${esc(nd.deviceName || "")}" data-rename-nid="${esc(n.networkId)}">${renameIcon}重命名</button>`;
+    const editIP = canManage
+      ? `<button type="button" class="btn ghost sm" data-detail-edit-ip="${esc(nd.id)}" data-edit-ip-nid="${esc(n.networkId)}" data-current-ip="${esc(nd.ip || "")}" title="修改虚拟 IP">改 IP</button>`
       : "";
     const foot = `<div class="member-card-foot">
       <span class="member-card-last">${esc(last)}</span>
-      <span class="member-card-actions">${rename}${poke}${diag}${kick}</span>
+      <span class="member-card-actions">${rename}${editIP}${poke}${diag}${kick}</span>
     </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
@@ -1813,7 +1846,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
   return `<div class="member-grid">${cards}</div>`;
 }
 
-function openRenameDeviceModal(current: string) {
+function openRenameDeviceModal(current: string, target?: { nid: string; nodeId: string }) {
   openModal({
     title: "重命名设备",
     body: `<div class="row"><label>设备名称</label><input id="rename-device-name" type="text" maxlength="64" value="${esc(current)}" placeholder="例如：办公室 Mac" autocomplete="off" /></div>
@@ -1831,13 +1864,47 @@ function openRenameDeviceModal(current: string) {
         result.className = "msg";
         result.textContent = "保存中…";
         try {
-          await backend.renameDevice(name);
+          if (target) await backend.renameNodeDevice({ nid: target.nid, nodeId: target.nodeId, name });
+          else await backend.renameDevice(name);
           toast("设备名称已更新");
           closeModal();
           await refresh();
         } catch (e) {
           result.className = "msg";
           result.textContent = `保存失败: ${e}`;
+          btn.disabled = false;
+        }
+      };
+      btn.addEventListener("click", () => void save());
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") void save(); });
+      setTimeout(() => input.focus(), 30);
+    },
+  });
+}
+
+function openEditIPModal(nid: string, nodeId: string, current: string) {
+  openModal({
+    title: "修改虚拟 IP",
+    body: `<div class="row"><label>虚拟 IP</label><input id="edit-node-ip" type="text" value="${esc(current)}" placeholder="10.88.0.10" autocomplete="off" spellcheck="false" /></div>
+      <p class="hint">IP 必须位于当前网络网段内，且不能与其他成员重复。</p>
+      <p class="msg" id="edit-node-ip-result"></p>`,
+    footer: `<button data-close class="btn ghost">取消</button><button id="edit-node-ip-save" class="btn">保存</button>`,
+    onBody: (body) => {
+      const input = body.querySelector<HTMLInputElement>("#edit-node-ip")!;
+      const result = body.querySelector<HTMLElement>("#edit-node-ip-result")!;
+      const btn = body.querySelector<HTMLButtonElement>("#edit-node-ip-save")!;
+      const save = async () => {
+        const ip = input.value.trim();
+        if (!ip) { result.textContent = "请输入虚拟 IP"; return; }
+        btn.disabled = true;
+        result.className = "msg"; result.textContent = "保存中…";
+        try {
+          await backend.setNodeIP({ nid, nodeId, ip });
+          toast("虚拟 IP 已更新");
+          closeModal();
+          await refresh();
+        } catch (e) {
+          result.className = "msg"; result.textContent = `保存失败: ${e}`;
           btn.disabled = false;
         }
       };
@@ -1995,7 +2062,6 @@ function networkDetailHTML(n: NetInfo): string {
       <button type="button" data-detail-act="detail">网络详情</button>
       ${canManage ? '<button type="button" data-detail-act="settings">编辑网络</button>' : ""}
       ${canManage ? '<button type="button" data-detail-act="subnets">子网路由管理</button>' : ""}
-      ${canManage ? '<button type="button" data-detail-act="rotate-invite">重置邀请链接</button>' : ""}
       ${canManage ? "" : '<button type="button" data-detail-act="leave">退出网络</button>'}
       ${canManage ? '<button type="button" class="danger" data-detail-act="delete">删除网络</button>' : ""}
     </div>
@@ -2156,6 +2222,19 @@ function bindNetworkDetailEvents() {
     const renameEl = target.closest<HTMLButtonElement>("[data-detail-rename]");
     if (renameEl) {
       openRenameDeviceModal(renameEl.dataset.detailRename || "");
+      return;
+    }
+    const renameNodeEl = target.closest<HTMLButtonElement>("[data-detail-rename-node]");
+    if (renameNodeEl) {
+      openRenameDeviceModal(renameNodeEl.dataset.renameName || "", {
+        nid: renameNodeEl.dataset.renameNid || detailNid || "",
+        nodeId: renameNodeEl.dataset.detailRenameNode || "",
+      });
+      return;
+    }
+    const editIPEl = target.closest<HTMLButtonElement>("[data-detail-edit-ip]");
+    if (editIPEl) {
+      openEditIPModal(editIPEl.dataset.editIpNid || detailNid || "", editIPEl.dataset.detailEditIp || "", editIPEl.dataset.currentIp || "");
       return;
     }
     const pokeEl = target.closest<HTMLButtonElement>("[data-detail-poke]");

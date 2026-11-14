@@ -144,6 +144,16 @@ func (c *apiClient) RenameDevice(nid, token, name string) error {
 		protocol.DeviceNameReq{Name: name}, nil)
 }
 
+func (c *apiClient) RenameNetworkDevice(nid, nodeID, token, name string) error {
+	return c.do(http.MethodPatch, "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/device-name", token,
+		protocol.DeviceNameReq{Name: name}, nil)
+}
+
+func (c *apiClient) SetNodeIP(nid, nodeID, token, ip string) error {
+	return c.do(http.MethodPatch, "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/ip", token,
+		protocol.SetNodeIPReq{IP: ip}, nil)
+}
+
 func (c *apiClient) SetNodeDevice(nid, nodeID, token, deviceID string) error {
 	return c.do(http.MethodPost, "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/device", token,
 		protocol.SetNodeDeviceReq{DeviceID: deviceID}, nil)

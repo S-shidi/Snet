@@ -3129,6 +3129,95 @@ func (s *Store) RegisterDevice(deviceID, publicKey, name string) error {
 	return s.upsertDeviceLocked(deviceID, publicKey, name)
 }
 
+// RenameNetworkDevice lets the network owner rename another member's device.
+func (s *Store) RenameNetworkDevice(token, nodeID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	node := ns.nodes[nodeID]
+	if node == nil || node.DeviceID == "" {
+		return ErrNotFound
+	}
+	d := s.devices[node.DeviceID]
+	if d == nil {
+		return ErrNotFound
+	}
+	name = normalizeName(name)
+	if name == "" {
+		return errors.New("设备名称不能为空")
+	}
+	d.Name = name
+	return s.persistDevice(d)
+}
+
+// SetNodeIP lets the network owner change a member's virtual IPv4 address.
+// The address must stay inside the network subnet and must not be in use.
+func (s *Store) SetNodeIP(token, nodeID, rawIP string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	node := ns.nodes[nodeID]
+	if node == nil {
+		return ErrNotFound
+	}
+	ip := net.ParseIP(strings.TrimSpace(rawIP)).To4()
+	if ip == nil {
+		return errors.New("虚拟 IP 格式无效")
+	}
+	_, subnet, err := net.ParseCIDR(ns.n.Subnet)
+	if err != nil || !subnet.Contains(ip) {
+		return fmt.Errorf("虚拟 IP 必须位于网络网段 %s 内", ns.n.Subnet)
+	}
+	base := ip.Mask(subnet.Mask)
+	if ip.Equal(base) {
+		return errors.New("不能使用网段地址")
+	}
+	ones, bits := subnet.Mask.Size()
+	if ones < bits {
+		broadcast := addIPOffset(net.IP(base), (1<<(bits-ones))-1)
+		if ip.Equal(broadcast) {
+			return errors.New("不能使用广播地址")
+		}
+	}
+	newIP := ip.String()
+	for id, other := range ns.nodes {
+		if id != nodeID && other.IP == newIP {
+			return fmt.Errorf("虚拟 IP %s 已被设备 %s 使用", newIP, id)
+		}
+	}
+	node.IP = newIP
+	node.IPv6 = deriveIPv6FromV4(newIP, ns.n.Subnet)
+	if err := s.persistNode(ns.n.ID, node); err != nil {
+		return err
+	}
+	// Keep the allocator ahead of manually assigned high addresses so future
+	// joins cannot reuse the same IP.
+	baseIP, _ := subnetBase(ns.n.Subnet)
+	baseU32 := binary.BigEndian.Uint32(baseIP.To4())
+	ipU32 := binary.BigEndian.Uint32(ip)
+	offset := int(ipU32 - baseU32)
+	if offset > ns.ipam {
+		ns.ipam = offset
+		if err := s.persistNetwork(ns); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RenameDevice updates the display name of the device that owns token.
 // RenameDevice updates the display name of the device that owns token.
 func (s *Store) RenameDevice(token, name string) error {
 	s.mu.Lock()

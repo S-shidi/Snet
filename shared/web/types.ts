@@ -151,6 +151,10 @@ export interface Backend {
   setRelayOptions(params: { allowRelay: boolean; useRelay: boolean }): Promise<void>;
   /** Rename this device on every joined network. */
   renameDevice(name: string): Promise<void>;
+  /** Rename another device in a network (owner only). */
+  renameNodeDevice(params: { nid: string; nodeId: string; name: string }): Promise<void>;
+  /** Change another device's virtual IP (owner only). */
+  setNodeIP(params: { nid: string; nodeId: string; ip: string }): Promise<void>;
   /** Replace the network's delegated relay routes (owner only) */
   setRoutes(params: { nid: string; routes: RelayRoute[] }): Promise<void>;
   /** Kick a node from a network */

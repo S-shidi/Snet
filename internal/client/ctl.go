@@ -399,6 +399,36 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		w.WriteHeader(204)
 	})
 
+	mux.HandleFunc("POST /ctl/rename-node-device", func(w http.ResponseWriter, r *http.Request) {
+		var req CtlReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.RenameNetworkDevice(req.Nid, req.NodeID, req.Name); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("POST /ctl/set-node-ip", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Nid    string `json:"nid"`
+			NodeID string `json:"nodeId"`
+			IP     string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.SetNodeIP(req.Nid, req.NodeID, req.IP); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
 	mux.HandleFunc("POST /ctl/rename-device", func(w http.ResponseWriter, r *http.Request) {
 		var req CtlReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

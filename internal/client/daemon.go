@@ -2673,13 +2673,14 @@ func (d *Daemon) Poke(target string) error {
 	if !found {
 		return errors.New("目标不在已连接的虚拟网络中")
 	}
-	conn, err := net.DialTimeout("udp", net.JoinHostPort(target, "9"), 2*time.Second)
+	conn, err := net.ListenUDP("udp", nil)
 	if err != nil {
 		return fmt.Errorf("唤醒失败：%w", err)
 	}
 	defer conn.Close()
+	dst := &net.UDPAddr{IP: ip, Port: 9}
 	for i := 0; i < 3; i++ {
-		if _, err := conn.Write([]byte{0}); err != nil {
+		if _, err := conn.WriteToUDP([]byte{0}, dst); err != nil {
 			return fmt.Errorf("唤醒失败：%w", err)
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -2983,6 +2984,28 @@ func (d *Daemon) SetDeviceName(name string) error {
 		}
 	}
 	return firstErr
+}
+
+// RenameNetworkDevice lets the network owner rename another member's device.
+func (d *Daemon) RenameNetworkDevice(nid, nodeID, name string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	return wrapNetGone(d.apiLocked().RenameNetworkDevice(nid, nodeID, nc.Token, name))
+}
+
+// SetNodeIP lets the network owner change a member's virtual IPv4 address.
+func (d *Daemon) SetNodeIP(nid, nodeID, ip string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	return wrapNetGone(d.apiLocked().SetNodeIP(nid, nodeID, nc.Token, ip))
 }
 
 // SetRoutes replaces the network's delegated relay routes. Only the network
