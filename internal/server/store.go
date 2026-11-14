@@ -2499,6 +2499,40 @@ func (s *Store) touchLocked(ns *networkState, now time.Time) {
 	}
 }
 
+// pendingForDevice returns an active (still pending) join request for deviceID.
+func pendingForDevice(ns *networkState, deviceID string) *pendingNode {
+	if deviceID == "" {
+		return nil
+	}
+	for _, p := range ns.pending {
+		if p.DeviceID == deviceID && p.Status == "pending" {
+			return p
+		}
+	}
+	return nil
+}
+
+// CancelPending withdraws a pending join before it is approved or denied.
+func (s *Store) CancelPending(pendingID, deviceID string) error {
+	if pendingID == "" || deviceID == "" {
+		return ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ns := range s.networks {
+		p := ns.pending[pendingID]
+		if p == nil || p.DeviceID != deviceID {
+			continue
+		}
+		if p.Status == "approved" {
+			return errors.New("请求已批准，无法取消")
+		}
+		delete(ns.pending, pendingID)
+		return s.deletePending(pendingID)
+	}
+	return ErrNotFound
+}
+
 func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinResp, error) {
 	code := protocol.NormalizeCode(rawCode)
 	now := time.Now()
@@ -2537,6 +2571,9 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 	}
 	if len(ns.nodes) >= protocol.MaxNodes {
 		return protocol.JoinResp{}, ErrNetworkFull
+	}
+	if deviceID != "" && pendingForDevice(ns, deviceID) != nil {
+		return protocol.JoinResp{}, errors.New("已向该网络发起申请，请勿重复请求！")
 	}
 	if p.remaining > 0 {
 		p.remaining--

@@ -466,6 +466,19 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		writeJSON(w, http.StatusOK, status)
 	})
 
+	mux.HandleFunc("POST /api/v1/pending/{pendingID}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.CancelPendingReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.CancelPending(r.PathValue("pendingID"), req.DeviceID); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("POST /api/v1/networks/{nid}/pending/{pendingID}/approve", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		if !ownerNID(w, r) {
 			return

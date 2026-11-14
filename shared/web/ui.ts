@@ -1336,6 +1336,14 @@ function openJoinModal() {
         try {
           const link = linkInput.value.trim();
           if (!link) throw new Error("请粘贴邀请链接");
+          let inviteNID = "";
+          try { inviteNID = new URL(link).searchParams.get("nid") || ""; } catch { /* backend validates */ }
+          if (inviteNID && (status?.networks ?? []).some((n) => n.networkId === inviteNID && n.serverState !== "gone")) {
+            throw new Error("该设备已加入此网络，请勿重复加入");
+          }
+          if (inviteNID && (status?.pendingJoins ?? []).some((p) => p.networkId === inviteNID && p.status !== "denied")) {
+            throw new Error("已向该网络发起申请，请勿重复请求！");
+          }
           const server = linkServerOf(link) || currentServer();
           const r: JoinResp = await backend.join({ server, port: s.wgport, link });
           result.className = "msg ok";

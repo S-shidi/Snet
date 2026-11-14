@@ -411,6 +411,11 @@ type DeviceNameReq struct {
 	Name string `json:"name"`
 }
 
+// CancelPendingReq identifies the device that wants to withdraw a pending join.
+type CancelPendingReq struct {
+	DeviceID string `json:"deviceId"`
+}
+
 // SetNodeIPReq changes a node's virtual IPv4 address (owner only).
 type SetNodeIPReq struct {
 	IP string `json:"ip"`

@@ -1020,6 +1020,14 @@ func (d *Daemon) CancelPending(pendingID string) error {
 	if pj == nil {
 		return fmt.Errorf("待批准请求 %s 未找到", pendingID)
 	}
+	if err := d.apiLocked().CancelPending(pendingID, d.cfg.DeviceID); err != nil {
+		var se *httpStatusErr
+		// 404 means the server already removed/approved it; local cleanup can
+		// still proceed. Any other error must be surfaced so the user can retry.
+		if !errors.As(err, &se) || (se.code != 404 && se.code != 401) {
+			return fmt.Errorf("取消加入请求失败: %w", err)
+		}
+	}
 	if stop := d.pendingRuns[pendingID]; stop != nil {
 		close(stop)
 		delete(d.pendingRuns, pendingID)
