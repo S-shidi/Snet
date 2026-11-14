@@ -50,6 +50,14 @@ let detailPendingId: string | null = null;
 let lastNetHTML = "";
 let lastEmptyHTML = "";
 let lastTabsHTML = "";
+async function refreshAfterDeviceChange() {
+  // Peer/owner caches have 10s TTLs; bypass them so a rename or IP edit is
+  // visible immediately instead of waiting for the next background poll.
+  await refreshPeerSubnets(true);
+  await refreshOwnerInfo(true);
+  await refresh();
+}
+
 async function refresh() {
   if (refreshing) {
     refreshAgain = true;
@@ -1868,7 +1876,7 @@ function openRenameDeviceModal(current: string, target?: { nid: string; nodeId: 
           else await backend.renameDevice(name);
           toast("设备名称已更新");
           closeModal();
-          await refresh();
+          await refreshAfterDeviceChange();
         } catch (e) {
           result.className = "msg";
           result.textContent = `保存失败: ${e}`;
@@ -1902,7 +1910,7 @@ function openEditIPModal(nid: string, nodeId: string, current: string) {
           await backend.setNodeIP({ nid, nodeId, ip });
           toast("虚拟 IP 已更新");
           closeModal();
-          await refresh();
+          await refreshAfterDeviceChange();
         } catch (e) {
           result.className = "msg"; result.textContent = `保存失败: ${e}`;
           btn.disabled = false;
