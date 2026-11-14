@@ -1825,25 +1825,25 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}">踢出</button>`
       : "";
     const renameIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
-    const rename = !canManage
+    const rename = (!canManage && !isSelf)
       ? ""
       : isSelf
-        ? `<button type="button" class="btn ghost sm" data-detail-rename="${esc(nd.deviceName || "")}">${renameIcon}重命名</button>`
-        : `<button type="button" class="btn ghost sm" data-detail-rename-node="${esc(nd.id)}" data-rename-name="${esc(nd.deviceName || "")}" data-rename-nid="${esc(n.networkId)}">${renameIcon}重命名</button>`;
+        ? `<button type="button" class="member-edit" data-detail-rename="${esc(nd.deviceName || "")}" title="重命名设备" aria-label="重命名设备">${renameIcon}</button>`
+        : `<button type="button" class="member-edit" data-detail-rename-node="${esc(nd.id)}" data-rename-name="${esc(nd.deviceName || "")}" data-rename-nid="${esc(n.networkId)}" title="重命名设备" aria-label="重命名设备">${renameIcon}</button>`;
     const editIP = canManage
-      ? `<button type="button" class="btn ghost sm" data-detail-edit-ip="${esc(nd.id)}" data-edit-ip-nid="${esc(n.networkId)}" data-current-ip="${esc(nd.ip || "")}" title="修改虚拟 IP">改 IP</button>`
+      ? `<button type="button" class="member-edit" data-detail-edit-ip="${esc(nd.id)}" data-edit-ip-nid="${esc(n.networkId)}" data-current-ip="${esc(nd.ip || "")}" title="修改虚拟 IP" aria-label="修改虚拟 IP">${renameIcon}</button>`
       : "";
     const foot = `<div class="member-card-foot">
       <span class="member-card-last">${esc(last)}</span>
-      <span class="member-card-actions">${rename}${editIP}${poke}${diag}${kick}</span>
+      <span class="member-card-actions">${poke}${diag}${kick}</span>
     </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
-        <div class="member-card-name">${deviceLabel(nd)}</div>
+        <div class="member-card-name">${deviceLabel(nd)}${rename}</div>
         ${online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>'}
       </div>
       <div class="member-card-body">
-        <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${path}</div>
+        <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${editIP}${path}</div>
         <div class="member-card-line"><span class="member-card-label">身份</span><span class="member-card-value">${roleText}</span></div>
         <div class="member-card-line member-card-public"><span class="member-card-label">公网 IP</span><span class="member-card-value"><code class="member-endpoint">${esc(public4)}</code>${showPublic6 ? `<code class="member-endpoint member-endpoint-v6">${esc(public6)}</code>` : ""}</span></div>
         <div class="member-card-line"><span class="member-card-label">子网路由</span><span class="member-card-value">${routeCell}${relay}</span></div>
