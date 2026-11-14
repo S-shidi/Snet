@@ -52,8 +52,8 @@ ManifestDPIAware true
 
 !include "MUI.nsh"
 
-!define MUI_ICON "../icon.ico"
-!define MUI_UNICON "../icon.ico"
+!define MUI_ICON "..\icon.ico"
+!define MUI_UNICON "..\icon.ico"
 # !define MUI_WELCOMEFINISHPAGE_BITMAP "resources\leftimage.bmp" #Include this to add a bitmap on the left side of the Welcome Page. Must be a size of 164x314
 !define MUI_FINISHPAGE_NOAUTOCLOSE # Wait on the INSTFILES page so the user can take a look into the details of the installation steps
 !define MUI_ABORTWARNING # This will warn the user if they exit from the installer.
@@ -73,7 +73,7 @@ ManifestDPIAware true
 #!finalize 'signtool --file "%1"'
 
 Name "${INFO_PRODUCTNAME}"
-OutFile "../../../bin/${INFO_PROJECTNAME}-Setup-v${INFO_PRODUCTVERSION}.exe" # Name of the installer's file.
+OutFile "..\..\..\bin\${INFO_PROJECTNAME}-Setup-v${INFO_PRODUCTVERSION}.exe" # Name of the installer's file.
 !if "${WAILS_INSTALL_SCOPE}" == "user"
     InstallDir "$LOCALAPPDATA\Programs\${INFO_PRODUCTNAME}"
 !else
@@ -101,9 +101,9 @@ Section
         Pop $0
     ${EndIf}
 
-    File "/oname=snetd.exe" "../../../bin/snetd.exe"
-    File "/oname=snetctl.exe" "../../../bin/snetctl.exe"
-    File "/oname=wintun.dll" "../../../bin/wintun.dll"
+    File "/oname=snetd.exe" "..\..\..\bin\snetd.exe"
+    File "/oname=snetctl.exe" "..\..\..\bin\snetctl.exe"
+    File "/oname=wintun.dll" "..\..\..\bin\wintun.dll"
 
     nsExec::ExecToLog '"$INSTDIR\snetd.exe" install'
     Pop $0

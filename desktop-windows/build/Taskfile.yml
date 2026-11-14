@@ -73,7 +73,7 @@ tasks:
     summary: Build the shared SNET web UI for the Wails v3 asset server
     run: once
     cmds:
-      - ./frontend/build-frontend.sh
+      - node ./frontend/build-frontend.mjs
     generates:
       - frontend/dist/**/*
 
