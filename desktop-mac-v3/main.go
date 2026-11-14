@@ -114,9 +114,9 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 	tray.SetTooltip("SNET 虚拟组网")
 
 	menu := app.NewMenu()
-	statusItem := menu.Add("未连接").SetEnabled(false).SetBitmap(dotIcon(color.RGBA{R: 239, G: 68, B: 68, A: 255}))
-	ipItem := menu.Add("IP: -").SetEnabled(false).SetBitmap(ipIcon())
-	subnetItem := menu.Add("子网: -").SetEnabled(false).SetBitmap(subnetIcon())
+	statusItem := menu.Add("未连接").SetEnabled(true).SetBitmap(dotIcon(color.RGBA{R: 239, G: 68, B: 68, A: 255}))
+	ipItem := menu.Add("IP: -").SetEnabled(true).SetBitmap(ipIcon())
+	subnetItem := menu.Add("子网: -").SetEnabled(true).SetBitmap(subnetIcon())
 	subnetItem.SetHidden(true)
 	menu.AddSeparator()
 	openItem := menu.Add("打开控制面板")
@@ -197,7 +197,7 @@ func dotIcon(c color.RGBA) []byte {
 }
 
 func ipIcon() []byte {
-	ink := color.RGBA{R: 210, G: 218, B: 230, A: 255}
+	ink := color.RGBA{R: 0, G: 0, B: 0, A: 255}
 	return makeIcon(func(img *image.RGBA) {
 		for y := 0; y < 16; y++ {
 			for x := 0; x < 16; x++ {
@@ -213,7 +213,7 @@ func ipIcon() []byte {
 }
 
 func subnetIcon() []byte {
-	ink := color.RGBA{R: 210, G: 218, B: 230, A: 255}
+	ink := color.RGBA{R: 0, G: 0, B: 0, A: 255}
 	return makeIcon(func(img *image.RGBA) {
 		for _, p := range [][2]int{{3, 8}, {12, 3}, {12, 13}} {
 			for y := p[1] - 1; y <= p[1]+1; y++ {
@@ -228,7 +228,7 @@ func subnetIcon() []byte {
 }
 
 func windowIcon() []byte {
-	ink := color.RGBA{R: 210, G: 218, B: 230, A: 255}
+	ink := color.RGBA{R: 0, G: 0, B: 0, A: 255}
 	return makeIcon(func(img *image.RGBA) {
 		drawLine(img, 3, 4, 12, 4, ink)
 		drawLine(img, 3, 12, 12, 12, ink)

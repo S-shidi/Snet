@@ -360,6 +360,26 @@ type ResetCodeResp struct {
 	PairingCode string `json:"pairingCode"`
 }
 
+// RotateInviteResp is returned when a network owner rotates the invite link.
+// The fresh pairing code replaces the previous one, so every link shared
+// before the rotation stops working. Link is the ready-to-share invite URL;
+// it carries the coordination server when the network is not on the default
+// one, so the joiner knows where to connect.
+type RotateInviteResp struct {
+	NetworkID   string `json:"networkId"`
+	Name        string `json:"name,omitempty"`
+	PairingCode string `json:"pairingCode"`
+	Link        string `json:"link"`
+}
+
+// InviteLinkResp carries the current invite link of a network. It is the
+// user-facing view of the pairing code: the code itself is never exposed.
+type InviteLinkResp struct {
+	NetworkID string `json:"networkId"`
+	Name      string `json:"name,omitempty"`
+	Link      string `json:"link"`
+}
+
 type Device struct {
 	ID        string `json:"id"`
 	PublicKey string `json:"publicKey"`
@@ -384,6 +404,21 @@ type RegisterDeviceReq struct {
 	DeviceID  string `json:"deviceId"`
 	PublicKey string `json:"publicKey"`
 	Name      string `json:"name,omitempty"`
+}
+
+// DeviceNameReq updates the display name of the calling device.
+type DeviceNameReq struct {
+	Name string `json:"name"`
+}
+
+// CancelPendingReq identifies the device that wants to withdraw a pending join.
+type CancelPendingReq struct {
+	DeviceID string `json:"deviceId"`
+}
+
+// SetNodeIPReq changes a node's virtual IPv4 address (owner only).
+type SetNodeIPReq struct {
+	IP string `json:"ip"`
 }
 
 // AdminRenameDeviceReq updates a device's display name in the admin console.

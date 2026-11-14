@@ -25,7 +25,7 @@ FROM alpine:3.20
 # support that older NAS kernels (Synology DSM) lack, and it then fails on
 # every command with "Table does not exist". The legacy xtables backend talks
 # to the same classic ip_tables modules the host firewall uses.
-RUN apk add --no-cache ca-certificates nginx supervisor iptables iptables-legacy ip6tables
+RUN apk add --no-cache ca-certificates nginx supervisor iptables iptables-legacy ip6tables iputils
 # Alpine keeps the binaries in /sbin while tooling and checklists often look
 # for the Debian-style /usr/sbin path. Expose both so the binary is found
 # regardless of the PATH the daemon inherits.

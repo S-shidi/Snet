@@ -38,6 +38,7 @@ var (
 	ErrManagedNetwork      = errors.New("服务端管理的网络不可认领")
 	ErrDeviceNetworkExists = errors.New("该设备已创建网络（每设备仅能创建一个）")
 	ErrRouteCIDRConflict   = errors.New("该网段已被其他节点委派，不可重复添加")
+	ErrNodeIPInvalid       = errors.New("虚拟 IP 无效")
 	ErrRelayV2Disabled     = errors.New("relay v2 is not configured")
 	// ErrAuthCodeInvalid is returned when a presented device authorization
 	// code does not match any generated code. Unlike pairing codes there is no
@@ -2498,6 +2499,40 @@ func (s *Store) touchLocked(ns *networkState, now time.Time) {
 	}
 }
 
+// pendingForDevice returns an active (still pending) join request for deviceID.
+func pendingForDevice(ns *networkState, deviceID string) *pendingNode {
+	if deviceID == "" {
+		return nil
+	}
+	for _, p := range ns.pending {
+		if p.DeviceID == deviceID && p.Status == "pending" {
+			return p
+		}
+	}
+	return nil
+}
+
+// CancelPending withdraws a pending join before it is approved or denied.
+func (s *Store) CancelPending(pendingID, deviceID string) error {
+	if pendingID == "" || deviceID == "" {
+		return ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ns := range s.networks {
+		p := ns.pending[pendingID]
+		if p == nil || p.DeviceID != deviceID {
+			continue
+		}
+		if p.Status == "approved" {
+			return errors.New("请求已批准，无法取消")
+		}
+		delete(ns.pending, pendingID)
+		return s.deletePending(pendingID)
+	}
+	return ErrNotFound
+}
+
 func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinResp, error) {
 	code := protocol.NormalizeCode(rawCode)
 	now := time.Now()
@@ -2536,6 +2571,9 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 	}
 	if len(ns.nodes) >= protocol.MaxNodes {
 		return protocol.JoinResp{}, ErrNetworkFull
+	}
+	if deviceID != "" && pendingForDevice(ns, deviceID) != nil {
+		return protocol.JoinResp{}, errors.New("已向该网络发起申请，请勿重复请求！")
 	}
 	if p.remaining > 0 {
 		p.remaining--
@@ -3129,6 +3167,123 @@ func (s *Store) RegisterDevice(deviceID, publicKey, name string) error {
 	return s.upsertDeviceLocked(deviceID, publicKey, name)
 }
 
+// RenameNetworkDevice lets the network owner rename another member's device.
+func (s *Store) RenameNetworkDevice(token, nodeID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	node := ns.nodes[nodeID]
+	if node == nil || node.DeviceID == "" {
+		return ErrNotFound
+	}
+	d := s.devices[node.DeviceID]
+	if d == nil {
+		return ErrNotFound
+	}
+	name = normalizeName(name)
+	if name == "" {
+		return errors.New("设备名称不能为空")
+	}
+	d.Name = name
+	return s.persistDevice(d)
+}
+
+// SetNodeIP lets the network owner change a member's virtual IPv4 address.
+// The address must stay inside the network subnet and must not be in use.
+func (s *Store) SetNodeIP(token, nodeID, rawIP string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	node := ns.nodes[nodeID]
+	if node == nil {
+		return ErrNotFound
+	}
+	ip := net.ParseIP(strings.TrimSpace(rawIP)).To4()
+	if ip == nil {
+		return fmt.Errorf("%w: 格式无效", ErrNodeIPInvalid)
+	}
+	_, subnet, err := net.ParseCIDR(ns.n.Subnet)
+	if err != nil || !subnet.Contains(ip) {
+		return fmt.Errorf("%w: 必须位于网络网段 %s 内", ErrNodeIPInvalid, ns.n.Subnet)
+	}
+	base := ip.Mask(subnet.Mask)
+	if ip.Equal(base) {
+		return fmt.Errorf("%w: 不能使用网段地址", ErrNodeIPInvalid)
+	}
+	ones, bits := subnet.Mask.Size()
+	if ones < bits {
+		broadcast := addIPOffset(net.IP(base), (1<<(bits-ones))-1)
+		if ip.Equal(broadcast) {
+			return fmt.Errorf("%w: 不能使用广播地址", ErrNodeIPInvalid)
+		}
+	}
+	newIP := ip.String()
+	for id, other := range ns.nodes {
+		if id != nodeID && other.IP == newIP {
+			return fmt.Errorf("%w: %s 已被节点 %s 使用", ErrNodeIPInvalid, newIP, id)
+		}
+	}
+	node.IP = newIP
+	node.IPv6 = deriveIPv6FromV4(newIP, ns.n.Subnet)
+	if err := s.persistNode(ns.n.ID, node); err != nil {
+		return err
+	}
+	// Keep the allocator ahead of manually assigned high addresses so future
+	// joins cannot reuse the same IP.
+	baseIP, _ := subnetBase(ns.n.Subnet)
+	baseU32 := binary.BigEndian.Uint32(baseIP.To4())
+	ipU32 := binary.BigEndian.Uint32(ip)
+	offset := int(ipU32 - baseU32)
+	if offset > ns.ipam {
+		ns.ipam = offset
+		if err := s.persistNetwork(ns); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RenameDevice updates the display name of the device that owns token.
+// RenameDevice updates the display name of the device that owns token.
+func (s *Store) RenameDevice(token, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	node := ns.nodes[te.NodeID]
+	if node == nil || node.DeviceID == "" {
+		return ErrNotFound
+	}
+	d := s.devices[node.DeviceID]
+	if d == nil {
+		return ErrNotFound
+	}
+	name = normalizeName(name)
+	if name == "" {
+		return errors.New("设备名称不能为空")
+	}
+	d.Name = name
+	return s.persistDevice(d)
+}
+
 // SetNodeDevice binds a device identity to one of the caller's own nodes.
 // Only the node's own token may change its binding.
 func (s *Store) SetNodeDevice(token, nodeID, deviceID string) error {
@@ -3685,6 +3840,12 @@ func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
 	}
 	pending := make([]protocol.PendingNode, 0, len(ns.pending))
 	for _, p := range ns.pending {
+		// Only unresolved requests belong in the owner view. Approved/denied
+		// records are kept for the requester's polling but must not be rendered
+		// as fresh pending cards.
+		if p.Status != "pending" {
+			continue
+		}
 		pending = append(pending, protocol.PendingNode{
 			ID:        p.ID,
 			PublicKey: p.PublicKey,
@@ -3789,6 +3950,38 @@ func (s *Store) ResetCode(token string) (string, error) {
 		return "", err
 	}
 	return ns.n.PairingCode, nil
+}
+
+// RotateInvite issues a fresh invite link for a network this node owns. The
+// new pairing code replaces the previous one in the persisted record, so every
+// link shared before the rotation stops matching and the join is rejected.
+// The returned link carries no server address: only the client knows the
+// public address of the coordination server the joiner has to reach.
+func (s *Store) RotateInvite(token string) (protocol.RotateInviteResp, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return protocol.RotateInviteResp{}, err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return protocol.RotateInviteResp{}, err
+	}
+	code, err := randomString(codeLen)
+	if err != nil {
+		return protocol.RotateInviteResp{}, err
+	}
+	ns.n.PairingCode = protocol.NormalizeCode(code)
+	ns.pairing = newPairing(ns, code)
+	if err := s.persistNetwork(ns); err != nil {
+		return protocol.RotateInviteResp{}, err
+	}
+	return protocol.RotateInviteResp{
+		NetworkID:   ns.n.ID,
+		Name:        ns.n.Name,
+		PairingCode: ns.n.PairingCode,
+		Link:        protocol.BuildLink(ns.n.ID, ns.n.PairingCode, "", ns.n.Name),
+	}, nil
 }
 
 // KickNode removes a member node from the network. The owner node itself

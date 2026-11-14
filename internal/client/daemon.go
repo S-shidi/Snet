@@ -541,6 +541,9 @@ func (d *Daemon) publicKeyLocked() string {
 
 // hostnameLocked returns the hostname assuming the caller already holds d.mu.
 func (d *Daemon) hostnameLocked() string {
+	if d.cfg.DeviceName != "" {
+		return d.cfg.DeviceName
+	}
 	if d.hostnameCache != "" {
 		return d.hostnameCache
 	}
@@ -1016,6 +1019,14 @@ func (d *Daemon) CancelPending(pendingID string) error {
 	pj := d.cfg.PendingJoins[pendingID]
 	if pj == nil {
 		return fmt.Errorf("待批准请求 %s 未找到", pendingID)
+	}
+	if err := d.apiLocked().CancelPending(pendingID, d.cfg.DeviceID); err != nil {
+		var se *httpStatusErr
+		// 404 means the server already removed/approved it; local cleanup can
+		// still proceed. Any other error must be surfaced so the user can retry.
+		if !errors.As(err, &se) || (se.code != 404 && se.code != 401) {
+			return fmt.Errorf("取消加入请求失败: %w", err)
+		}
 	}
 	if stop := d.pendingRuns[pendingID]; stop != nil {
 		close(stop)
@@ -2647,6 +2658,45 @@ func (d *Daemon) leaveLocked(nid string) {
 	delete(d.retryAttempts, nid)
 }
 
+// Poke sends a few UDP datagrams to a peer's virtual IP. The packets are
+// routed through the WireGuard TUN, which forces the peer to re-handshake and
+// refreshes both sides' NAT mappings when a direct path has gone stale.
+func (d *Daemon) Poke(target string) error {
+	ip := net.ParseIP(strings.TrimSpace(target))
+	if ip == nil || ip.To4() == nil {
+		return errors.New("目标必须是有效的 IPv4 地址")
+	}
+	d.mu.Lock()
+	found := false
+	for _, nc := range d.cfg.Networks {
+		if nc == nil || !nc.Active || nc.Subnet == "" || nc.IP == target {
+			continue
+		}
+		if _, subnet, err := net.ParseCIDR(nc.Subnet); err == nil && subnet.Contains(ip) {
+			found = true
+			break
+		}
+	}
+	d.mu.Unlock()
+	if !found {
+		return errors.New("目标不在已连接的虚拟网络中")
+	}
+	conn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return fmt.Errorf("唤醒失败：%w", err)
+	}
+	defer conn.Close()
+	dst := &net.UDPAddr{IP: ip, Port: 9}
+	for i := 0; i < 3; i++ {
+		if _, err := conn.WriteToUDP([]byte{0}, dst); err != nil {
+			return fmt.Errorf("唤醒失败：%w", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
+}
+
+// Rejoin brings a network's tunnel back up.
 // Rejoin brings a network's tunnel back up.
 func (d *Daemon) Rejoin(nid string) error {
 	d.mu.Lock()
@@ -2906,6 +2956,67 @@ func (d *Daemon) RelayOptions() (allowRelay, useRelay bool, relayErr string) {
 	return d.cfg.RelayAllowed(), d.cfg.RelayUsed(), d.relayErr
 }
 
+// SetDeviceName changes this device's display name on every joined network.
+// The name is persisted locally and re-reported on the next startup.
+func (d *Daemon) SetDeviceName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("设备名称不能为空")
+	}
+	if len([]rune(name)) > 64 {
+		return errors.New("设备名称不能超过 64 个字符")
+	}
+	d.mu.Lock()
+	d.cfg.DeviceName = name
+	d.hostnameCache = name
+	type target struct {
+		nid   string
+		token string
+	}
+	targets := make([]target, 0, len(d.cfg.Networks))
+	for nid, nc := range d.cfg.Networks {
+		if nc != nil {
+			targets = append(targets, target{nid: nid, token: nc.Token})
+		}
+	}
+	api := d.apiLocked()
+	if err := d.save(); err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	d.mu.Unlock()
+	var firstErr error
+	for _, t := range targets {
+		if err := api.RenameDevice(t.nid, t.token, name); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("更新设备名称失败: %w", err)
+		}
+	}
+	return firstErr
+}
+
+// RenameNetworkDevice lets the network owner rename another member's device.
+func (d *Daemon) RenameNetworkDevice(nid, nodeID, name string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	return wrapNetGone(d.apiLocked().RenameNetworkDevice(nid, nodeID, nc.Token, name))
+}
+
+// SetNodeIP lets the network owner change a member's virtual IPv4 address.
+func (d *Daemon) SetNodeIP(nid, nodeID, ip string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	return wrapNetGone(d.apiLocked().SetNodeIP(nid, nodeID, nc.Token, ip))
+}
+
+// SetRoutes replaces the network's delegated relay routes. Only the network
 // SetRoutes replaces the network's delegated relay routes. Only the network
 // owner may delegate routes; the server keeps them pending until the target
 // node confirms it can act as the gateway.
@@ -3148,6 +3259,64 @@ func (d *Daemon) ResetCode(nid string) (string, error) {
 	return code, wrapNetGone(err)
 }
 
+// ErrInviteExpired reports that the invite link can no longer be rebuilt:
+// the server lost the plaintext pairing code (it only stores a hash), e.g.
+// after a restart. The owner has to rotate the link to get a working one.
+var ErrInviteExpired = errors.New("邀请链接已失效，请重置邀请链接")
+
+// inviteLinkLocked builds the shareable invite link of a network. The
+// coordination server address is embedded in the link only when the network
+// does not live on the official server, so a joiner always reaches the right
+// one. Callers must hold d.mu.
+func (d *Daemon) inviteLinkLocked(nid, code, name string) string {
+	server := ""
+	if addr := d.serverAddrLocked(); addr != "" && !strings.EqualFold(addr, constants.DefaultServer) {
+		server = addr
+	}
+	return protocol.BuildLink(nid, code, server, name)
+}
+
+// InviteLink returns the current invite link of a network this node owns.
+// The pairing code and the network id stay internal: only the link is handed
+// out, so joining always goes through an invite link.
+func (d *Daemon) InviteLink(nid string) (protocol.InviteLinkResp, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return protocol.InviteLinkResp{}, fmt.Errorf("网络 %s 未找到", nid)
+	}
+	info, err := d.apiLocked().NetworkInfo(nid, nc.Token)
+	if err != nil {
+		return protocol.InviteLinkResp{}, wrapNetGone(err)
+	}
+	if info.PairingCode == "" {
+		return protocol.InviteLinkResp{}, ErrInviteExpired
+	}
+	return protocol.InviteLinkResp{
+		NetworkID: info.ID,
+		Name:      info.Name,
+		Link:      d.inviteLinkLocked(info.ID, info.PairingCode, info.Name),
+	}, nil
+}
+
+// RotateInvite issues a fresh invite link for a network this node owns. Every
+// link shared before the rotation stops working immediately.
+func (d *Daemon) RotateInvite(nid string) (protocol.RotateInviteResp, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return protocol.RotateInviteResp{}, fmt.Errorf("网络 %s 未找到", nid)
+	}
+	resp, err := d.apiLocked().RotateInvite(nid, nc.Token)
+	if err != nil {
+		return resp, wrapNetGone(err)
+	}
+	resp.Link = d.inviteLinkLocked(resp.NetworkID, resp.PairingCode, resp.Name)
+	return resp, nil
+}
+
 // Info fetches full network info from the server (owner details included).
 func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 	d.mu.Lock()
@@ -3159,6 +3328,7 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 	api := d.apiLocked()
 	token := nc.Token
 	owner := nc.Owner
+	deviceID := d.cfg.DeviceID
 	d.mu.Unlock()
 	var resp protocol.NetworkInfoResp
 	var err error
@@ -3166,6 +3336,24 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 		resp, err = api.NetworkInfo(nid, token)
 	} else {
 		resp, err = api.MemberNetworkInfo(nid, token)
+		if err == nil {
+			// A server-side ownership change (or a config written by an older
+			// client) can leave the local Owner flag stale. Detect the role from
+			// the member-safe node list, persist it, and reload the owner view so
+			// pending join requests become visible immediately.
+			for _, node := range resp.Nodes {
+				if node.DeviceID == deviceID && node.Role == "owner" {
+					d.mu.Lock()
+					if current := d.cfg.Networks[nid]; current != nil {
+						current.Owner = true
+						_ = d.save()
+					}
+					d.mu.Unlock()
+					resp, err = api.NetworkInfo(nid, token)
+					break
+				}
+			}
+		}
 	}
 	return resp, wrapNetGone(err)
 }

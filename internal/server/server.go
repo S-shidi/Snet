@@ -208,6 +208,45 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	// Update a node's WireGuard public key. Used after a client reinstall
 	// when the device generates a new keypair. Authenticated by deviceToken or
 	// by the node's own bearer token (used by periodic client-side rotation).
+	mux.HandleFunc("PATCH /api/v1/networks/{nid}/nodes/{nodeID}/device-name", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.DeviceNameReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.RenameNetworkDevice(tokenOf(r), r.PathValue("nodeID"), req.Name); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	mux.HandleFunc("PATCH /api/v1/networks/{nid}/nodes/{nodeID}/ip", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.SetNodeIPReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.SetNodeIP(tokenOf(r), r.PathValue("nodeID"), req.IP); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	mux.HandleFunc("PATCH /api/v1/networks/{nid}/device-name", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.DeviceNameReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.RenameDevice(tokenOf(r), req.Name); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
 	mux.HandleFunc("POST /api/v1/networks/{nid}/nodes/{nodeID}/publickey", func(w http.ResponseWriter, r *http.Request) {
 		nid := r.PathValue("nid")
 		nodeID := r.PathValue("nodeID")
@@ -427,6 +466,19 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		writeJSON(w, http.StatusOK, status)
 	})
 
+	mux.HandleFunc("POST /api/v1/pending/{pendingID}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.CancelPendingReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.CancelPending(r.PathValue("pendingID"), req.DeviceID); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	mux.HandleFunc("POST /api/v1/networks/{nid}/pending/{pendingID}/approve", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		if !ownerNID(w, r) {
 			return
@@ -460,6 +512,21 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, protocol.ResetCodeResp{PairingCode: code})
+	}))
+
+	// Rotate the invite link (owner only). A fresh pairing code replaces the
+	// persisted one, so links shared before the rotation no longer match and
+	// the join is refused. The response carries the ready-to-share link.
+	mux.HandleFunc("POST /api/v1/networks/{nid}/rotate-invite", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if !ownerNID(w, r) {
+			return
+		}
+		resp, err := s.RotateInvite(tokenOf(r))
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}))
 
 	mux.HandleFunc("DELETE /api/v1/networks/{nid}/members/{nodeID}", requireToken(func(w http.ResponseWriter, r *http.Request) {
@@ -1165,6 +1232,8 @@ func handleStoreErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrDeviceNetworkExists):
 		writeErr(w, http.StatusConflict, err)
 	case errors.Is(err, ErrRouteCIDRConflict):
+		writeErr(w, http.StatusBadRequest, err)
+	case errors.Is(err, ErrNodeIPInvalid):
 		writeErr(w, http.StatusBadRequest, err)
 	case errors.Is(err, ErrAuthCodeInvalid):
 		writeErr(w, http.StatusNotFound, errors.New("无效的设备授权码"))

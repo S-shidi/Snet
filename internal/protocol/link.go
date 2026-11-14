@@ -48,3 +48,19 @@ func ParseLink(s string) (nid, code, server, name string, err error) {
 	}
 	return "", "", "", "", fmt.Errorf("invalid link format %q", s)
 }
+
+// ParseInviteLink is the strict variant of ParseLink used by the user-facing
+// join path: only a snet://, http:// or https:// URL is accepted. The bare
+// "nid:code" shortcut is rejected on purpose, so joining a network always
+// goes through an invite link.
+func ParseInviteLink(s string) (nid, code, server, name string, err error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "", "", "", fmt.Errorf("empty invite link")
+	}
+	lower := strings.ToLower(s)
+	if !strings.HasPrefix(lower, "snet://") && !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return "", "", "", "", fmt.Errorf("invite link must be a snet:// URL")
+	}
+	return ParseLink(s)
+}

@@ -53,6 +53,7 @@ type Config struct {
 	WireguardPort int                     `json:"wireguardPort"`
 	PrivateKey    string                  `json:"privateKey"`
 	DeviceID      string                  `json:"deviceId,omitempty"`
+	DeviceName    string                  `json:"deviceName,omitempty"`
 	Networks      map[string]*NetworkCfg  `json:"networks,omitempty"`     // key = network ID
 	PendingJoins  map[string]*PendingJoin `json:"pendingJoins,omitempty"` // key = pending ID`
 

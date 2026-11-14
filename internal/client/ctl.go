@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -43,6 +44,18 @@ var (
 	pingLossRE = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%\s+(?:packet )?loss`)
 	pingAvgRE  = regexp.MustCompile(`(?:rtt|round-trip)[^=]*=\s*[0-9.]+\/([0-9.]+)\/`)
 )
+
+func pingBinary() string {
+	if p, err := exec.LookPath("ping"); err == nil {
+		return p
+	}
+	for _, p := range []string{"/sbin/ping", "/bin/ping", "/usr/bin/ping", "/usr/local/bin/ping"} {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
 
 func parsePingOutput(out string) (float64, float64) {
 	loss, avg := 100.0, 0.0
@@ -88,7 +101,6 @@ type CtlReq struct {
 	Port   int    `json:"port"`
 	Link   string `json:"link"`
 	Nid    string `json:"nid"`
-	Code   string `json:"code"`
 	Name   string `json:"name"`
 	Subnet string `json:"subnet"`
 	NodeID string `json:"nodeId"`
@@ -105,6 +117,16 @@ type CtlReq struct {
 	Description *string   `json:"description"`
 	Tags        *[]string `json:"tags"`
 	Visibility  *string   `json:"visibility"`
+}
+
+// CtlJoinReq is the request body of the join endpoint. An invite link is the
+// only accepted way in: the network id, the pairing code and the target
+// server all travel inside the link, so nothing can be tampered with one by
+// one.
+type CtlJoinReq struct {
+	Server string `json:"server"`
+	Port   int    `json:"port"`
+	Link   string `json:"link"`
 }
 
 // ServeCtl exposes the local control API for snetctl and the Tauri UI.
@@ -164,20 +186,17 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 	})
 
 	mux.HandleFunc("POST /ctl/join", func(w http.ResponseWriter, r *http.Request) {
-		var req CtlReq
+		var req CtlJoinReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeCtlErr(w, 400, err)
 			return
 		}
-		nid, code := req.Nid, req.Code
-		linkServer := ""
-		if req.Link != "" {
-			var err error
-			nid, code, linkServer, _, err = protocol.ParseLink(req.Link)
-			if err != nil {
-				writeCtlErr(w, 400, err)
-				return
-			}
+		// The invite link is the only accepted credential: it carries the
+		// network id, the pairing code and the server to join.
+		nid, code, linkServer, _, err := protocol.ParseInviteLink(req.Link)
+		if err != nil {
+			writeCtlErr(w, 400, fmt.Errorf("邀请链接无效: %w", err))
+			return
 		}
 		// An invite link that carries its own server address wins over the
 		// request field: the join targets the network's own server. Both must
@@ -187,6 +206,42 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			server = resolveServer(linkServer)
 		}
 		resp, err := d.Join(server, req.Port, nid, code)
+		if err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		writeCtlJSON(w, 200, resp)
+	})
+
+	// InviteLink returns the current invite link of a network. The pairing
+	// code and the network id are never handed out separately.
+	mux.HandleFunc("GET /ctl/invite", func(w http.ResponseWriter, r *http.Request) {
+		nid := r.URL.Query().Get("nid")
+		if nid == "" {
+			writeCtlErr(w, 400, errors.New("nid is required"))
+			return
+		}
+		resp, err := d.InviteLink(nid)
+		if err != nil {
+			if errors.Is(err, ErrInviteExpired) {
+				writeCtlErr(w, 409, err)
+				return
+			}
+			writeCtlErr(w, 500, err)
+			return
+		}
+		writeCtlJSON(w, 200, resp)
+	})
+
+	// RotateInvite replaces the invite link of a network. Every link shared
+	// before the rotation stops working immediately.
+	mux.HandleFunc("POST /ctl/rotate-invite", func(w http.ResponseWriter, r *http.Request) {
+		var req CtlReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		resp, err := d.RotateInvite(req.Nid)
 		if err != nil {
 			writeCtlErr(w, 500, err)
 			return
@@ -216,19 +271,45 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			writeCtlErr(w, 400, errors.New("target must be an IP address"))
 			return
 		}
+		bin := pingBinary()
+		if bin == "" {
+			writeCtlErr(w, 500, errors.New("诊断失败：容器内未找到 ping 命令，请更新客户端镜像"))
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 		defer cancel()
 		wait := "2"
 		if runtime.GOOS == "darwin" {
 			wait = "2000"
 		}
-		out, err := exec.CommandContext(ctx, "ping", "-c", "3", "-W", wait, target).CombinedOutput()
+		out, err := exec.CommandContext(ctx, bin, "-c", "3", "-W", wait, target).CombinedOutput()
 		if err != nil && len(out) == 0 {
-			writeCtlErr(w, 500, err)
+			writeCtlErr(w, 500, fmt.Errorf("诊断失败：无法执行 ping：%w", err))
 			return
 		}
 		loss, avg := parsePingOutput(string(out))
+		if loss >= 100 {
+			writeCtlErr(w, 502, errors.New("诊断失败：目标不可达"))
+			return
+		}
 		writeCtlJSON(w, 200, map[string]any{"loss": loss, "avgRtt": avg})
+	})
+
+	// Poke sends a few UDP datagrams through the tunnel to force WireGuard to
+	// re-handshake with a sleeping peer and refresh NAT mappings.
+	mux.HandleFunc("POST /ctl/poke", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Target string `json:"target"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.Poke(strings.TrimSpace(req.Target)); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
 	})
 
 	mux.HandleFunc("GET /ctl/logs", func(w http.ResponseWriter, r *http.Request) {
@@ -312,6 +393,49 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			return
 		}
 		if err := d.UpdateSettings(req.Nid, req.Name, "", nil); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("POST /ctl/rename-node-device", func(w http.ResponseWriter, r *http.Request) {
+		var req CtlReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.RenameNetworkDevice(req.Nid, req.NodeID, req.Name); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("POST /ctl/set-node-ip", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Nid    string `json:"nid"`
+			NodeID string `json:"nodeId"`
+			IP     string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.SetNodeIP(req.Nid, req.NodeID, req.IP); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("POST /ctl/rename-device", func(w http.ResponseWriter, r *http.Request) {
+		var req CtlReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.SetDeviceName(req.Name); err != nil {
 			writeCtlErr(w, 500, err)
 			return
 		}

@@ -1,7 +1,7 @@
 /* ── Web adapter: fetch HTTP → shared UI ────────────────────────
  * Thin adapter: provides Backend + auth flow, delegates UI to shared/ui.ts.
  */
-import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute } from "../../../shared/web/types.js";
+import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute, InviteLinkResp, RotateInviteResp } from "../../../shared/web/types.js";
 import { DEFAULT_SERVER } from "../../../shared/web/types.js";
 import { init } from "../../../shared/web/ui.js";
 
@@ -155,6 +155,17 @@ const backend: Backend = {
     await api("/relay", jsonPost("/relay", { allowRelay: params.allowRelay, useRelay: params.useRelay }));
   },
 
+  async renameDevice(name: string): Promise<void> {
+    await api("/rename-device", jsonPost("/rename-device", { name }));
+  },
+  async renameNodeDevice(params: { nid: string; nodeId: string; name: string }): Promise<void> {
+    await api("/rename-node-device", jsonPost("/rename-node-device", params));
+  },
+
+  async setNodeIP(params: { nid: string; nodeId: string; ip: string }): Promise<void> {
+    await api("/set-node-ip", jsonPost("/set-node-ip", params));
+  },
+
   async setRoutes(params: { nid: string; routes: RelayRoute[] }): Promise<void> {
     await api("/routes", jsonPost("/routes", { nid: params.nid, routes: params.routes }));
   },
@@ -175,8 +186,12 @@ const backend: Backend = {
     await api("/cancel-pending", jsonPost("/cancel-pending", { pendingId }));
   },
 
-  async resetCode(nid: string): Promise<{ pairingCode: string }> {
-    return api("/reset-code", jsonPost("/reset-code", { nid }));
+  async inviteLink(nid: string): Promise<InviteLinkResp> {
+    return api("/invite?nid=" + encodeURIComponent(nid));
+  },
+
+  async rotateInvite(nid: string): Promise<RotateInviteResp> {
+    return api("/rotate-invite", jsonPost("/rotate-invite", { nid }));
   },
 
   async detectLocalSubnets(): Promise<string[]> {
@@ -186,6 +201,10 @@ const backend: Backend = {
 
   async ping(target: string): Promise<{ loss: number; avgRtt: number }> {
     return api("/ping", jsonPost("/ping", { target }));
+  },
+
+  async poke(target: string): Promise<void> {
+    await api("/poke", jsonPost("/poke", { target }));
   },
 
   async logs(): Promise<string> {
