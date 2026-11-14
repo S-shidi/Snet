@@ -29,6 +29,10 @@ var assets embed.FS
 var trayIcon []byte
 
 func main() {
+	showEvent, first := acquireSingleInstance()
+	if !first {
+		os.Exit(0)
+	}
 	initLogging()
 	log.Printf("SnetWindows: starting")
 	svc := &SnetService{}
@@ -73,6 +77,10 @@ func main() {
 		showWindow(window)
 		trayWatchOnce.Do(func() {
 			go watchTrayStatus(statusItem, ipItem, subnetItem)
+		})
+		watchShowRequests(showEvent, func() {
+			log.Printf("SnetWindows: second launch requested window")
+			showWindow(window)
 		})
 		// Start the daemon off the UI thread. The window is already visible
 		// and the frontend polls /desktop/status while UAC/startup completes.

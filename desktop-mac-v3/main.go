@@ -29,6 +29,11 @@ var assets embed.FS
 var trayIcon []byte
 
 func main() {
+	release, first := acquireSingleInstance()
+	if !first {
+		return
+	}
+	defer release()
 	initLogging()
 	log.Printf("SnetMac: starting")
 	svc := &SnetService{}
