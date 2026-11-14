@@ -38,6 +38,7 @@ var (
 	ErrManagedNetwork      = errors.New("服务端管理的网络不可认领")
 	ErrDeviceNetworkExists = errors.New("该设备已创建网络（每设备仅能创建一个）")
 	ErrRouteCIDRConflict   = errors.New("该网段已被其他节点委派，不可重复添加")
+	ErrNodeIPInvalid       = errors.New("虚拟 IP 无效")
 	ErrRelayV2Disabled     = errors.New("relay v2 is not configured")
 	// ErrAuthCodeInvalid is returned when a presented device authorization
 	// code does not match any generated code. Unlike pairing codes there is no
@@ -3174,27 +3175,27 @@ func (s *Store) SetNodeIP(token, nodeID, rawIP string) error {
 	}
 	ip := net.ParseIP(strings.TrimSpace(rawIP)).To4()
 	if ip == nil {
-		return errors.New("虚拟 IP 格式无效")
+		return fmt.Errorf("%w: 格式无效", ErrNodeIPInvalid)
 	}
 	_, subnet, err := net.ParseCIDR(ns.n.Subnet)
 	if err != nil || !subnet.Contains(ip) {
-		return fmt.Errorf("虚拟 IP 必须位于网络网段 %s 内", ns.n.Subnet)
+		return fmt.Errorf("%w: 必须位于网络网段 %s 内", ErrNodeIPInvalid, ns.n.Subnet)
 	}
 	base := ip.Mask(subnet.Mask)
 	if ip.Equal(base) {
-		return errors.New("不能使用网段地址")
+		return fmt.Errorf("%w: 不能使用网段地址", ErrNodeIPInvalid)
 	}
 	ones, bits := subnet.Mask.Size()
 	if ones < bits {
 		broadcast := addIPOffset(net.IP(base), (1<<(bits-ones))-1)
 		if ip.Equal(broadcast) {
-			return errors.New("不能使用广播地址")
+			return fmt.Errorf("%w: 不能使用广播地址", ErrNodeIPInvalid)
 		}
 	}
 	newIP := ip.String()
 	for id, other := range ns.nodes {
 		if id != nodeID && other.IP == newIP {
-			return fmt.Errorf("虚拟 IP %s 已被设备 %s 使用", newIP, id)
+			return fmt.Errorf("%w: %s 已被节点 %s 使用", ErrNodeIPInvalid, newIP, id)
 		}
 	}
 	node.IP = newIP

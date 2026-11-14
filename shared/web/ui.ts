@@ -1891,16 +1891,52 @@ function openRenameDeviceModal(current: string, target?: { nid: string; nodeId: 
 }
 
 function openEditIPModal(nid: string, nodeId: string, current: string) {
-  const octets = current.split(".");
-  const initial = [0, 1, 2, 3].map((i) => /^\d{1,3}$/.test(octets[i] || "") ? octets[i] : "");
-  const segment = (i: number) => `<input class="ip-octet" inputmode="numeric" pattern="[0-9]*" maxlength="3" value="${esc(initial[i])}" aria-label="IP 第 ${i + 1} 段" data-octet="${i}" />`;
+  const net = (status?.networks ?? []).find((n) => n.networkId === nid) ?? ownerInfo[nid];
+  const subnet = net?.subnet || "";
+  const parts = subnet.split("/");
+  const prefix = Number(parts[1]);
+  const base = (parts[0] || "").split(".").map((v) => Number(v));
+  if (parts.length !== 2 || !Number.isInteger(prefix) || prefix < 8 || prefix > 24 || base.length !== 4 || base.some((v) => !Number.isInteger(v))) {
+    openModal({
+      title: "修改虚拟 IP",
+      body: `<p class="msg">无法读取当前网络网段，已禁止编辑虚拟 IP。</p>`,
+      footer: `<button data-close class="btn ghost">关闭</button>`,
+    });
+    return;
+  }
+  const currentParts = current.split(".").map((v) => Number(v));
+  const maskOctet = (i: number): number => {
+    const bits = prefix - i * 8;
+    if (bits >= 8) return 255;
+    if (bits <= 0) return 0;
+    return (0xff << (8 - bits)) & 0xff;
+  };
+  const octets = [0, 1, 2, 3].map((i) => {
+    const mask = maskOctet(i);
+    const fixed = base[i] & mask;
+    let min = fixed;
+    let max = fixed + (255 - mask);
+    // The last octet cannot be the network or broadcast address.
+    if (i === 3) { min = Math.max(min, 1); max = Math.min(max, 254); }
+    const initial = Number.isInteger(currentParts[i]) && currentParts[i] >= min && currentParts[i] <= max
+      ? currentParts[i]
+      : (mask === 255 ? base[i] : min);
+    return { mask, min, max, initial };
+  });
+  const segment = (i: number) => {
+    if (octets[i].mask === 255) {
+      return `<span class="ip-locked" title="由网络网段固定">${octets[i].initial}</span>`;
+    }
+    return `<input class="ip-octet" inputmode="numeric" pattern="[0-9]*" maxlength="3" value="${octets[i].initial}" data-index="${i}" data-min="${octets[i].min}" data-max="${octets[i].max}" aria-label="IP 第 ${i + 1} 段（${octets[i].min}-${octets[i].max}）" />`;
+  };
   openModal({
     title: "修改虚拟 IP",
     body: `<div class="ip-edit-row">
         <label>虚拟 IP</label>
         <div class="ip-segmented">${segment(0)}<span>.</span>${segment(1)}<span>.</span>${segment(2)}<span>.</span>${segment(3)}</div>
       </div>
-      <p class="hint">IP 必须位于当前网络网段内，且不能与其他成员重复。</p>
+      <p class="hint">当前网段 <code>${esc(subnet)}</code>：灰色段由网段固定，只能编辑高亮数字段。</p>
+      <p class="hint">IP 必须位于该网段内，且不能与其他成员重复。</p>
       <p class="msg" id="edit-node-ip-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="edit-node-ip-save" class="btn">保存</button>`,
     onBody: (body) => {
@@ -1931,20 +1967,29 @@ function openEditIPModal(nid: string, nodeId: string, current: string) {
         });
         input.addEventListener("paste", (e) => {
           const text = (e.clipboardData?.getData("text") || "").trim();
-          if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(text)) return;
+          const pasted = text.split(".").map((v) => Number(v));
+          if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(text) || pasted.some((v) => v > 255)) return;
           e.preventDefault();
-          const parts = text.split(".");
-          inputs.forEach((el, i) => { el.value = parts[i] || ""; });
-          inputs[3].focus();
+          for (const input of inputs) {
+            const idx = Number(input.dataset.index);
+            input.value = String(pasted[idx] ?? "");
+          }
+          inputs[inputs.length - 1]?.focus();
         });
       });
 
       const readIP = (): string => {
-        const values = inputs.map((i) => i.value.trim());
-        if (values.some((v) => v === "")) throw new Error("请填写完整的 IPv4 地址");
-        const nums = values.map((v) => Number(v));
-        if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) throw new Error("每段必须在 0–255 之间");
-        return nums.join(".");
+        const values = octets.map((o, i) => {
+          const input = body.querySelector<HTMLInputElement>(`.ip-octet[data-index="${i}"]`);
+          if (!input) return o.mask === 255 ? o.initial : o.min;
+          const n = Number(input.value.trim());
+          if (input.value.trim() === "" || !Number.isInteger(n)) throw new Error("请填写完整的 IPv4 地址");
+          if (n < o.min || n > o.max) {
+            throw new Error(`第 ${i + 1} 段必须在 ${o.min}–${o.max} 之间`);
+          }
+          return n;
+        });
+        return values.join(".");
       };
 
       const save = async () => {
@@ -1958,7 +2003,7 @@ function openEditIPModal(nid: string, nodeId: string, current: string) {
             closeModal();
             await refreshAfterDeviceChange();
           } catch (e) {
-            result.className = "msg"; result.textContent = `保存失败: ${e}`;
+            result.className = "msg"; result.textContent = `保存失败: ${String(e).replace(/^Error:\s*/, "")}`;
             btn.disabled = false;
           }
         } catch (e) {
@@ -1966,7 +2011,8 @@ function openEditIPModal(nid: string, nodeId: string, current: string) {
         }
       };
       btn.addEventListener("click", () => void save());
-      inputs[0]?.focus();
+      const first = inputs[0];
+      if (first) setTimeout(() => first.focus(), 30);
     },
   });
 }
