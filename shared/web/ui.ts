@@ -2485,7 +2485,7 @@ function networkDetailHTML(n: NetInfo): string {
     <div class="detail-heading">
       <div class="detail-title-row"><div class="detail-title">${esc(n.name || n.networkId)}</div>${rolePill}</div>
       <div class="detail-meta-line">
-        <span class="detail-net-id">网络 ID <code>${esc(n.networkId)}</code></span>
+        <span class="detail-net-id"><code>${esc(n.networkId)}</code></span>
         <span>↑ ${fmtSpeed(status?.txSpeed)} · ↓ ${fmtSpeed(status?.rxSpeed)}</span>
         <span>NAT ${esc(nat)}</span>
         <span>${activeRoutes} 条生效路由</span>

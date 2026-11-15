@@ -414,7 +414,11 @@ body.empty-mode { overflow: hidden; }
 .detail-head-actions { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
 .detail-heading { min-width: 0; flex: 1; }
 .detail-conn-switch { flex: none; margin: 0 2px; }
-.detail-more { position: relative; flex: none; }
+.detail-head-actions .btn {
+  height: 24px; padding: 0 11px; border-radius: 999px;
+  font-size: 12px; line-height: 1;
+}
+.detail-more { position: relative; flex: none; display: flex; align-items: center; }
 .detail-more-menu {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
   min-width: 150px; padding: 5px; border: 1px solid var(--border); border-radius: 9px;
