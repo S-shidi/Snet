@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* ── Shared UI logic for SNET client ──────────────────────────────
  * This module is the single source of truth for the client UI.
  * Platform adapters (Desktop/Web/Android) provide a Backend implementation

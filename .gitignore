@@ -64,3 +64,13 @@ skills-lock.json
 # Production deployment secrets/artifacts (never commit)
 deploy-prod/docker-server/.env
 dist-deploy/
+
+# Credentials and private material (never commit)
+.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+*.ovpn
+*.ppk

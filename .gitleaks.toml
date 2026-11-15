@@ -1,0 +1,13 @@
+title = "SNET secret scanning"
+
+[allowlist]
+description = "Deterministic test-only relay secrets; not production credentials"
+paths = [
+  '''internal/relay/ticket_test\.go''',
+  '''internal/client/pathmanager_test\.go''',
+  '''internal/server/node_auth_matrix_test\.go''',
+  '''internal/server/relay_v2_test\.go''',
+]
+regexes = [
+  '''0123456789abcdef0123456789abcdef''',
+]
