@@ -129,8 +129,18 @@ jobs:
           "@ | Set-Content -Path "$stage/README.txt" -Encoding utf8
 
           Compress-Archive -Path "$stage/*" -DestinationPath Snet-windows-amd64.zip -Force
-          Get-FileHash Snet-windows-amd64.zip -Algorithm SHA256 | Format-List
-          Get-FileHash "SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe" -Algorithm SHA256 | Format-List
+
+          # Browsers commonly flag unsigned .exe downloads. A zip gives users a
+          # normal download while keeping the NSIS installer inside.
+          $setup = "SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe"
+          $setupZip = "SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.zip"
+          Compress-Archive -Path $setup -DestinationPath $setupZip -Force
+          @(
+            (Get-FileHash $setup -Algorithm SHA256).Hash + "  " + $setup,
+            (Get-FileHash $setupZip -Algorithm SHA256).Hash + "  " + $setupZip,
+            (Get-FileHash "Snet-windows-amd64.zip" -Algorithm SHA256).Hash + "  Snet-windows-amd64.zip"
+          ) | Set-Content SHA256SUMS-windows.txt -Encoding ascii
+          Get-Content SHA256SUMS-windows.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -138,7 +148,9 @@ jobs:
           name: SnetWindows-v${{ steps.vars.outputs.VERSION }}
           path: |
             SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe
+            SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.zip
             Snet-windows-amd64.zip
+            SHA256SUMS-windows.txt
           retention-days: 7
 
       - name: Publish GitHub Release
@@ -147,4 +159,6 @@ jobs:
         with:
           files: |
             SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe
+            SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.zip
+            SHA256SUMS-windows.txt
           fail_on_unmatched_files: true

@@ -91,15 +91,27 @@ Section
     !insertmacro wails.webview2runtime
 
     SetOutPath $INSTDIR
-    
-    !insertmacro wails.files
 
-    # Upgrade path: stop and remove the old service before overwriting its
-    # locked snetd.exe, then install the new service after all files land.
+    # Upgrade path: stop the GUI/server before extracting. A running service
+    # keeps C:\Program Files\SNET\snetd.exe locked (the classic "Error opening
+    # file for writing" during an over-install). Try the uninstaller first,
+    # then force-stop any surviving process/service as a fallback.
     ${If} ${FileExists} "$INSTDIR\snetd.exe"
         nsExec::ExecToLog '"$INSTDIR\snetd.exe" uninstall'
         Pop $0
     ${EndIf}
+    nsExec::ExecToLog '"$SYSDIR\sc.exe" stop SNetDaemon'
+    Pop $0
+    Sleep 1200
+    nsExec::ExecToLog '"$SYSDIR\sc.exe" delete SNetDaemon'
+    Pop $0
+    nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM snetd.exe /T'
+    Pop $0
+    nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM SnetWindows.exe /T'
+    Pop $0
+    Sleep 1200
+
+    !insertmacro wails.files
 
     File "/oname=snetd.exe" "..\..\..\bin\snetd.exe"
     File "/oname=snetctl.exe" "..\..\..\bin\snetctl.exe"

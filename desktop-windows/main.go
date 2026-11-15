@@ -115,6 +115,11 @@ func showWindow(window *application.WebviewWindow) {
 	window.Focus()
 }
 
+var (
+	trayRelayAllow bool
+	trayRelayUse   = true
+)
+
 func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) (*application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem) {
 	tray := app.SystemTray.New()
 	if len(trayIcon) == 0 {
@@ -123,34 +128,47 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 		tray.SetIcon(trayIcon)
 	}
 	tray.SetTooltip("SNET 虚拟组网")
-	tray.OnClick(func() { showWindow(window) })
+	tray.OnClick(func() { tray.OpenMenu() })
+	tray.OnRightClick(func() { tray.OpenMenu() })
+	tray.OnDoubleClick(func() { showWindow(window) })
 
 	menu := app.NewMenu()
 	statusItem := menu.Add("未连接").SetEnabled(true).SetBitmap(dotIcon(color.RGBA{R: 239, G: 68, B: 68, A: 255}))
 	ipItem := menu.Add("IP: -").SetEnabled(true).SetBitmap(ipIcon())
 	subnetItem := menu.Add("子网: -").SetEnabled(true).SetBitmap(subnetIcon())
 	subnetItem.SetHidden(true)
-	allowRelayItem := menu.AddCheckbox("允许本设备作为中继网关", false)
+	menu.AddSeparator()
+	allowRelayItem := menu.Add("允许本设备作为中继网关").SetBitmap(blankIcon())
 	// Windows cannot host the delegated relay gateway safely; keep the
 	// capability hidden instead of letting users toggle a non-functional option.
 	allowRelayItem.SetHidden(true)
-	useRelayItem := menu.AddCheckbox("使用网络内的中继网关", true)
+	useRelayItem := menu.Add("使用网络内的中继网关").SetBitmap(relayCheckIcon(true))
 	menu.AddSeparator()
 	openItem := menu.Add("打开控制面板")
 	openItem.SetBitmap(windowIcon())
 	openItem.OnClick(func(*application.Context) {
 		showWindow(window)
 	})
-	toggleRelay := func(changed *application.MenuItem) {
-		allow := allowRelayItem.Checked()
-		use := useRelayItem.Checked()
-		if err := setRelayOptions(allow, use); err != nil {
-			changed.SetChecked(!changed.Checked())
-			log.Printf("tray relay options: %v", err)
+	toggleRelay := func(allow bool) {
+		nextAllow := allow
+		if allow {
+			nextAllow = !trayRelayAllow
 		}
+		nextUse := trayRelayUse
+		if !allow {
+			nextUse = !trayRelayUse
+		}
+		if err := setRelayOptions(nextAllow, nextUse); err != nil {
+			log.Printf("tray relay options: %v", err)
+			return
+		}
+		trayRelayAllow, trayRelayUse = nextAllow, nextUse
+		allowRelayItem.SetBitmap(relayCheckIcon(trayRelayAllow))
+		useRelayItem.SetBitmap(relayCheckIcon(trayRelayUse))
 	}
-	allowRelayItem.OnClick(func(*application.Context) { toggleRelay(allowRelayItem) })
-	useRelayItem.OnClick(func(*application.Context) { toggleRelay(useRelayItem) })
+	allowRelayItem.OnClick(func(*application.Context) { toggleRelay(true) })
+	useRelayItem.OnClick(func(*application.Context) { toggleRelay(false) })
+	menu.AddSeparator()
 	quitItem := menu.Add("退出 SNET")
 	quitItem.SetBitmap(quitIcon())
 	quitItem.OnClick(func(*application.Context) {
@@ -160,6 +178,21 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 	})
 	tray.SetMenu(menu)
 	return statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem
+}
+
+func blankIcon() []byte {
+	return makeIcon(func(*image.RGBA) {})
+}
+
+func relayCheckIcon(on bool) []byte {
+	if !on {
+		return blankIcon()
+	}
+	ink := color.RGBA{R: 63, G: 182, B: 139, A: 255}
+	return makeIcon(func(img *image.RGBA) {
+		drawLine(img, 3, 8, 6, 11, ink)
+		drawLine(img, 6, 11, 13, 4, ink)
+	})
 }
 
 func makeIcon(draw func(*image.RGBA)) []byte {
@@ -388,8 +421,9 @@ func watchTrayStatus(statusItem, ipItem, subnetItem, allowRelayItem, useRelayIte
 				subnetItem.SetLabel("子网: " + subnets)
 				subnetItem.SetHidden(false)
 			}
-			allowRelayItem.SetChecked(allowRelay)
-			useRelayItem.SetChecked(useRelay)
+			trayRelayAllow, trayRelayUse = allowRelay, useRelay
+			allowRelayItem.SetBitmap(relayCheckIcon(allowRelay))
+			useRelayItem.SetBitmap(relayCheckIcon(useRelay))
 		})
 		<-ticker.C
 	}
