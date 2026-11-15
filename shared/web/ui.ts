@@ -1290,9 +1290,6 @@ function openCreateModal() {
 }
 
 /* ── Join modal ───────────────────────────────────────────────── */
-// The link glyph above the invite-link field.
-const ICON_LINK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
-
 function linkServerOf(link: string): string | undefined {
   try {
     const u = new URL(link);
@@ -1310,7 +1307,6 @@ function openJoinModal() {
     body: `<div class="join-compact">
       <label class="join-field-label" for="m-link">邀请链接</label>
       <div class="join-link-box">
-        <span class="join-link-icon" aria-hidden="true">${ICON_LINK}</span>
         <input class="join-link-input" id="m-link" type="text" spellcheck="false" autocomplete="off"
                placeholder="粘贴 snet:// 邀请链接..." />
         ${backend.scanQR ? '<button id="m-scan" class="btn ghost" type="button" title="扫描二维码加入">扫码</button>' : ""}
@@ -2491,6 +2487,7 @@ function networkDetailHTML(n: NetInfo): string {
     <div class="detail-heading">
       <div class="detail-title-row"><div class="detail-title">${esc(n.name || n.networkId)}</div>${rolePill}</div>
       <div class="detail-meta-line">
+        <span class="detail-net-id">网络 ID <code>${esc(n.networkId)}</code></span>
         <span>↑ ${fmtSpeed(status?.txSpeed)} · ↓ ${fmtSpeed(status?.rxSpeed)}</span>
         <span>NAT ${esc(nat)}</span>
         <span>${activeRoutes} 条生效路由</span>
