@@ -104,6 +104,12 @@ header::after {
 }
 .network-tab.active::after { display: none; }
 .network-tab.pending { color: var(--warn); }
+.network-owner-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-right: 4px; vertical-align: -2px;
+  color: var(--warn);
+}
+.network-owner-mark svg { display: block; width: 13px; height: 13px; }
 .network-dot {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;
   margin-right: 6px; vertical-align: 1px; background: var(--faint);
@@ -329,6 +335,7 @@ body.empty-mode { overflow: hidden; }
 .pill.accent { background: var(--accent-soft); color: var(--accent2); }
 .pill.off  { background: rgba(154,163,178,.12); color: var(--dim); }
 .pill.owner { background: var(--accent-soft); color: var(--accent2); }
+.pill.created { background: var(--ok-soft); color: var(--ok); }
 .pill.subnet-route { background: #1a3a2a; color: var(--ok); }
 .pill.gone { background: rgba(220,53,69,.12); color: var(--err); }
 .badge-dot { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: var(--err); color: #fff; font-size: 11px; font-weight: 700; }
