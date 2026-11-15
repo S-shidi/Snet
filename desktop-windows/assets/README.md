@@ -11,7 +11,7 @@ Download the official 64-bit Wintun DLL (0.14.1) and either:
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\desktop-windows\scripts\fetch-wintun.ps1
 ```
 
-The build copies the DLL next to `SnetWindows.exe` and `snetd.exe`. Wintun-go
+The build copies the DLL next to `Snet.exe` and `snetd.exe`. Wintun-go
 loads it from the executable's application directory.
 
 SHA256:

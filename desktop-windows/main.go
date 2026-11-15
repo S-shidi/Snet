@@ -35,10 +35,10 @@ func main() {
 		os.Exit(0)
 	}
 	initLogging()
-	log.Printf("SnetWindows: starting")
+	log.Printf("Snet: starting")
 	svc := &SnetService{}
 	app := application.New(application.Options{
-		Name:        "SnetWindows",
+		Name:        "Snet",
 		Description: "SNET Windows client",
 		Assets: application.AssetOptions{
 			Handler: newCtlProxy(svc, application.AssetFileServerFS(assets)),
@@ -49,7 +49,7 @@ func main() {
 	})
 	app.RegisterService(application.NewService(svc))
 	app.OnShutdown(func() {
-		log.Printf("SnetWindows: shutdown requested")
+		log.Printf("Snet: shutdown requested")
 		svc.ShutdownDaemon()
 	})
 
@@ -67,43 +67,43 @@ func main() {
 		},
 	})
 	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		log.Printf("SnetWindows: window closing, hiding instead")
+		log.Printf("Snet: window closing, hiding instead")
 		e.Cancel()
 		window.Hide()
 	})
 	statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem := setupSystray(app, window, svc)
 	var trayWatchOnce sync.Once
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-		log.Printf("SnetWindows: application started")
+		log.Printf("Snet: application started")
 		showWindow(window)
 		trayWatchOnce.Do(func() {
 			go watchTrayStatus(statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem)
 		})
 		watchShowRequests(showEvent, func() {
-			log.Printf("SnetWindows: second launch requested window")
+			log.Printf("Snet: second launch requested window")
 			showWindow(window)
 		})
 		// Start the daemon off the UI thread. The window is already visible
 		// and the frontend polls /desktop/status while UAC/startup completes.
 		go func() {
-			log.Printf("SnetWindows: starting snetd")
+			log.Printf("Snet: starting snetd")
 			if err := svc.StartDaemon(); err != nil {
 				log.Printf("snetd: %v", err)
 			}
 		}()
 	})
 
-	log.Printf("SnetWindows: entering app.Run")
+	log.Printf("Snet: entering app.Run")
 	if err := app.Run(); err != nil {
-		log.Fatalf("SnetWindows: app.Run failed: %v", err)
+		log.Fatalf("Snet: app.Run failed: %v", err)
 	}
-	log.Printf("SnetWindows: app.Run returned without error")
+	log.Printf("Snet: app.Run returned without error")
 }
 
 func initLogging() {
 	dir := configDir()
 	_ = os.MkdirAll(dir, 0o700)
-	f, err := os.OpenFile(filepath.Join(dir, "SnetWindows-startup.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, "Snet-startup.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return
 	}
@@ -123,11 +123,11 @@ var (
 func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) (*application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem) {
 	tray := app.SystemTray.New()
 	if len(trayIcon) == 0 {
-		log.Printf("SnetWindows: tray icon is empty; continuing without icon")
+		log.Printf("Snet: tray icon is empty; continuing without icon")
 	} else {
 		tray.SetIcon(trayIcon)
 	}
-	tray.SetTooltip("SNET 虚拟组网")
+	tray.SetTooltip("Snet")
 	tray.OnClick(func() { tray.OpenMenu() })
 	tray.OnRightClick(func() { tray.OpenMenu() })
 	tray.OnDoubleClick(func() { showWindow(window) })
@@ -169,10 +169,10 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 	allowRelayItem.OnClick(func(*application.Context) { toggleRelay(true) })
 	useRelayItem.OnClick(func(*application.Context) { toggleRelay(false) })
 	menu.AddSeparator()
-	quitItem := menu.Add("退出 SNET")
+	quitItem := menu.Add("退出 Snet")
 	quitItem.SetBitmap(quitIcon())
 	quitItem.OnClick(func(*application.Context) {
-		log.Printf("SnetWindows: quit requested from tray")
+		log.Printf("Snet: quit requested from tray")
 		svc.ShutdownDaemon()
 		app.Quit()
 	})

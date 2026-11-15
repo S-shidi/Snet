@@ -36,10 +36,10 @@ func main() {
 	}
 	defer release()
 	initLogging()
-	log.Printf("SnetMac: starting")
+	log.Printf("Snet: starting")
 	svc := &SnetService{}
 	app := application.New(application.Options{
-		Name:        "SnetMac",
+		Name:        "Snet",
 		Description: "SNET macOS client",
 		Assets: application.AssetOptions{
 			Handler: newCtlProxy(svc, application.AssetFileServerFS(assets)),
@@ -51,7 +51,7 @@ func main() {
 	})
 	app.RegisterService(application.NewService(svc))
 	app.OnShutdown(func() {
-		log.Printf("SnetMac: shutdown requested")
+		log.Printf("Snet: shutdown requested")
 		svc.ShutdownDaemon()
 	})
 
@@ -70,34 +70,34 @@ func main() {
 		},
 	})
 	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		log.Printf("SnetMac: window closing, hiding instead")
+		log.Printf("Snet: window closing, hiding instead")
 		e.Cancel()
 		window.Hide()
 	})
 	statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem := setupSystray(app, window, svc)
 	var trayWatchOnce sync.Once
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-		log.Printf("SnetMac: application started")
+		log.Printf("Snet: application started")
 		showWindow(window)
 		trayWatchOnce.Do(func() {
 			go watchTrayStatus(statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem)
 		})
 	})
 
-	log.Printf("SnetMac: starting snetd")
+	log.Printf("Snet: starting snetd")
 	if err := svc.StartDaemon(); err != nil {
 		log.Printf("snetd: %v", err)
 	}
 
-	log.Printf("SnetMac: entering app.Run")
+	log.Printf("Snet: entering app.Run")
 	if err := app.Run(); err != nil {
-		log.Fatalf("SnetMac: app.Run failed: %v", err)
+		log.Fatalf("Snet: app.Run failed: %v", err)
 	}
-	log.Printf("SnetMac: app.Run returned without error")
+	log.Printf("Snet: app.Run returned without error")
 }
 
 func initLogging() {
-	f, err := os.OpenFile("/tmp/SnetMac-startup.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile("/tmp/Snet-startup.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return
 	}
@@ -107,7 +107,7 @@ func initLogging() {
 func showWindow(window *application.WebviewWindow) {
 	window.Show()
 	window.Focus()
-	_ = exec.Command("osascript", "-e", `tell application "System Events" to set frontmost of process "SnetMac" to true`).Run()
+	_ = exec.Command("osascript", "-e", `tell application "System Events" to set frontmost of process "Snet" to true`).Run()
 }
 
 var (
@@ -118,11 +118,11 @@ var (
 func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) (*application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem) {
 	tray := app.SystemTray.New()
 	if len(trayIcon) == 0 {
-		log.Printf("SnetMac: tray icon is empty; continuing without template icon")
+		log.Printf("Snet: tray icon is empty; continuing without template icon")
 	} else {
 		tray.SetTemplateIcon(trayIcon)
 	}
-	tray.SetTooltip("SNET 虚拟组网")
+	tray.SetTooltip("Snet")
 	tray.OnClick(func() { tray.OpenMenu() })
 	tray.OnRightClick(func() { tray.OpenMenu() })
 	tray.OnDoubleClick(func() { showWindow(window) })
@@ -161,10 +161,10 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 	allowRelayItem.OnClick(func(*application.Context) { toggleRelay(true) })
 	useRelayItem.OnClick(func(*application.Context) { toggleRelay(false) })
 	menu.AddSeparator()
-	quitItem := menu.Add("退出 SNET")
+	quitItem := menu.Add("退出 Snet")
 	quitItem.SetBitmap(quitIcon())
 	quitItem.OnClick(func(*application.Context) {
-		log.Printf("SnetMac: quit requested from tray")
+		log.Printf("Snet: quit requested from tray")
 		svc.ShutdownDaemon()
 		app.Quit()
 	})

@@ -93,14 +93,14 @@ jobs:
           $ErrorActionPreference = "Stop"
           if (Test-Path bin) { Remove-Item -Recurse -Force bin }
           wails3 build GOOS=windows GOARCH=amd64
-          if (-not (Test-Path bin/SnetWindows.exe)) { throw "bin/SnetWindows.exe not produced" }
+          if (-not (Test-Path bin/Snet.exe)) { throw "bin/Snet.exe not produced" }
           Copy-Item ../dist/snetd.exe bin/snetd.exe -Force
           Copy-Item ../dist/snetctl.exe bin/snetctl.exe -Force
           Copy-Item assets/wintun.dll bin/wintun.dll -Force
           wails3 package GOOS=windows GOARCH=amd64
-          $setup = "bin/SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe"
+          $setup = "bin/Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe"
           if (-not (Test-Path $setup)) { throw "installer not produced: $setup" }
-          Copy-Item $setup ../SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe -Force
+          Copy-Item $setup ../Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe -Force
 
       - name: Package Windows app
         shell: pwsh
@@ -110,7 +110,7 @@ jobs:
           if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          Copy-Item desktop-windows/bin/SnetWindows.exe $stage/
+          Copy-Item desktop-windows/bin/Snet.exe $stage/
           Copy-Item dist/snetd.exe $stage/
           Copy-Item dist/snetctl.exe $stage/
           Copy-Item desktop-windows/assets/wintun.dll $stage/
@@ -119,38 +119,38 @@ jobs:
           SNET Windows client (portable/debug folder)
           ===========================================
 
-          For normal use, run SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe.
+          For normal use, run Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe.
           The installer registers the SNetDaemon Windows service; this portable
           folder only works after that service has been installed.
 
           Logs:
-            C:\ProgramData\SNET\SnetWindows-startup.log
+            C:\ProgramData\SNET\Snet-startup.log
             C:\ProgramData\SNET\daemon.log
           "@ | Set-Content -Path "$stage/README.txt" -Encoding utf8
 
-          Compress-Archive -Path "$stage/*" -DestinationPath Snet-windows-amd64.zip -Force
+          Compress-Archive -Path "$stage/*" -DestinationPath Snet-v${{ steps.vars.outputs.VERSION }}-win-portable.zip -Force
 
           # Browsers commonly flag unsigned .exe downloads. A zip gives users a
           # normal download while keeping the NSIS installer inside.
-          $setup = "SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe"
-          $setupZip = "SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.zip"
+          $setup = "Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe"
+          $setupZip = "Snet-v${{ steps.vars.outputs.VERSION }}-win-Setup.zip"
           Compress-Archive -Path $setup -DestinationPath $setupZip -Force
           @(
             (Get-FileHash $setup -Algorithm SHA256).Hash + "  " + $setup,
             (Get-FileHash $setupZip -Algorithm SHA256).Hash + "  " + $setupZip,
-            (Get-FileHash "Snet-windows-amd64.zip" -Algorithm SHA256).Hash + "  Snet-windows-amd64.zip"
-          ) | Set-Content SHA256SUMS-windows.txt -Encoding ascii
-          Get-Content SHA256SUMS-windows.txt
+            (Get-FileHash "Snet-v${{ steps.vars.outputs.VERSION }}-win-portable.zip" -Algorithm SHA256).Hash + "  Snet-v${{ steps.vars.outputs.VERSION }}-win-portable.zip"
+          ) | Set-Content SHA256SUMS-windows-v${{ steps.vars.outputs.VERSION }}.txt -Encoding ascii
+          Get-Content SHA256SUMS-windows-v${{ steps.vars.outputs.VERSION }}.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SnetWindows-v${{ steps.vars.outputs.VERSION }}
+          name: Snet-v${{ steps.vars.outputs.VERSION }}
           path: |
-            SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe
-            SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.zip
-            Snet-windows-amd64.zip
-            SHA256SUMS-windows.txt
+            Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe
+            Snet-v${{ steps.vars.outputs.VERSION }}-win-Setup.zip
+            Snet-v${{ steps.vars.outputs.VERSION }}-win-portable.zip
+            SHA256SUMS-windows-v${{ steps.vars.outputs.VERSION }}.txt
           retention-days: 7
 
       - name: Publish GitHub Release
@@ -158,7 +158,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.exe
-            SnetWindows-Setup-v${{ steps.vars.outputs.VERSION }}.zip
-            SHA256SUMS-windows.txt
+            Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe
+            Snet-v${{ steps.vars.outputs.VERSION }}-win-Setup.zip
+            SHA256SUMS-windows-v${{ steps.vars.outputs.VERSION }}.txt
           fail_on_unmatched_files: true

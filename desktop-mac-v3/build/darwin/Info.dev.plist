@@ -3,20 +3,22 @@
     <dict>
         <key>CFBundlePackageType</key>
             <string>APPL</string>
+        <key>CFBundleDisplayName</key>
+            <string>Snet</string>
         <key>CFBundleName</key>
-            <string>SnetMac</string>
+            <string>Snet</string>
         <key>CFBundleExecutable</key>
-            <string>snetmac</string>
+            <string>Snet</string>
         <key>CFBundleIdentifier</key>
-            <string>com.snet.snetmac</string>
+            <string>com.snet.snet</string>
         <key>CFBundleVersion</key>
-            <string>1.1.7</string>
+            <string>1.1.8</string>
         <key>CFBundleGetInfoString</key>
-            <string>This is a comment</string>
+            <string>Snet</string>
         <key>CFBundleShortVersionString</key>
-            <string>1.1.7</string>
+            <string>1.1.8</string>
         <key>CFBundleIconFile</key>
-            <string>icons</string>
+            <string>icon.icns</string>
         <key>CFBundleIconName</key>
             <string>appicon</string>
         <key>LSMinimumSystemVersion</key>

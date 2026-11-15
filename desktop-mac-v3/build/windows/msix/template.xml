@@ -8,16 +8,16 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="snetmac"
+        Path="snet"
         Arguments=""
-        InstallLocation="C:\Program Files\SNET\SnetMac">
+        InstallLocation="C:\Program Files\SNET\Snet">
     </Installer>
     <PackageInformation
-        PackageName="SnetMac"
-        PackageDisplayName="SnetMac"
+        PackageName="Snet"
+        PackageDisplayName="Snet"
         PublisherName="CN=SNET"
         PublisherDisplayName="SNET"
-        Version="1.1.7.0"
+        Version="1.1.8.0"
         PackageDescription="SNET macOS client">
         <Capabilities>
             <Capability Name="runFullTrust" />
@@ -25,10 +25,10 @@
         </Capabilities>
         <Applications>
             <Application
-                Id="com.snet.snetmac"
+                Id="com.snet.snet"
                 Description="SNET macOS client"
-                DisplayName="SnetMac"
-                ExecutableName="snetmac"
+                DisplayName="Snet"
+                ExecutableName="snet"
                 EntryPoint="Windows.FullTrustApplication">
                 
             </Application>
@@ -41,13 +41,13 @@
         </Dependencies>
         <Properties>
             <Framework>false</Framework>
-            <DisplayName>SnetMac</DisplayName>
+            <DisplayName>Snet</DisplayName>
             <PublisherDisplayName>SNET</PublisherDisplayName>
             <Description>SNET macOS client</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
-    <SaveLocation PackagePath="snetmac.msix" />
+    <SaveLocation PackagePath="snet.msix" />
     <PackageIntegrity>
         <CertificatePath></CertificatePath>
     </PackageIntegrity>

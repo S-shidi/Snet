@@ -19,10 +19,10 @@ Unicode true
 ####
 ## The following information is taken from the wails_tools.nsh file, but they can be overwritten here.
 ####
-## !define INFO_PROJECTNAME    "my-project" # Default "SnetWindows"
+## !define INFO_PROJECTNAME    "my-project" # Default "Snet"
 ## !define INFO_COMPANYNAME    "My Company" # Default "SNET"
-## !define INFO_PRODUCTNAME    "My Product Name" # Default "SnetWindows"
-## !define INFO_PRODUCTVERSION "1.0.0"     # Default "1.1.7"
+## !define INFO_PRODUCTNAME    "My Product Name" # Default "Snet"
+## !define INFO_PRODUCTVERSION "1.0.0"     # Default "1.1.8"
 ## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© 2026, My Company"
 ###
 ## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"
@@ -35,6 +35,8 @@ Unicode true
 ####
 !include "wails_tools.nsh"
 !include "LogicLib.nsh"
+!include "StrFunc.nsh"
+${Using:StrFunc} StrStr
 
 # The version information for this two must consist of 4 parts
 VIProductVersion "${INFO_PRODUCTVERSION}.0"
@@ -105,15 +107,42 @@ Section
     Sleep 1200
     nsExec::ExecToLog '"$SYSDIR\sc.exe" delete SNetDaemon'
     Pop $0
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" query SNetDaemon'
+    Pop $0
+    Pop $1
+    ${StrStr} $2 "$1" "DELETE_PENDING"
+    ${If} $2 != ""
+        MessageBox MB_ICONEXCLAMATION|MB_OKCANCEL "检测到旧服务正在后台清理，建议重启电脑后再安装。$\r$\n$\r$\n点击「确定」忽略并继续，点击「取消」退出安装。"
+        Abort
+    ${EndIf}
     nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM snetd.exe /T'
     Pop $0
-    nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM SnetWindows.exe /T'
+    nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM Snet.exe /T'
     Pop $0
-    Sleep 1200
+    Sleep 2000
+
+    # Try to move a locked old daemon aside. If the rename succeeds, the file
+    # handle is released and the new binary can be written. Mark the old file
+    # for deletion after reboot as a second line of defence.
+    ${If} ${FileExists} "$INSTDIR\snetd.exe"
+        Delete /REBOOTOK "$INSTDIR\snetd.exe.old"
+        ClearErrors
+        Rename "$INSTDIR\snetd.exe" "$INSTDIR\snetd.exe.old"
+        ${If} ${Errors}
+            Delete /REBOOTOK "$INSTDIR\snetd.exe"
+            MessageBox MB_ICONEXCLAMATION|MB_OK "旧版 snetd.exe 仍被占用。安装将继续，但请重启电脑后重新运行安装包以完成后台服务更新。"
+        ${Else}
+            Delete /REBOOTOK "$INSTDIR\snetd.exe.old"
+        ${EndIf}
+    ${EndIf}
 
     !insertmacro wails.files
 
-    File "/oname=snetd.exe" "..\..\..\bin\snetd.exe"
+    ClearErrors
+    File /nonfatal "/oname=snetd.exe" "..\..\..\bin\snetd.exe"
+    IfErrors 0 +2
+        MessageBox MB_ICONEXCLAMATION|MB_OK "新版 snetd.exe 未能写入。请重启电脑后重新运行安装包。"
+    File "/oname=snetctl.exe" "..\..\..\bin\snetctl.exe"
     File "/oname=snetctl.exe" "..\..\..\bin\snetctl.exe"
     File "/oname=wintun.dll" "..\..\..\bin\wintun.dll"
 

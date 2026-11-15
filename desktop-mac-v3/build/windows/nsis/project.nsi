@@ -19,10 +19,10 @@ Unicode true
 ####
 ## The following information is taken from the wails_tools.nsh file, but they can be overwritten here.
 ####
-## !define INFO_PROJECTNAME    "my-project" # Default "SnetMac"
+## !define INFO_PROJECTNAME    "my-project" # Default "Snet"
 ## !define INFO_COMPANYNAME    "My Company" # Default "SNET"
-## !define INFO_PRODUCTNAME    "My Product Name" # Default "SnetMac"
-## !define INFO_PRODUCTVERSION "1.0.0"     # Default "1.1.7"
+## !define INFO_PRODUCTNAME    "My Product Name" # Default "Snet"
+## !define INFO_PRODUCTVERSION "1.0.0"     # Default "1.1.8"
 ## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© 2026, My Company"
 ###
 ## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"
