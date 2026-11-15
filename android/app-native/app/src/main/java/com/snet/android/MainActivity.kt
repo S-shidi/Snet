@@ -5,16 +5,20 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
-import android.widget.Button
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
@@ -22,7 +26,6 @@ import androidx.webkit.WebViewClientCompat
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
-    private lateinit var startButton: Button
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -43,11 +46,14 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         webView = findViewById(R.id.webview)
-        startButton = findViewById(R.id.btn_start)
-        startButton.setOnClickListener { requestVpnPermission() }
-
         configureWebView()
         requestNotificationPermissionIfNeeded()
+        maybeRequestIgnoreBatteryOptimizations()
+
+        // The native VPN permission is the only entry point. Once granted, the
+        // service starts automatically; the WebView and notification provide
+        // the controls from then on.
+        requestVpnPermission()
     }
 
     private fun requestVpnPermission() {
@@ -61,7 +67,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun startVpnService() {
         SnetVpnService.start(this)
-        Toast.makeText(this, "正在启动 Snet", Toast.LENGTH_SHORT).show()
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -70,6 +75,33 @@ class MainActivity : AppCompatActivity() {
         ) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    private fun maybeRequestIgnoreBatteryOptimizations() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val pm = getSystemService(PowerManager::class.java)
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+
+        val prefs = getSharedPreferences("snet", MODE_PRIVATE)
+        if (prefs.getBoolean("battery_prompted", false)) return
+        prefs.edit().putBoolean("battery_prompted", true).apply()
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.battery_title)
+            .setMessage(R.string.battery_message)
+            .setPositiveButton(R.string.battery_settings) { _, _ ->
+                val request = Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName")
+                )
+                try {
+                    startActivity(request)
+                } catch (_: Exception) {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            }
+            .setNegativeButton(R.string.later, null)
+            .show()
     }
 
     private fun configureWebView() {
@@ -85,6 +117,7 @@ class MainActivity : AppCompatActivity() {
         if (BuildConfig.DEBUG) {
             WebView.setWebContentsDebuggingEnabled(true)
         }
+        webView.addJavascriptInterface(NetworkBridge(), "SnetAndroid")
 
         val assetLoader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
@@ -99,6 +132,17 @@ class MainActivity : AppCompatActivity() {
 
         // android-bridge.js is injected before app.js by scripts/build-android-web.sh.
         webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+    }
+
+    inner class NetworkBridge {
+        @JavascriptInterface
+        fun onNetworksChanged() {
+            runOnUiThread {
+                if (VpnService.prepare(this@MainActivity) == null) {
+                    SnetVpnService.restart(this@MainActivity)
+                }
+            }
+        }
     }
 
     override fun onDestroy() {

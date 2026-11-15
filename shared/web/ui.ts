@@ -46,6 +46,26 @@ function currentServer(): string {
 /* ── Refresh ──────────────────────────────────────────────────── */
 let refreshing = false;
 let refreshAgain = false;
+let lastAndroidNetSig = "";
+
+// Android needs a new VpnService.Builder when the set of joined networks (or
+// their assigned IP/subnet) changes. The native shell exposes this callback;
+// other platforms simply have no SnetAndroid object.
+function notifyAndroidNetworkConfig() {
+  const bridge = (globalThis as any).SnetAndroid;
+  if (!bridge || typeof bridge.onNetworksChanged !== "function") return;
+  const sig = (status?.networks ?? [])
+    .map((n) => `${n.networkId}:${n.ip || ""}:${n.subnet || ""}:${n.active ? 1 : 0}`)
+    .sort()
+    .join("|");
+  if (!sig || sig === lastAndroidNetSig) return;
+  lastAndroidNetSig = sig;
+  try {
+    bridge.onNetworksChanged();
+  } catch {
+    // The WebView can outlive the Activity bridge; status polling continues.
+  }
+}
 let desktopDaemon = { running: false, starting: false, error: "" };
 let desktopPollTimer: number | undefined;
 let detailNid: string | null = null;
@@ -85,6 +105,7 @@ async function refresh() {
     renderNetworks();
     renderNetworkDetail();
     renderStatus();
+    notifyAndroidNetworkConfig();
   } while (refreshAgain);
   refreshing = false;
 }

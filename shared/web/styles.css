@@ -87,7 +87,7 @@ header::after {
 .network-tabs {
   display: flex; align-items: flex-end; gap: 2px; width: 100%; max-width: 1200px; min-width: 0;
   margin: 0 auto; padding: 0 var(--content-padding-x); overflow-x: auto; white-space: nowrap;
-  scrollbar-width: none;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
 }
 .network-tabs::-webkit-scrollbar { display: none; }
 .network-tab {
@@ -140,6 +140,14 @@ header::after {
 .wails-desktop .header-inner .header-more { pointer-events: auto; }
 .wails-desktop .network-tabs { position: relative; z-index: 1; }
 .wails-desktop header { user-select: none; }
+
+/* Android WebView: the native VPN service is controlled from MainActivity.
+   Hide desktop/web start affordances that do not apply to the mobile shell. */
+.wails-android #header-svc-btn,
+.wails-android #s-start-daemon,
+.wails-android [data-action="refresh"].android-hidden {
+  display: none !important;
+}
 
 /* ── header dropdown (mobile) ───────────── */
 .header-more { position: relative; }
@@ -1386,6 +1394,7 @@ pre.code { user-select: all; }
 
   /* ── network detail: compact overview ─── */
   .detail-overview { grid-template-columns: 1fr; }
+  .member-grid { grid-template-columns: 1fr; }
   .detail-actions .btn { flex: 1 1 auto; }
 }
 @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -1462,3 +1471,10 @@ pre.code { user-select: all; }
 .about-update { color: var(--faint); }
 .about-update.ok { color: var(--ok); }
 .about-update.new { color: var(--warn); }
+
+/* Phone / Android WebView: one member card per row. */
+@media (max-width: 640px) {
+  .member-grid { grid-template-columns: 1fr; }
+  .net-detail-head { gap: 10px; }
+  .detail-head-actions { width: 100%; justify-content: flex-end; }
+}
