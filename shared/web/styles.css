@@ -1385,7 +1385,7 @@ pre.code { user-select: all; }
 }
 
 /* ── WireGuard export ─────────────────────────────────────────── */
-.wg-export-result { display: grid; grid-template-columns: minmax(0,1fr) 250px; gap: 18px; align-items: start; }
+.wg-export-result { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 18px; align-items: start; }
 .wg-export-text { min-width: 0; }
 .wg-export-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .wg-export-text textarea {
@@ -1395,15 +1395,27 @@ pre.code { user-select: all; }
 }
 .wg-export-qr { display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 28px; }
 .wg-export-qr .qr {
-  width: 240px; height: 240px; padding: 12px; border-radius: 12px;
-  background: #fff; box-sizing: border-box;
+  width: 320px; max-width: 320px; aspect-ratio: 1; height: auto;
+  padding: 14px; border-radius: 12px; background: #fff; box-sizing: border-box;
 }
 .wg-export-qr .qr svg { width: 100%; height: 100%; display: block; }
+.qr-zoom-backdrop {
+  position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.86); padding: 24px;
+}
+.qr-zoom-panel { position: relative; background: #fff; padding: 18px; border-radius: 18px; }
+.qr-zoom-panel .qr { width: min(78vmin, 760px); max-width: none; aspect-ratio: 1; }
+.qr-zoom-panel .qr svg { width: 100%; height: 100%; display: block; }
+.qr-zoom-close {
+  position: absolute; top: -16px; right: -16px; width: 38px; height: 38px; border-radius: 50%;
+  border: 0; background: var(--text); color: var(--bg); font-size: 20px; cursor: pointer;
+}
 .wg-config-meta { display: grid; gap: 6px; margin-bottom: 14px; }
 .wg-config-meta > div { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--dim); }
 .wg-config-meta b { color: var(--text); font-weight: 600; text-align: right; }
 @media (max-width: 720px) {
   .wg-export-result { grid-template-columns: 1fr; }
   .wg-export-qr { padding-top: 0; }
+  .wg-export-qr .qr { width: 280px; max-width: 280px; margin: 0 auto; }
 }
 .hub-name { display: inline-flex; align-items: center; gap: 6px; color: var(--accent2); font-weight: 600; }

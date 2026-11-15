@@ -2295,7 +2295,7 @@ function wireGuardConfigHTML(exp: WireGuardExport, name: string): string {
         <div class="wg-export-head"><b>WireGuard 配置</b><button type="button" class="btn ghost sm" id="wg-copy">复制</button></div>
         <textarea id="wg-config" readonly spellcheck="false"></textarea>
       </div>
-      <div class="wg-export-qr"><div class="qr wg-config-qr" id="wg-qr"></div><p class="hint">在 WireGuard App 内扫码导入</p></div>
+      <div class="wg-export-qr"><div class="qr wg-config-qr" id="wg-qr"></div><p class="hint">在 WireGuard App 内扫码导入</p><button type="button" class="btn ghost sm" id="wg-qr-zoom">放大二维码</button></div>
     </div>
     <p class="hint">私钥只保存在本机守护进程的配置目录中；如已卸载客户端，请重新生成配置。</p>
   </div>`;
@@ -2318,6 +2318,16 @@ function openWireGuardConfigModal(nid: string, nodeID: string, exp?: WireGuardEx
       area.value = cfg;
       renderQR(body.querySelector<HTMLElement>("#wg-qr")!, cfg);
       const copy = async (btn: HTMLButtonElement) => { await copyText(cfg, btn); };
+      body.querySelector<HTMLButtonElement>("#wg-qr-zoom")?.addEventListener("click", () => {
+        const overlay = document.createElement("div");
+        overlay.className = "qr-zoom-backdrop";
+        overlay.innerHTML = '<div class="qr-zoom-panel"><button type="button" class="qr-zoom-close" aria-label="关闭">×</button><div class="qr" id="wg-qr-zoom-canvas"></div></div>';
+        document.body.appendChild(overlay);
+        renderQR(overlay.querySelector<HTMLElement>("#wg-qr-zoom-canvas")!, cfg);
+        const close = () => overlay.remove();
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+        overlay.querySelector<HTMLButtonElement>(".qr-zoom-close")?.addEventListener("click", close);
+      });
       body.querySelector<HTMLButtonElement>("#wg-copy")?.addEventListener("click", (e) => void copy(e.currentTarget as HTMLButtonElement));
       body.querySelector<HTMLButtonElement>("#wg-copy-foot")?.addEventListener("click", (e) => void copy(e.currentTarget as HTMLButtonElement));
     },
