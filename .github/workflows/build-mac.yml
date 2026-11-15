@@ -57,19 +57,19 @@ jobs:
         run: |
           set -euo pipefail
           CGO_ENABLED=1 go build -tags desktop,production -trimpath -buildvcs=false \
-            -ldflags "-w -s" -o SnetMac .
+            -ldflags "-w -s" -o Snet .
 
       - name: Manually Assemble .app Bundle
         working-directory: ./desktop-mac-v3
         run: |
           set -euo pipefail
-          APP_DIR="build/SnetMac.app"
+          APP_DIR="build/Snet.app"
           rm -rf "$APP_DIR"
           mkdir -p "$APP_DIR/Contents/MacOS"
           mkdir -p "$APP_DIR/Contents/Resources"
 
-          cp SnetMac "$APP_DIR/Contents/MacOS/SnetMac"
-          chmod +x "$APP_DIR/Contents/MacOS/SnetMac"
+          cp Snet "$APP_DIR/Contents/MacOS/Snet"
+          chmod +x "$APP_DIR/Contents/MacOS/Snet"
 
           test -f ../dist/snetd-darwin-arm64
           test -f scripts/install-daemon.sh
@@ -84,11 +84,13 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>CFBundleExecutable</key>
-              <string>SnetMac</string>
+              <string>Snet</string>
+              <key>CFBundleDisplayName</key>
+              <string>Snet</string>
               <key>CFBundleIdentifier</key>
-              <string>com.snet.app</string>
+              <string>com.snet.snet</string>
               <key>CFBundleName</key>
-              <string>SnetMac</string>
+              <string>Snet</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleIconFile</key>
@@ -117,13 +119,13 @@ jobs:
         working-directory: ./desktop-mac-v3
         run: |
           set -euo pipefail
-          APP_PATH="build/SnetMac.app"
+          APP_PATH="build/Snet.app"
           xattr -cr "$APP_PATH"
 
           codesign --force --sign - "$APP_PATH/Contents/Resources/snetd"
           codesign --verify --strict "$APP_PATH/Contents/Resources/snetd"
 
-          codesign --force --sign - "$APP_PATH/Contents/MacOS/SnetMac"
+          codesign --force --sign - "$APP_PATH/Contents/MacOS/Snet"
 
           codesign --force --sign - "$APP_PATH"
 
@@ -134,18 +136,18 @@ jobs:
         working-directory: ./desktop-mac-v3/build
         run: |
           set -euo pipefail
-          DMG_NAME="SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}.dmg"
+          DMG_NAME="Snet-v${{ steps.vars.outputs.VERSION }}-mac.dmg"
           STAGE="dmg-stage"
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
-          cp -R SnetMac.app "$STAGE/"
+          cp -R Snet.app "$STAGE/"
           cat > "$STAGE/安装说明.txt" <<'TXT'
           =========================================
-                   SnetMac 安装指南
+                   Snet 安装指南
           =========================================
 
 
-          第一步：将左侧的 SnetMac.app 拖入右侧的 Applications 文件夹。
+          第一步：将左侧的 Snet.app 拖入右侧的 Applications 文件夹。
 
 
           第二步：安装完成后，打开 Mac 自带的“终端”应用（在启动台搜索“终端”）。
@@ -154,7 +156,7 @@ jobs:
           第三步：在终端中复制并粘贴以下整行命令，然后按回车：
 
 
-          sudo xattr -cr /Applications/SnetMac.app && open /Applications/SnetMac.app
+          sudo xattr -cr /Applications/Snet.app && open /Applications/Snet.app
 
 
           第四步：根据提示输入你的 Mac 开机密码（输入时屏幕不显示，输完直接回车）。
@@ -171,8 +173,8 @@ jobs:
             --window-pos 200 120 \
             --window-size 900 420 \
             --icon-size 100 \
-            --icon "SnetMac.app" 180 190 \
-            --hide-extension "SnetMac.app" \
+            --icon "Snet.app" 180 190 \
+            --hide-extension "Snet.app" \
             --app-drop-link 450 190 \
             --icon "安装说明.txt" 720 190 \
             "$DMG_NAME" \
@@ -185,9 +187,9 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SnetMac-v${{ steps.vars.outputs.VERSION }}-${{ steps.vars.outputs.SHORT_SHA }}
+          name: Snet-v${{ steps.vars.outputs.VERSION }}-mac
           path: |
-            desktop-mac-v3/build/SnetMac-v*.dmg
+            desktop-mac-v3/build/Snet-v*.dmg
           retention-days: 7
 
       - name: Publish GitHub Release
@@ -195,5 +197,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            desktop-mac-v3/build/SnetMac-v*.dmg
+            desktop-mac-v3/build/Snet-v*.dmg
           generate_release_notes: true

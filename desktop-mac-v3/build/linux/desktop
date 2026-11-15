@@ -1,13 +1,13 @@
 [Desktop Entry]
 Version=1.0
-Name=SnetMac
+Name=Snet
 Comment=SNET macOS client
 # The Exec line includes %u to pass the URL to the application
-Exec=/usr/local/bin/snetmac %u
+Exec=/usr/local/bin/snet %u
 Terminal=false
 Type=Application
-Icon=snetmac
+Icon=snet
 Categories=Utility;
-StartupWMClass=snetmac
+StartupWMClass=snet
 
  

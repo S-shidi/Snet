@@ -22,7 +22,7 @@ func acquireSingleInstance() (func(), bool) {
 		log.Printf("single instance dir: %v", err)
 		return func() {}, true
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "SnetMac.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, "Snet.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		log.Printf("single instance lock: %v", err)
 		return func() {}, true

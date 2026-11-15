@@ -36,17 +36,20 @@ cp "$ROOT/dist/wintun.dll" "$BIN/wintun.dll"
 echo "==> NSIS installer"
 wails3 package GOOS=windows GOARCH=amd64
 
-SETUP="$BIN/SnetWindows-Setup-v${VERSION}.exe"
+SETUP="$BIN/Snet-Setup-v${VERSION}.exe"
 if [ ! -f "$SETUP" ]; then
   echo "installer not produced: $SETUP" >&2
   exit 1
 fi
 cp "$SETUP" "$ROOT/dist/"
+SETUPZIP="$ROOT/dist/Snet-v${VERSION}-win-Setup.zip"
+rm -f "$SETUPZIP"
+(cd "$ROOT/dist" && zip -q -9 "$(basename "$SETUPZIP")" "$(basename "$SETUP")")
 
-ZIP="$ROOT/dist/SnetWindows-v${VERSION}-amd64.zip"
+ZIP="$ROOT/dist/Snet-v${VERSION}-win-portable.zip"
 rm -f "$ZIP"
-(cd "$BIN" && zip -q -9 "$ZIP" SnetWindows.exe snetd.exe snetctl.exe wintun.dll)
+(cd "$BIN" && zip -q -9 "$ZIP" Snet.exe snetd.exe snetctl.exe wintun.dll)
 
 echo
 echo "Build complete:"
-ls -lh "$BIN/SnetWindows.exe" "$BIN/snetd.exe" "$BIN/snetctl.exe" "$BIN/wintun.dll" "$ROOT/dist/SnetWindows-Setup-v${VERSION}.exe" "$ZIP"
+ls -lh "$BIN/Snet.exe" "$BIN/snetd.exe" "$BIN/snetctl.exe" "$BIN/wintun.dll" "$ROOT/dist/Snet-Setup-v${VERSION}.exe" "$SETUPZIP" "$ZIP"

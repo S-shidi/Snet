@@ -1257,9 +1257,18 @@ function openCreateModal() {
           const mFoot = modalEl.querySelector<HTMLElement>(".modal-foot")!;
           mBody.innerHTML = `
             <div class="create-ok">
-              <div class="create-ok-head"><span class="create-ok-icon">✓</span><div><b>网络创建成功</b><p>把邀请链接发给其他设备，即可加入。</p></div></div>
-              <div class="qr" id="qr"></div>
-              <div class="invite-link-box"><code class="invite-link">${esc(r.link)}</code></div>
+              <div class="create-ok-main">
+                <div class="create-ok-head"><span class="create-ok-icon">✓</span><div><b>网络创建成功</b><p>把邀请链接发给其他设备，扫码或粘贴即可加入。</p></div></div>
+                <div class="invite-link-box">
+                  <span class="invite-link-label">邀请链接</span>
+                  <code class="invite-link">${esc(r.link)}</code>
+                </div>
+                <p class="hint">链接长期有效，建议只分享给信任的设备。</p>
+              </div>
+              <div class="create-ok-qr">
+                <div class="qr" id="qr"></div>
+                <p class="hint">扫码加入</p>
+              </div>
             </div>`;
           renderQR(mBody.querySelector<HTMLElement>("#qr")!, r.link);
           detailNid = r.networkId;
@@ -1527,6 +1536,22 @@ function openSettingsModal() {
           </div>
         </div>
       </section>
+      <section class="settings-panel">
+        <div class="settings-panel-head"><h3>关于</h3><span class="hint">Snet</span></div>
+        <div class="settings-about">
+          <p class="about-intro">Snet 是一个无需公网 IP、扫码即连的私有 WireGuard 网络，让设备之间优先直连，无法直连时自动中继。</p>
+          <div class="about-meta">
+            <span>作者 <b>S.shidi</b></span>
+            <a href="mailto:s.shidi@gmail.com">s.shidi@gmail.com</a>
+            <span>微信 <b>S-shidi</b></span>
+          </div>
+          <div class="about-version">
+            <span>当前版本 <code id="about-version">v${esc(status?.version || "-")}</code></span>
+            <span class="about-update" id="about-update">正在检查更新…</span>
+            <a href="https://github.com/S-shidi/Snet/releases/latest" target="_blank" rel="noopener noreferrer">GitHub Releases ↗</a>
+          </div>
+        </div>
+      </section>
       <details class="settings-advanced">
         <summary>高级：原始状态 JSON</summary>
         <pre class="settings-json">${esc(JSON.stringify(status ?? {}, null, 2))}</pre>
@@ -1537,6 +1562,29 @@ function openSettingsModal() {
     footer: `<button data-close class="btn ghost">关闭</button>`,
     onBody: (body) => {
       const msg = body.querySelector<HTMLElement>("#s-msg")!;
+      const updateState = body.querySelector<HTMLElement>("#about-update");
+      const currentVersion = String(status?.version || "");
+      if (updateState && currentVersion) {
+        fetch("https://api.github.com/repos/S-shidi/Snet/releases/latest", {
+          headers: { Accept: "application/vnd.github+json" },
+        })
+          .then((r) => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+          .then((rel: { tag_name?: string }) => {
+            const latest = String(rel.tag_name || "").replace(/^v/i, "");
+            const norm = (v: string) => v.split(/[.-]/).map((x) => Number(x) || 0);
+            const a = norm(currentVersion), b = norm(latest);
+            let cmp = 0;
+            for (let i = 0; i < Math.max(a.length, b.length); i++) {
+              if ((a[i] || 0) !== (b[i] || 0)) { cmp = (a[i] || 0) > (b[i] || 0) ? 1 : -1; break; }
+            }
+            updateState.className = cmp < 0 ? "about-update new" : "about-update ok";
+            updateState.textContent = latest ? (cmp < 0 ? `发现新版本 v${latest}` : "已是最新版本") : "无法检查更新";
+          })
+          .catch(() => {
+            updateState.className = "about-update";
+            updateState.textContent = "无法检查更新，请在 GitHub 查看最新版本";
+          });
+      }
       const serverView = body.querySelector<HTMLElement>("#s-server-view")!;
       const serverEditor = body.querySelector<HTMLElement>("#s-server-editor")!;
       const serverInput = body.querySelector<HTMLInputElement>("#s-server")!;

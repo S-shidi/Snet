@@ -1,4 +1,4 @@
-# SnetMac v3 — Wails v3 macOS 客户端
+# Snet v3 — Wails v3 macOS 客户端
 
 这是 `feat/wails-v3` 分支的 Wails v3 客户端骨架，使用原生 `SystemTray`，保留 LaunchDaemon 免密启动逻辑。
 
@@ -52,14 +52,14 @@ launchctl kickstart -k system/com.snet.daemon
 ```bash
 cd desktop-mac-v3
 wails3 task darwin:build-only
-xattr -cr bin/SnetMac.app
-codesign --remove-signature bin/SnetMac.app/Contents/MacOS/SnetMac 2>/dev/null || true
-codesign --remove-signature bin/SnetMac.app/Contents/Resources/snetd 2>/dev/null || true
-plutil -lint bin/SnetMac.app/Contents/Info.plist
-codesign --force --sign - bin/SnetMac.app/Contents/Resources/snetd
-codesign --force --sign - bin/SnetMac.app/Contents/MacOS/SnetMac
-codesign --force --sign - bin/SnetMac.app
-codesign --verify --strict bin/SnetMac.app
+xattr -cr bin/Snet.app
+codesign --remove-signature bin/Snet.app/Contents/MacOS/Snet 2>/dev/null || true
+codesign --remove-signature bin/Snet.app/Contents/Resources/snetd 2>/dev/null || true
+plutil -lint bin/Snet.app/Contents/Info.plist
+codesign --force --sign - bin/Snet.app/Contents/Resources/snetd
+codesign --force --sign - bin/Snet.app/Contents/MacOS/Snet
+codesign --force --sign - bin/Snet.app
+codesign --verify --strict bin/Snet.app
 ```
 
 Taskfile 的 `build-only` 会：
@@ -67,14 +67,14 @@ Taskfile 的 `build-only` 会：
 1. 从 `shared/web` 构建 `frontend/dist`
 2. 编译 Wails v3 App
 3. 将 `../dist/snetd-darwin-arm64` 和 `scripts/install-daemon.sh` 复制到 App Resources
-4. 生成未签名的 `bin/SnetMac.app`
+4. 生成未签名的 `bin/Snet.app`
 
 签名和 DMG 打包由 CI 手工完成，避免 Wails 自动签名后再修改 App 内容。
 
 产物在：
 
 ```text
-bin/SnetMac.app
+bin/Snet.app
 ```
 
 ## 彻底卸载 LaunchDaemon

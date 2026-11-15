@@ -5,7 +5,7 @@ import "fmt"
 
 // Version is the product release version. Keep it in sync with VERSION;
 // scripts/check-version.sh enforces this in CI.
-var Version = "1.1.7"
+var Version = "1.1.8"
 
 // Commit and BuildDate are overridden with -ldflags for release builds.
 var (

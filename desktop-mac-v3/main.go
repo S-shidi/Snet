@@ -36,10 +36,10 @@ func main() {
 	}
 	defer release()
 	initLogging()
-	log.Printf("SnetMac: starting")
+	log.Printf("Snet: starting")
 	svc := &SnetService{}
 	app := application.New(application.Options{
-		Name:        "SnetMac",
+		Name:        "Snet",
 		Description: "SNET macOS client",
 		Assets: application.AssetOptions{
 			Handler: newCtlProxy(svc, application.AssetFileServerFS(assets)),
@@ -51,7 +51,7 @@ func main() {
 	})
 	app.RegisterService(application.NewService(svc))
 	app.OnShutdown(func() {
-		log.Printf("SnetMac: shutdown requested")
+		log.Printf("Snet: shutdown requested")
 		svc.ShutdownDaemon()
 	})
 
@@ -70,34 +70,34 @@ func main() {
 		},
 	})
 	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		log.Printf("SnetMac: window closing, hiding instead")
+		log.Printf("Snet: window closing, hiding instead")
 		e.Cancel()
 		window.Hide()
 	})
 	statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem := setupSystray(app, window, svc)
 	var trayWatchOnce sync.Once
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-		log.Printf("SnetMac: application started")
+		log.Printf("Snet: application started")
 		showWindow(window)
 		trayWatchOnce.Do(func() {
 			go watchTrayStatus(statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem)
 		})
 	})
 
-	log.Printf("SnetMac: starting snetd")
+	log.Printf("Snet: starting snetd")
 	if err := svc.StartDaemon(); err != nil {
 		log.Printf("snetd: %v", err)
 	}
 
-	log.Printf("SnetMac: entering app.Run")
+	log.Printf("Snet: entering app.Run")
 	if err := app.Run(); err != nil {
-		log.Fatalf("SnetMac: app.Run failed: %v", err)
+		log.Fatalf("Snet: app.Run failed: %v", err)
 	}
-	log.Printf("SnetMac: app.Run returned without error")
+	log.Printf("Snet: app.Run returned without error")
 }
 
 func initLogging() {
-	f, err := os.OpenFile("/tmp/SnetMac-startup.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile("/tmp/Snet-startup.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return
 	}
@@ -107,51 +107,84 @@ func initLogging() {
 func showWindow(window *application.WebviewWindow) {
 	window.Show()
 	window.Focus()
-	_ = exec.Command("osascript", "-e", `tell application "System Events" to set frontmost of process "SnetMac" to true`).Run()
+	_ = exec.Command("osascript", "-e", `tell application "System Events" to set frontmost of process "Snet" to true`).Run()
 }
+
+var (
+	trayRelayAllow bool
+	trayRelayUse   = true
+)
 
 func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) (*application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem) {
 	tray := app.SystemTray.New()
 	if len(trayIcon) == 0 {
-		log.Printf("SnetMac: tray icon is empty; continuing without template icon")
+		log.Printf("Snet: tray icon is empty; continuing without template icon")
 	} else {
 		tray.SetTemplateIcon(trayIcon)
 	}
-	tray.SetTooltip("SNET 虚拟组网")
-	tray.OnClick(func() { showWindow(window) })
+	tray.SetTooltip("Snet")
+	tray.OnClick(func() { tray.OpenMenu() })
+	tray.OnRightClick(func() { tray.OpenMenu() })
+	tray.OnDoubleClick(func() { showWindow(window) })
 
 	menu := app.NewMenu()
 	statusItem := menu.Add("未连接").SetEnabled(true).SetBitmap(dotIcon(color.RGBA{R: 239, G: 68, B: 68, A: 255}))
 	ipItem := menu.Add("IP: -").SetEnabled(true).SetBitmap(ipIcon())
 	subnetItem := menu.Add("子网: -").SetEnabled(true).SetBitmap(subnetIcon())
 	subnetItem.SetHidden(true)
-	allowRelayItem := menu.AddCheckbox("允许本设备作为中继网关", false)
-	useRelayItem := menu.AddCheckbox("使用网络内的中继网关", true)
+	menu.AddSeparator()
+	allowRelayItem := menu.Add("允许本设备作为中继网关").SetBitmap(blankIcon())
+	useRelayItem := menu.Add("使用网络内的中继网关").SetBitmap(relayCheckIcon(true))
 	menu.AddSeparator()
 	openItem := menu.Add("打开控制面板")
 	openItem.SetBitmap(windowIcon())
 	openItem.OnClick(func(*application.Context) {
 		showWindow(window)
 	})
-	toggleRelay := func(changed *application.MenuItem) {
-		allow := allowRelayItem.Checked()
-		use := useRelayItem.Checked()
-		if err := setRelayOptions(allow, use); err != nil {
-			changed.SetChecked(!changed.Checked())
-			log.Printf("tray relay options: %v", err)
+	toggleRelay := func(allow bool) {
+		nextAllow := allow
+		if allow {
+			nextAllow = !trayRelayAllow
 		}
+		nextUse := trayRelayUse
+		if !allow {
+			nextUse = !trayRelayUse
+		}
+		if err := setRelayOptions(nextAllow, nextUse); err != nil {
+			log.Printf("tray relay options: %v", err)
+			return
+		}
+		trayRelayAllow, trayRelayUse = nextAllow, nextUse
+		allowRelayItem.SetBitmap(relayCheckIcon(trayRelayAllow))
+		useRelayItem.SetBitmap(relayCheckIcon(trayRelayUse))
 	}
-	allowRelayItem.OnClick(func(*application.Context) { toggleRelay(allowRelayItem) })
-	useRelayItem.OnClick(func(*application.Context) { toggleRelay(useRelayItem) })
-	quitItem := menu.Add("退出 SNET")
+	allowRelayItem.OnClick(func(*application.Context) { toggleRelay(true) })
+	useRelayItem.OnClick(func(*application.Context) { toggleRelay(false) })
+	menu.AddSeparator()
+	quitItem := menu.Add("退出 Snet")
 	quitItem.SetBitmap(quitIcon())
 	quitItem.OnClick(func(*application.Context) {
-		log.Printf("SnetMac: quit requested from tray")
+		log.Printf("Snet: quit requested from tray")
 		svc.ShutdownDaemon()
 		app.Quit()
 	})
 	tray.SetMenu(menu)
 	return statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem
+}
+
+func blankIcon() []byte {
+	return makeIcon(func(*image.RGBA) {})
+}
+
+func relayCheckIcon(on bool) []byte {
+	if !on {
+		return blankIcon()
+	}
+	ink := color.RGBA{R: 63, G: 182, B: 139, A: 255}
+	return makeIcon(func(img *image.RGBA) {
+		drawLine(img, 3, 8, 6, 11, ink)
+		drawLine(img, 6, 11, 13, 4, ink)
+	})
 }
 
 func makeIcon(draw func(*image.RGBA)) []byte {
@@ -380,8 +413,9 @@ func watchTrayStatus(statusItem, ipItem, subnetItem, allowRelayItem, useRelayIte
 				subnetItem.SetLabel("子网: " + subnets)
 				subnetItem.SetHidden(false)
 			}
-			allowRelayItem.SetChecked(allowRelay)
-			useRelayItem.SetChecked(useRelay)
+			trayRelayAllow, trayRelayUse = allowRelay, useRelay
+			allowRelayItem.SetBitmap(relayCheckIcon(allowRelay))
+			useRelayItem.SetBitmap(relayCheckIcon(useRelay))
 		})
 		<-ticker.C
 	}

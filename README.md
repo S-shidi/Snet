@@ -60,7 +60,7 @@ http://<VPS_IP>:8090/admin
 ### 2. 安装客户端
 
 - **macOS**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `.dmg`
-- **Windows**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `SnetWindows-Setup-*.exe`
+- **Windows**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `Snet-v*-win-Setup.zip`，解压后运行安装程序（ZIP 可避免浏览器拦截未签名 `.exe` 下载）
 - **NAS / Linux**：[Docker 客户端部署](deploy-prod/docker-client/README.md)
 
 客户端首次启动后打开 Web 控制台，设置管理密码。
@@ -116,9 +116,9 @@ flowchart LR
 服务端、Relay 和客户端镜像：
 
 ```text
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.1.7
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.1.7
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.7
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.1.8
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.1.8
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.8
 ```
 
 ## 🔐 安全

@@ -5,16 +5,16 @@
 !include "FileFunc.nsh"
 
 !ifndef INFO_PROJECTNAME
-    !define INFO_PROJECTNAME "SnetMac"
+    !define INFO_PROJECTNAME "Snet"
 !endif
 !ifndef INFO_COMPANYNAME
     !define INFO_COMPANYNAME "SNET"
 !endif
 !ifndef INFO_PRODUCTNAME
-    !define INFO_PRODUCTNAME "SnetMac"
+    !define INFO_PRODUCTNAME "Snet"
 !endif
 !ifndef INFO_PRODUCTVERSION
-    !define INFO_PRODUCTVERSION "1.1.7"
+    !define INFO_PRODUCTVERSION "1.1.8"
 !endif
 !ifndef INFO_COPYRIGHT
     !define INFO_COPYRIGHT "© 2026, My Company"

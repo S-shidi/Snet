@@ -54,7 +54,7 @@ func (s *SnetService) upgradeDaemonIfNeeded() error {
 	if systemErr == nil && systemVersion == appVersion {
 		return nil
 	}
-	log.Printf("[SnetMac] daemon version mismatch app=%q system=%q", appVersion, systemVersion)
+	log.Printf("[Snet] daemon version mismatch app=%q system=%q", appVersion, systemVersion)
 	scriptPath, appBundle, err := installPaths()
 	if err != nil {
 		return err
@@ -62,7 +62,7 @@ func (s *SnetService) upgradeDaemonIfNeeded() error {
 	if err := installDaemon(scriptPath, appBundle); err != nil {
 		return err
 	}
-	log.Printf("[SnetMac] upgraded daemon binary from App bundle")
+	log.Printf("[Snet] upgraded daemon binary from App bundle")
 	return nil
 }
 

@@ -126,7 +126,7 @@ func startDaemonService() error {
 	h, err := windows.OpenService(scm, name, windows.SERVICE_START|windows.SERVICE_QUERY_STATUS)
 	if err != nil {
 		if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
-			return errors.New("后台服务未安装，请运行 SnetWindows 安装包")
+			return errors.New("后台服务未安装，请运行 Snet 安装包")
 		}
 		return fmt.Errorf("打开后台服务失败: %w", err)
 	}
