@@ -445,8 +445,10 @@ body.empty-mode { overflow: hidden; }
 .coordinator-card #s-server-editor input { width: 100%; }
 .info-json { margin-top: 16px; }
 .info-json .card { margin-bottom: 0; }
-.detail-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.detail-title { font-size: 19px; font-weight: 700; word-break: break-all; }
+.detail-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.detail-title { font-size: 19px; font-weight: 700; min-width: 0; word-break: break-all; }
+.detail-title-row > .pill { flex: none; }
+.detail-title-row > .detail-head-actions { margin-left: auto; }
 .detail-sub { margin-top: 3px; color: var(--dim); font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .detail-meta-line {
   display: flex; align-items: center; flex-wrap: wrap; gap: 3px 0;
@@ -1476,5 +1478,8 @@ pre.code { user-select: all; }
 @media (max-width: 640px) {
   .member-grid { grid-template-columns: 1fr; }
   .net-detail-head { gap: 10px; }
-  .detail-head-actions { width: 100%; justify-content: flex-end; }
+  .detail-title-row { flex-wrap: nowrap; gap: 6px; }
+  .detail-title-row > .detail-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .detail-head-actions { width: auto; justify-content: flex-end; gap: 6px; }
+  .detail-head-actions .btn { padding: 0 9px; }
 }

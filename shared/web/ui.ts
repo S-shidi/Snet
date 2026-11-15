@@ -2504,7 +2504,18 @@ function networkDetailHTML(n: NetInfo): string {
   </div>`;
   return `<div class="net-detail-head">
     <div class="detail-heading">
-      <div class="detail-title-row"><div class="detail-title">${esc(n.name || n.networkId)}</div>${rolePill}</div>
+      <div class="detail-title-row">
+        <div class="detail-title">${esc(n.name || n.networkId)}</div>
+        ${rolePill}
+        <div class="detail-head-actions">
+          <label class="switch detail-conn-switch" title="连接 / 断开">
+            <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
+            <span class="slider"></span>
+          </label>
+          ${canManage ? `<button type="button" class="btn ghost sm" id="detail-invite" data-detail-act="invite">${iconInvite}邀请</button>` : ""}
+          ${more}
+        </div>
+      </div>
       <div class="detail-meta-line">
         <span class="detail-net-id"><code>${esc(n.networkId)}</code></span>
         <span>↑ ${fmtSpeed(status?.txSpeed)} · ↓ ${fmtSpeed(status?.rxSpeed)}</span>
@@ -2512,14 +2523,6 @@ function networkDetailHTML(n: NetInfo): string {
         <span>${activeRoutes} 条生效路由</span>
         ${memberCount ? `<span>${memberCount} 位成员</span>` : ""}
       </div>
-    </div>
-    <div class="detail-head-actions">
-      <label class="switch detail-conn-switch" title="连接 / 断开">
-        <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
-        <span class="slider"></span>
-      </label>
-      ${canManage ? `<button type="button" class="btn ghost sm" id="detail-invite" data-detail-act="invite">${iconInvite}邀请</button>` : ""}
-      ${more}
     </div>
   </div>
   ${canManage ? pendingBannersHTML(n.networkId, ownerInfo[n.networkId]?.pending) : ""}
