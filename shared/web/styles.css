@@ -118,8 +118,9 @@ header::after {
 }
 .network-tab-add:hover { color: var(--accent); border-color: var(--accent); }
 
-/* macOS Wails: leave room for traffic lights and make the header draggable. */
-.wails-desktop { --header-left-padding: 80px; }
+/* macOS Wails: leave room for the traffic lights; dragging is handled by
+   the native overlay below. */
+.wails-desktop { --header-left-padding: 96px; }
 /* Windows has no traffic-light controls on the left, so the brand aligns with
    the network tabs instead of reserving macOS window-control space. */
 .wails-desktop.wails-windows { --header-left-padding: var(--content-padding-x); }
@@ -140,8 +141,9 @@ header::after {
    (left) and header action buttons (right) uncovered. */
 .mac-drag-region { display: none; }
 .wails-desktop.wails-macos .mac-drag-region {
-  display: block; position: fixed; top: 0; left: 78px; right: 150px;
+  display: block; position: fixed; top: 0; left: 94px; right: 150px;
   height: 52px; z-index: 30; cursor: default; user-select: none;
+  pointer-events: auto; touch-action: none;
 }
 
 /* ── header dropdown (mobile) ───────────── */

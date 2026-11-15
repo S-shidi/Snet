@@ -191,14 +191,14 @@ function invokeWailsNative(message: string): boolean {
 
 function initWailsWindowDrag() {
   if (!isWailsMac() || document.getElementById("mac-drag-region")) return;
-  const header = document.querySelector<HTMLElement>("header");
-  if (!header) return;
-
   const dragRegion = document.createElement("div");
   dragRegion.id = "mac-drag-region";
   dragRegion.className = "mac-drag-region";
   dragRegion.setAttribute("aria-hidden", "true");
-  header.appendChild(dragRegion);
+  // Attach to body, not the backdrop-filtered sticky header: fixed children of
+  // such ancestors can lose hit-testing after AppKit moves the window native
+  // drag layer.
+  document.body.appendChild(dragRegion);
 
   let armed = false;
   let startX = 0;
@@ -217,7 +217,10 @@ function initWailsWindowDrag() {
   };
 
   dragRegion.addEventListener("mousedown", (e) => {
-    if (e.button !== 0 || e.detail !== 1) return;
+    // Do not require detail === 1: AppKit's native drag consumes the matching
+    // DOM mouseup, so the next press can arrive with detail 2+ and would
+    // otherwise be ignored forever after the first successful drag.
+    if (e.button !== 0) return;
     e.preventDefault();
     armed = true;
     startX = e.screenX;
