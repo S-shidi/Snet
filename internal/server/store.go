@@ -3366,6 +3366,29 @@ func (s *Store) ClaimNetwork(nid, token, deviceID string) error {
 	return s.persistNetwork(ns)
 }
 
+// MarkNodesSeen refreshes LastSeen for peers whose WireGuard handshake was
+// observed by the caller (typically the gateway receiving an exported client).
+// This keeps WireGuard-only nodes, which never call the coordination API,
+// visible as online while they are connected.
+func (s *Store) MarkNodesSeen(token string, nodeIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	for _, id := range nodeIDs {
+		if id == "" || id == meID {
+			continue
+		}
+		if n := ns.nodes[id]; n != nil {
+			n.LastSeen = now
+		}
+	}
+	return nil
+}
+
 // ---- owner API ----
 
 // nodeFromTokenLocked resolves a coordination token to its network and node.

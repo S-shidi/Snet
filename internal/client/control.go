@@ -311,6 +311,16 @@ func (c *apiClient) Gateways(nid, token string) ([]protocol.GatewayInfo, error) 
 	return out, err
 }
 
+// MarkNodesSeen refreshes LastSeen for peers this node has recently seen at
+// the WireGuard data plane.
+func (c *apiClient) MarkNodesSeen(nid, token string, nodeIDs []string) error {
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	return c.do(http.MethodPost, "/api/v1/networks/"+nid+"/nodes/seen", token,
+		protocol.MarkNodesSeenReq{NodeIDs: nodeIDs}, nil)
+}
+
 // WireGuardConfig requests a standard WireGuard client config from the server.
 // The server returns the newly created node ID in a response header.
 func (c *apiClient) WireGuardConfig(nid, token, gatewayNodeID string) (string, string, error) {

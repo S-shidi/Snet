@@ -304,6 +304,8 @@ type Daemon struct {
 	obsList map[string][]string
 	// obsAt records the last relay group refresh per network (unix seconds).
 	obsAt map[string]int64
+	// peerSeenAt throttles data-plane LastSeen reports per network.
+	peerSeenAt map[string]int64
 	// selfPub records the last observed public IP per network, used to
 	// exclude our own mapping from the relay peer-mapping list.
 	selfPub map[string]string
@@ -388,6 +390,7 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 		relaySelAt:    make(map[string]int64),
 		obsList:       make(map[string][]string),
 		obsAt:         make(map[string]int64),
+		peerSeenAt:    make(map[string]int64),
 		selfPub:       sp,
 		endV6:         make(map[string]string),
 		directPub:     make(map[string]string),
@@ -1814,6 +1817,32 @@ func pollIntervalFor(n int) time.Duration {
 	return dur
 }
 
+// reportPeerSeen tells the coordination server which peers have a recent
+// WireGuard handshake. Exported WireGuard clients never call the control API,
+// so without this they remain permanently "offline" in the owner view.
+func (d *Daemon) reportPeerSeen(nid string, peers []protocol.Node, stats map[string]PeerStats, api *apiClient, token string) {
+	now := time.Now().Unix()
+	d.mu.Lock()
+	last := d.peerSeenAt[nid]
+	if now-last < 15 {
+		d.mu.Unlock()
+		return
+	}
+	d.peerSeenAt[nid] = now
+	d.mu.Unlock()
+
+	ids := make([]string, 0, len(peers))
+	for _, p := range peers {
+		ps := stats[p.PublicKey]
+		if ps.LastHandshakeSec > 0 && now-ps.LastHandshakeSec <= 180 {
+			ids = append(ids, p.ID)
+		}
+	}
+	if err := api.MarkNodesSeen(nid, token, ids); err != nil {
+		log.Printf("report peer seen %s: %v", nid, err)
+	}
+}
+
 func (d *Daemon) pollLoop(nid string) {
 	n := len(d.cfg.Networks)
 	if n < 1 {
@@ -1964,7 +1993,9 @@ func (d *Daemon) pollLoop(nid string) {
 			pm := rt.path
 			nodeID := nc.NodeID
 			token := nc.Token
+			seenStats, _ := rt.tun.Stats()
 			d.mu.Unlock()
+			d.reportPeerSeen(nid, peers, seenStats, api, token)
 			d.publishDirectEndpoints(nid, api, token, nodeID, pm)
 			continue
 		}
@@ -2007,6 +2038,7 @@ func (d *Daemon) pollLoop(nid string) {
 			d.noteSkippedRoutesLocked(nid, skipped)
 		}
 		d.mu.Unlock()
+		d.reportPeerSeen(nid, peers, pstats, api, token)
 	}
 }
 

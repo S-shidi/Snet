@@ -144,3 +144,30 @@ func TestRemoveHubClearsUseHub(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkNodesSeenRefreshesExternalNode(t *testing.T) {
+	s := NewStore()
+	created, err := s.CreateNetwork(testKey(1), "dev-owner", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := s.Join(created.NetworkID, created.PairingCode, testKey(2), "dev-member")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.networks[created.NetworkID].nodes[joined.NodeID].LastSeen = 0
+	s.mu.Unlock()
+	if err := s.MarkNodesSeen(created.Token, []string{joined.NodeID}); err != nil {
+		t.Fatal(err)
+	}
+	peers, err := s.ListPeers(created.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range peers.Peers {
+		if p.ID == joined.NodeID && !p.Online {
+			t.Fatalf("node marked seen should be online: %+v", p)
+		}
+	}
+}

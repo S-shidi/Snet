@@ -374,6 +374,10 @@ type GatewayInfo struct {
 	IsHub        bool   `json:"isHub,omitempty"`
 }
 
+type MarkNodesSeenReq struct {
+	NodeIDs []string `json:"nodeIds"`
+}
+
 type WireGuardConfigReq struct {
 	GatewayNodeID string `json:"gatewayNodeID"`
 }
