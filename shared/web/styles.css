@@ -135,17 +135,6 @@ header::after {
 .wails-desktop .network-tabs { position: relative; z-index: 1; }
 .wails-desktop header { user-select: none; }
 
-/* Native drag overlay (macOS). The runtime CSS drag path is unreliable under
-   the desktop webview, so this transparent strip drives the native
-   `wails:drag` bridge directly. It deliberately leaves the traffic lights
-   (left) and header action buttons (right) uncovered. */
-.mac-drag-region { display: none; }
-.wails-desktop.wails-macos .mac-drag-region {
-  display: block; position: fixed; top: 0; left: 94px; right: 150px;
-  height: 52px; z-index: 30; cursor: default; user-select: none;
-  pointer-events: auto; touch-action: none;
-}
-
 /* ── header dropdown (mobile) ───────────── */
 .header-more { position: relative; }
 .header-dropdown {

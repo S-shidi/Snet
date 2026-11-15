@@ -165,76 +165,6 @@ async function refreshPeerSubnets(force = false) {
   );
 }
 
-// Wails v3 exposes no public SetAsDragRegion() API. Its runtime only turns
-// elements with `--wails-draggable: drag` into drag handles, which is exactly
-// the path that fails here because the webview/layer tree consumes the event.
-// Drive the same native bridge directly from a dedicated transparent overlay
-// instead. This keeps every real control clickable while AppKit performs the
-// actual window drag.
-function isWailsMac(): boolean {
-  return (window as any)._wails?.environment?.OS === "darwin";
-}
-
-function invokeWailsNative(message: string): boolean {
-  const wails = (window as any)._wails;
-  if (typeof wails?.invoke === "function") {
-    wails.invoke(message);
-    return true;
-  }
-  const external = (window as any).webkit?.messageHandlers?.external;
-  if (typeof external?.postMessage === "function") {
-    external.postMessage(message);
-    return true;
-  }
-  return false;
-}
-
-function initWailsWindowDrag() {
-  if (!isWailsMac() || document.getElementById("mac-drag-region")) return;
-  const dragRegion = document.createElement("div");
-  dragRegion.id = "mac-drag-region";
-  dragRegion.className = "mac-drag-region";
-  dragRegion.setAttribute("aria-hidden", "true");
-  // Attach to body, not the backdrop-filtered sticky header: fixed children of
-  // such ancestors can lose hit-testing after AppKit moves the window native
-  // drag layer.
-  document.body.appendChild(dragRegion);
-
-  let armed = false;
-  let startX = 0;
-  let startY = 0;
-
-  const stop = () => {
-    armed = false;
-    window.removeEventListener("mousemove", onMove, true);
-    window.removeEventListener("mouseup", stop, true);
-  };
-  const onMove = (e: MouseEvent) => {
-    if (!armed) return;
-    if (Math.hypot(e.screenX - startX, e.screenY - startY) < 3) return;
-    stop();
-    invokeWailsNative("wails:drag");
-  };
-
-  dragRegion.addEventListener("mousedown", (e) => {
-    // Do not require detail === 1: AppKit's native drag consumes the matching
-    // DOM mouseup, so the next press can arrive with detail 2+ and would
-    // otherwise be ignored forever after the first successful drag.
-    if (e.button !== 0) return;
-    e.preventDefault();
-    armed = true;
-    startX = e.screenX;
-    startY = e.screenY;
-    window.addEventListener("mousemove", onMove, true);
-    window.addEventListener("mouseup", stop, true);
-  }, true);
-
-  dragRegion.addEventListener("dblclick", (e) => {
-    e.preventDefault();
-    invokeWailsNative("wails:drag:doubleclick");
-  });
-}
-
 /* ── Header ───────────────────────────────────────────────────── */
 /* ── Header ───────────────────────────────────────────────────── */
 function isWailsWindows(): boolean {
@@ -2950,7 +2880,6 @@ function bindEvents() {
 export async function init(b: Backend) {
   backend = b;
   await loadQR();
-  initWailsWindowDrag();
   initTabs();
   bindNetListEvents();
   bindNetworkDetailEvents();
