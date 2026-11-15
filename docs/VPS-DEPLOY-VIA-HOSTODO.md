@@ -392,12 +392,7 @@ snetctl -ctl http://127.0.0.1:19432 status
 snetctl -ctl http://127.0.0.1:19432 peers <nid>
 ```
 
-## 10. 客户端镜像 Registry（2026-11-08）
+## 10. 客户端镜像分发
 
-- Registry：`66.187.6.46:5000`，Docker Registry v2，HTTP + basic auth。
-- 容器：`snet-registry`，`restart unless-stopped`，端口 `5000:5000`。
-- 镜像：`snet-client:latest`，已推送，tag list：`latest`，digest `sha256:572987d158dd7e508a1764704e750bd0410d13a7ec8d58244526af7f9b2ae328`。
-- 认证：`/opt/snet-registry/auth/htpasswd`；密码 `/opt/snet-registry/auth/password.txt`，root 0600，不提交/不打印。
-- 外部 `http://66.187.6.46:5000/v2/` 返回 `401 Unauthorized`（basic auth 生效）。
-- 客户端需要 `insecure-registries: ["66.187.6.46:5000"]`，然后 `docker login 66.187.6.46:5000 -u snet` + `docker compose pull && docker compose up -d`。
-- 公网 5000/tcp 由用户防火墙放行；不停止 snet-server/snet-relay/其他容器。
+- 客户端镜像通过私有 Registry 分发；Registry 地址、端口、账号、密码和认证文件路径不记录在仓库或文档中。
+- 发布后由管理员在部署主机拉取对应 tag，并在 `docker compose` 目录执行 `docker compose up -d`。

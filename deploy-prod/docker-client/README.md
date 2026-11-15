@@ -48,16 +48,32 @@ deploy-prod/docker-client/supervisord.conf
 dist-deploy/linux-amd64/snetd
 ```
 
-## 3. 构建合并镜像
+## 3. 镜像
 
-在客户端 A 或 VPS（有完整构建 context）执行：
+官方客户端镜像发布在阿里云 ACR：
 
 ```bash
-cd deploy-prod/docker-client
-docker build -f Dockerfile.client -t 66.187.6.46:5000/snet-client:latest ../..
+ACR=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet
+docker pull $ACR/snet-client:v1.1.9
 ```
 
-构建需要：
+如果 Registry 要求认证，请使用你自己的阿里云容器镜像服务凭据登录：
+
+```bash
+docker login crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com
+```
+
+维护者重新构建：
+
+```bash
+ACR=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet
+cd deploy-prod/docker-client
+docker build -f Dockerfile.client -t snet-client:v1.1.9 ../..
+docker tag snet-client:v1.1.9 $ACR/snet-client:v1.1.9
+docker push $ACR/snet-client:v1.1.9
+```
+
+构建 context 是 `../..`（仓库根），需要以下路径可访问：
 
 ```text
 shared/web/
@@ -66,64 +82,25 @@ deploy-prod/docker-client/{nginx.conf,nginx-entrypoint.sh,supervisord.conf}
 dist-deploy/linux-amd64/snetd
 ```
 
-VPS registry 当前可能还是旧的 snetd-only 镜像；必须用本命令重建并重新推送。VPS 上推送时使用 loopback 别名（VPS Docker 只信任 loopback HTTP）：
+## 4. 离线安装
+
+在能访问阿里云 ACR 的机器上导出镜像：
 
 ```bash
-docker tag 66.187.6.46:5000/snet-client:latest 127.0.0.1:5000/snet-client:latest
-docker push 127.0.0.1:5000/snet-client:latest
+ACR=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet
+docker pull $ACR/snet-client:v1.1.9
+docker save $ACR/snet-client:v1.1.9 | gzip -1 > snet-client-v1.1.9.tar.gz
+scp snet-client-v1.1.9.tar.gz root@<NAS_IP>:/tmp/
 ```
 
-## 4. 镜像获取
-
-### 方案 A：VPS Registry（推荐）
-
-Registry：`66.187.6.46:5000`，HTTP + basic auth。
-
-客户端配置：
+在目标机器导入并启动：
 
 ```bash
-sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
-{
-  "insecure-registries": ["66.187.6.46:5000"]
-}
-JSON
-sudo systemctl restart docker
-```
-
-群晖重启 Docker 会中断 penpot/dpanel，建议维护窗口。
-
-登录：
-
-```bash
-docker login 66.187.6.46:5000 -u snet
-```
-
-拉取并启动：
-
-```bash
-cd /volume1/docker/snet   # NAS
+gunzip -c /tmp/snet-client-v1.1.9.tar.gz | docker load
+cd /volume1/docker/snet   # 群晖 NAS
 # 或 cd /opt/stacks/snet  # 标准 Linux
-docker compose pull
 docker compose up -d
 ```
-
-更新：
-
-```bash
-docker compose pull && docker compose up -d
-```
-
-### 方案 B：离线 tar
-
-```bash
-scp root@66.187.6.46:/tmp/snet-client-linux-amd64.tgz .
-docker load -i snet-client-linux-amd64.tgz
-docker tag snet-client:latest 66.187.6.46:5000/snet-client:latest
-cd /volume1/docker/snet
-docker compose up -d
-```
-
-> 注意：旧 `/tmp/snet-client-linux-amd64.tgz` 是 snetd-only 镜像，不含 nginx/Web GUI；必须重新构建合并镜像后再 `docker save` 新 tar。
 
 ## 5. 配置
 
@@ -272,11 +249,9 @@ snetctl -ctl http://127.0.0.1:19432 join --nid <nid> --code <code>
 
 ## 12. 安全说明
 
-- Registry：`66.187.6.46:5000`，basic auth；密码在 VPS `/opt/snet-registry/auth/password.txt`，仅管理员可见。
-- 公网访问 5000/tcp 需 Hostodo 防火墙放行。
-- 客户端需 `insecure-registries`（registry 是 HTTP）。
+- 客户端镜像通过阿里云 ACR 分发；私有仓库的地址、账号和密码不要提交到仓库或文档。
 - 合并镜像内 nginx 只代理 `127.0.0.1:19432`；ctl 不暴露公网。
-- 不提交 `ctl-token`、`device.id`、config、registry 密码或镜像 tar。
+- 不提交 `ctl-token`、`device.id`、config、Registry 密码或镜像 tar。
 
 ## 13. 网段冲突防护（v1.0.1）
 

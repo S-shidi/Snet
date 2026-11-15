@@ -6,7 +6,7 @@
 # virtual IPs and can run a ping matrix or a delegated-route sync probe.
 #
 # Usage (run on sdserver):
-#   IMAGE=66.187.6.46:5000/snet-client:v1.1.3 ./scripts/stress-test.sh all
+#   IMAGE=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.9 ./scripts/stress-test.sh all
 #   ./scripts/stress-test.sh up
 #   ./scripts/stress-test.sh ping
 #   ./scripts/stress-test.sh route-sync
@@ -23,7 +23,7 @@
 set -Eeuo pipefail
 
 NODES="${NODES:-6}"
-IMAGE="${IMAGE:-66.187.6.46:5000/snet-client:v1.1.3}"
+IMAGE="${IMAGE:-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.9}"
 SERVER="${SERVER:-https://snet.uizhi.eu.org:8090}"
 PREFIX="${PREFIX:-snet-stress}"
 ROOT="${STRESS_DIR:-/tmp/snet-stress}"

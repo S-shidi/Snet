@@ -2,8 +2,8 @@
 
 ## Release rules
 
-- Every new client release must publish the Docker image to the VPS Registry before the release is considered complete:
-  - `66.187.6.46:5000/snet-client:vX.Y.Z`
-  - `66.187.6.46:5000/snet-client:latest`
+- Every new client release must publish the Docker image to the private Registry before the release is considered complete. The registry host and credentials are intentionally not stored in this repository.
+  - `snet-client:vX.Y.Z`
+  - `snet-client:latest`
 - After pushing, verify the tags exist and update sdserver/NAS to the released tag.
 - Do not announce a client release while the Registry only has an older `snet-client` image.
