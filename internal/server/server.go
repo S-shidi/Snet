@@ -552,12 +552,13 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		cfg, err := s.GenerateWireGuardConfig(tokenOf(r), req.GatewayNodeID)
+		cfg, nodeID, err := s.GenerateWireGuardConfig(tokenOf(r), req.GatewayNodeID)
 		if err != nil {
 			handleStoreErr(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Snet-WireGuard-Node", nodeID)
 		_, _ = w.Write([]byte(cfg))
 	}))
 

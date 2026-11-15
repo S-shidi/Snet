@@ -614,13 +614,17 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			writeCtlErr(w, 400, err)
 			return
 		}
-		cfg, err := d.WireGuardConfig(req.Nid, req.GatewayNodeID)
+		cfg, nodeID, err := d.WireGuardConfig(req.Nid, req.GatewayNodeID)
 		if err != nil {
 			writeCtlErr(w, 400, err)
 			return
 		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte(cfg))
+		writeCtlJSON(w, 200, map[string]string{"nodeId": nodeID, "config": cfg})
+	})
+
+	mux.HandleFunc("GET /ctl/wireguard-exports", func(w http.ResponseWriter, r *http.Request) {
+		nid := r.URL.Query().Get("nid")
+		writeCtlJSON(w, 200, d.WireGuardExports(nid))
 	})
 
 	mux.HandleFunc("GET /ctl/netinfo", func(w http.ResponseWriter, r *http.Request) {

@@ -1385,7 +1385,7 @@ pre.code { user-select: all; }
 }
 
 /* ── WireGuard export ─────────────────────────────────────────── */
-.wg-export-result { display: grid; grid-template-columns: minmax(0,1fr) 220px; gap: 18px; align-items: start; }
+.wg-export-result { display: grid; grid-template-columns: minmax(0,1fr) 250px; gap: 18px; align-items: start; }
 .wg-export-text { min-width: 0; }
 .wg-export-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .wg-export-text textarea {
@@ -1394,7 +1394,14 @@ pre.code { user-select: all; }
   background: var(--bg2); color: var(--text); font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .wg-export-qr { display: flex; flex-direction: column; align-items: center; gap: 8px; padding-top: 28px; }
-.wg-export-qr .qr { width: 200px; height: 200px; }
+.wg-export-qr .qr {
+  width: 240px; height: 240px; padding: 12px; border-radius: 12px;
+  background: #fff; box-sizing: border-box;
+}
+.wg-export-qr .qr svg { width: 100%; height: 100%; display: block; }
+.wg-config-meta { display: grid; gap: 6px; margin-bottom: 14px; }
+.wg-config-meta > div { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--dim); }
+.wg-config-meta b { color: var(--text); font-weight: 600; text-align: right; }
 @media (max-width: 720px) {
   .wg-export-result { grid-template-columns: 1fr; }
   .wg-export-qr { padding-top: 0; }

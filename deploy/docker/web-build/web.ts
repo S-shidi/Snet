@@ -1,7 +1,7 @@
 /* ── Web adapter: fetch HTTP → shared UI ────────────────────────
  * Thin adapter: provides Backend + auth flow, delegates UI to shared/ui.ts.
  */
-import type { Backend, DaemonStatus, DesktopDaemonStatus, GatewayInfo, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute, InviteLinkResp, RotateInviteResp } from "../../../shared/web/types.js";
+import type { Backend, DaemonStatus, DesktopDaemonStatus, GatewayInfo, WireGuardExport, WireGuardConfigResp, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute, InviteLinkResp, RotateInviteResp } from "../../../shared/web/types.js";
 import { DEFAULT_SERVER } from "../../../shared/web/types.js";
 import { init } from "../../../shared/web/ui.js";
 
@@ -141,7 +141,7 @@ const backend: Backend = {
     return api("/gateways?nid=" + encodeURIComponent(nid));
   },
 
-  async wireguardConfig(nid: string, gatewayNodeID: string): Promise<string> {
+  async wireguardConfig(nid: string, gatewayNodeID: string): Promise<WireGuardConfigResp> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (authToken) headers.Authorization = "Bearer " + authToken;
     const res = await fetch(NS + "/wireguard-config", {
@@ -155,7 +155,11 @@ const backend: Backend = {
       try { const j = JSON.parse(text); if (j.error) msg = j.error; } catch {}
       throw new Error(msg);
     }
-    return text;
+    return JSON.parse(text) as WireGuardConfigResp;
+  },
+
+  async wireguardExports(nid: string): Promise<WireGuardExport[]> {
+    return api("/wireguard-exports?nid=" + encodeURIComponent(nid));
   },
 
   async updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null }): Promise<void> {

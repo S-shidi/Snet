@@ -97,7 +97,7 @@ func TestGatewayCapabilityAndWireGuardConfig(t *testing.T) {
 		t.Fatalf("gateway classification public=%v private=%v: %+v", public, private, gateways)
 	}
 
-	cfg, err := s.GenerateWireGuardConfig(created.Token, testHubID)
+	cfg, _, err := s.GenerateWireGuardConfig(created.Token, testHubID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestRemoveHubClearsUseHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GenerateWireGuardConfig(created.Token, testHubID); err != nil {
+	if _, _, err := s.GenerateWireGuardConfig(created.Token, testHubID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.KickNode(created.Token, testHubID); err != nil {

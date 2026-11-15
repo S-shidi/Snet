@@ -28,59 +28,59 @@ func generateWGKeypair() (priv, pub string, err error) {
 // peer is gatewayNodeID. The returned private key is never stored server-side;
 // the public key/IP pair is added as a WireGuard-only node so the gateway (and
 // peers) can route the exported client.
-func (s *Store) GenerateWireGuardConfig(token, gatewayNodeID string) (string, error) {
+func (s *Store) GenerateWireGuardConfig(token, gatewayNodeID string) (string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	ns, meID, err := s.nodeFromTokenLocked(token)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := s.requireOwnerLocked(ns, meID); err != nil {
-		return "", err
+		return "", "", err
 	}
 	gatewayNodeID = strings.TrimSpace(gatewayNodeID)
 	if gatewayNodeID == "" {
-		return "", fmt.Errorf("%w: 请选择网关节点", ErrGatewayUnavailable)
+		return "", "", fmt.Errorf("%w: 请选择网关节点", ErrGatewayUnavailable)
 	}
 	gateway := ns.nodes[gatewayNodeID]
 	if gateway == nil && gatewayNodeID == s.hubNodeID {
 		gateway, err = s.ensureHubLocked(ns)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 	if gateway == nil {
-		return "", fmt.Errorf("%w: 网关节点不存在", ErrGatewayUnavailable)
+		return "", "", fmt.Errorf("%w: 网关节点不存在", ErrGatewayUnavailable)
 	}
 	if gateway.ID == s.hubNodeID && !ns.n.UseHubNode {
 		ns.n.UseHubNode = true
 		if err := s.persistNetwork(ns); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 	endpoint, ok, reason := publicGatewayEndpoint(gateway)
 	if !ok {
-		return "", fmt.Errorf("%w: %s", ErrGatewayUnavailable, reason)
+		return "", "", fmt.Errorf("%w: %s", ErrGatewayUnavailable, reason)
 	}
 	if gateway.PublicKey == "" {
-		return "", fmt.Errorf("%w: 网关缺少 WireGuard 公钥", ErrGatewayUnavailable)
+		return "", "", fmt.Errorf("%w: 网关缺少 WireGuard 公钥", ErrGatewayUnavailable)
 	}
 
 	priv, pub, err := generateWGKeypair()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if len(ns.nodes) >= protocol.MaxNodes {
-		return "", ErrNetworkFull
+		return "", "", ErrNetworkFull
 	}
 	ip, err := ns.allocIP()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	nodeID, err := randomString(8)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	client := &protocol.Node{
 		ID:         nodeID,
@@ -93,13 +93,13 @@ func (s *Store) GenerateWireGuardConfig(token, gatewayNodeID string) (string, er
 	}
 	ns.nodes[nodeID] = client
 	if err := s.upsertDeviceLocked(client.DeviceID, pub, "WireGuard 客户端"); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := s.persistNetwork(ns); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := s.persistNode(ns.n.ID, client); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	allowed := make([]string, 0, 1+len(ns.n.Routes))
@@ -126,5 +126,5 @@ func (s *Store) GenerateWireGuardConfig(token, gatewayNodeID string) (string, er
 	b.WriteString("Endpoint = " + endpoint + "\n")
 	b.WriteString("AllowedIPs = " + strings.Join(allowed, ", ") + "\n")
 	b.WriteString("PersistentKeepalive = 25\n")
-	return b.String(), nil
+	return b.String(), nodeID, nil
 }

@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3037,15 +3038,49 @@ func (d *Daemon) Gateways(nid string) ([]protocol.GatewayInfo, error) {
 }
 
 // WireGuardConfig exports a standard WireGuard configuration through the
-// selected gateway node.
-func (d *Daemon) WireGuardConfig(nid, gatewayNodeID string) (string, error) {
+// selected gateway node. The private key is persisted only in the local daemon
+// config so it can be shown again from the device card.
+func (d *Daemon) WireGuardConfig(nid, gatewayNodeID string) (string, string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	nc := d.cfg.Networks[nid]
 	if nc == nil {
-		return "", fmt.Errorf("网络 %s 未找到", nid)
+		return "", "", fmt.Errorf("网络 %s 未找到", nid)
 	}
-	return d.apiLocked().WireGuardConfig(nid, nc.Token, gatewayNodeID)
+	cfg, nodeID, err := d.apiLocked().WireGuardConfig(nid, nc.Token, gatewayNodeID)
+	if err != nil {
+		return "", "", err
+	}
+	if nodeID != "" {
+		if d.cfg.WireGuardExports == nil {
+			d.cfg.WireGuardExports = make(map[string]WireGuardExport)
+		}
+		d.cfg.WireGuardExports[nid+"/"+nodeID] = WireGuardExport{
+			NodeID:        nodeID,
+			NetworkID:     nid,
+			GatewayNodeID: gatewayNodeID,
+			Config:        cfg,
+			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := d.save(); err != nil {
+			return "", "", err
+		}
+	}
+	return cfg, nodeID, nil
+}
+
+// WireGuardExports returns locally saved exports for a network, newest first.
+func (d *Daemon) WireGuardExports(nid string) []WireGuardExport {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]WireGuardExport, 0)
+	for _, e := range d.cfg.WireGuardExports {
+		if e.NetworkID == nid {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	return out
 }
 
 // SetRoutes replaces the network's delegated relay routes. Only the network

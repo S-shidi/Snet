@@ -111,6 +111,8 @@ export type NetInfoDetail = {
 };
 export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; deviceName?: string; online?: boolean; role?: string; natType?: string; allowRelay?: boolean; relayError?: string; endpoint?: string; endpointV6?: string; publicIPv4?: string; publicIPv6?: string; isHub?: boolean };
 export type GatewayInfo = { id: string; name: string; canBeGateway: boolean; reason?: string; joined: boolean; online?: boolean; isHub?: boolean };
+export type WireGuardExport = { nodeId: string; networkId: string; gatewayNodeId?: string; gatewayName?: string; config: string; createdAt: string };
+export type WireGuardConfigResp = { nodeId: string; config: string };
 export type PeersResp = { peers?: NetNode[]; self?: NetNode; subnet?: string; approvalRequired?: boolean; routes?: RelayRoute[] };
 export type CreateResp = { networkId: string; ip: string; pairingCode: string; link: string };  
 export type JoinResp = { ip?: string; networkId?: string; status?: string; pendingId?: string };
@@ -151,7 +153,9 @@ export interface Backend {
   /** List WireGuard gateway candidates (owner only) */
   gateways(nid: string): Promise<GatewayInfo[]>;
   /** Export a standard WireGuard config through a gateway (owner only) */
-  wireguardConfig(nid: string, gatewayNodeID: string): Promise<string>;
+  wireguardConfig(nid: string, gatewayNodeID: string): Promise<WireGuardConfigResp>;
+  /** Locally saved WireGuard exports for a network */
+  wireguardExports(nid: string): Promise<WireGuardExport[]>;
   /** Update network settings (owner only) */
   updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null }): Promise<void>;
   /** Enable or disable automatic inbound NAT mapping for this device */

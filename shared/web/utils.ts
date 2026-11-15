@@ -30,7 +30,7 @@ export function renderQR(container: HTMLElement, text: string) {
     const qr = qrcodeFn(0, "M");
     qr.addData(text);
     qr.make();
-    const svg = qr.createSvgTag({ cellSize: 4, margin: 1, scalable: true });
+    const svg = qr.createSvgTag({ cellSize: 8, margin: 4, scalable: true });
     container.innerHTML = svg;
     container.querySelector("svg")?.setAttribute("style", "width:100%;height:auto;display:block");
   } else {

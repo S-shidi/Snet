@@ -3,7 +3,7 @@
  * Platform adapters (Desktop/Web/Android) provide a Backend implementation
  * and call init() to wire everything up.
  */
-import { DEFAULT_SERVER, type Backend, type DaemonStatus, type GatewayInfo, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode, type RelayRoute } from "./types.js";
+import { DEFAULT_SERVER, type Backend, type DaemonStatus, type GatewayInfo, type WireGuardExport, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode, type RelayRoute } from "./types.js";
 import { $, esc, SPIN, fmtBytes, onlineCount, toast, copyText, renderQR, loadQR, openModal, closeModal, confirmDialog, initTabs } from "./utils.js";
 import { subnetCheck, subnetWidgetHTML, subnetWidgetInit } from "./subnet.js";
 
@@ -79,7 +79,7 @@ async function refresh() {
     // whole page blank.
     renderHeader();
     renderNetworks();
-    await Promise.all([refreshOwnerInfo(), refreshPeerSubnets()]);
+    await Promise.all([refreshOwnerInfo(), refreshPeerSubnets(), refreshWireGuardExports()]);
     renderHeader();
     renderNetworks();
     renderNetworkDetail();
@@ -90,9 +90,10 @@ async function refresh() {
 
 /* ── Owner info cache ─────────────────────────────────────────── */
 const ownerInfo: Record<string, NetInfoDetail> = {};
-// WireGuard exports contain a private key. Keep them only in page memory:
-// never localStorage. Reloading the page intentionally discards them.
-const wgConfigCache: Record<string, { config: string; gatewayName: string; createdAt: number }> = {};
+// WireGuard exports are stored by the local daemon (never the coordination
+// server) and fetched here so each generated device card can reopen its
+// config/QR after a page refresh.
+const wgExports: Record<string, Record<string, WireGuardExport>> = {};
 let lastOwnerFetch = 0;
 async function refreshOwnerInfo(force = false) {
   const now = Date.now();
@@ -1939,6 +1940,10 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const diag = isSelf
       ? ""
       : `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button>`;
+    const wgExport = nd.deviceId?.startsWith("wg-") ? wgExports[n.networkId]?.[nd.id] : undefined;
+    const wgConfig = canManage && wgExport
+      ? `<button type="button" class="btn ghost sm" data-wg-config="${esc(nd.id)}" data-wg-name="${esc(nd.deviceName || "WireGuard 客户端")}">配置</button>`
+      : "";
     const kick = !isSelf && canManage
       ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}" ${nd.isHub ? 'data-hub="1"' : ""}>${nd.isHub ? "移除" : "踢出"}</button>`
       : "";
@@ -1953,7 +1958,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       : "";
     const foot = `<div class="member-card-foot">
       <span class="member-card-last">${esc(last)}</span>
-      <span class="member-card-actions">${poke}${diag}${kick}</span>
+      <span class="member-card-actions">${wgConfig}${poke}${diag}${kick}</span>
     </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
@@ -2261,18 +2266,73 @@ async function deleteNetworkFromDetail(nid: string, btn: HTMLButtonElement) {
   }
 }
 
-async function openWireGuardExportModal(nid: string, cachedOnly = false) {
-  const cached = wgConfigCache[nid];
+async function refreshWireGuardExports(force = false): Promise<void> {
+  if (!force && !status) return;
+  const ownerNets = (status?.networks ?? []).filter((n) => n.owner);
+  await Promise.all(ownerNets.map(async (n) => {
+    try {
+      const items = await withTimeout(backend.wireguardExports(n.networkId), 5000, "WireGuard 配置加载超时");
+      const m: Record<string, WireGuardExport> = {};
+      for (const e of items) m[e.nodeId] = e;
+      wgExports[n.networkId] = m;
+    } catch {
+      // Keep the last successful map; the configuration lives in the daemon
+      // and will be retried on the next refresh.
+    }
+  }));
+}
+
+function wireGuardConfigHTML(exp: WireGuardExport, name: string): string {
+  const created = exp.createdAt ? new Date(exp.createdAt).toLocaleString() : "-";
+  return `<div class="wg-config-view">
+    <div class="wg-config-meta">
+      <div><span>设备</span><b>${esc(name || "WireGuard 客户端")}</b></div>
+      <div><span>网关</span><b>${esc(exp.gatewayName || exp.gatewayNodeId || "-")}</b></div>
+      <div><span>生成时间</span><b>${esc(created)}</b></div>
+    </div>
+    <div class="wg-export-result">
+      <div class="wg-export-text">
+        <div class="wg-export-head"><b>WireGuard 配置</b><button type="button" class="btn ghost sm" id="wg-copy">复制</button></div>
+        <textarea id="wg-config" readonly spellcheck="false"></textarea>
+      </div>
+      <div class="wg-export-qr"><div class="qr wg-config-qr" id="wg-qr"></div><p class="hint">在 WireGuard App 内扫码导入</p></div>
+    </div>
+    <p class="hint">私钥只保存在本机守护进程的配置目录中；如已卸载客户端，请重新生成配置。</p>
+  </div>`;
+}
+
+function openWireGuardConfigModal(nid: string, nodeID: string, exp?: WireGuardExport, name = "") {
+  const found = exp ?? wgExports[nid]?.[nodeID];
+  if (!found) {
+    toast("该设备的 WireGuard 配置不在本机缓存中", "err");
+    return;
+  }
+  openModal({
+    title: `WireGuard 配置 · ${name || "设备"}`,
+    wide: true,
+    body: wireGuardConfigHTML(found, name),
+    footer: `<button data-close class="btn ghost">关闭</button><button id="wg-copy-foot" class="btn">复制配置</button>`,
+    onBody: (body) => {
+      const cfg = found.config;
+      const area = body.querySelector<HTMLTextAreaElement>("#wg-config")!;
+      area.value = cfg;
+      renderQR(body.querySelector<HTMLElement>("#wg-qr")!, cfg);
+      const copy = async (btn: HTMLButtonElement) => { await copyText(cfg, btn); };
+      body.querySelector<HTMLButtonElement>("#wg-copy")?.addEventListener("click", (e) => void copy(e.currentTarget as HTMLButtonElement));
+      body.querySelector<HTMLButtonElement>("#wg-copy-foot")?.addEventListener("click", (e) => void copy(e.currentTarget as HTMLButtonElement));
+    },
+  });
+}
+
+async function openWireGuardExportModal(nid: string) {
   let gateways: GatewayInfo[] = [];
   try {
     gateways = await backend.gateways(nid);
   } catch (e) {
-    if (!cached) {
-      toast(`加载网关失败: ${e}`, "err");
-      return;
-    }
+    toast(`加载网关失败: ${e}`, "err");
+    return;
   }
-  if (!gateways.length && !cached) {
+  if (!gateways.length) {
     toast("当前没有可用的 WireGuard 网关", "err");
     return;
   }
@@ -2282,70 +2342,27 @@ async function openWireGuardExportModal(nid: string, cachedOnly = false) {
   }).join("");
   const preferred = gateways.find((g) => g.isHub && g.canBeGateway) ?? gateways.find((g) => g.isHub) ?? gateways[0];
   openModal({
-    title: "导出 WireGuard 配置",
+    title: "生成 WireGuard 配置",
     wide: true,
-    body: `<div id="wg-step-gateway">
-        <div class="form-stack">
-          <div class="form-field">
-            <label for="wg-gateway">出口网关</label>
-            <select id="wg-gateway" class="form-control">${options || '<option value="">暂无可用网关</option>'}</select>
-          </div>
-          <p class="hint">配置将通过该节点的公网入口接入网络。官方 Hub 未加入时会自动接入。</p>
-          <p class="hint">每次“生成新配置”都会创建一个新的 WireGuard 客户端节点；旧配置不会被自动删除。</p>
-          <p class="msg" id="wg-gateway-state"></p>
+    body: `<div class="form-stack">
+        <div class="form-field">
+          <label for="wg-gateway">出口网关</label>
+          <select id="wg-gateway" class="form-control">${options}</select>
         </div>
-      </div>
-      <div id="wg-step-config" hidden>
-        <div class="wg-export-result">
-          <div class="wg-export-text">
-            <div class="wg-export-head"><b>WireGuard 配置</b><button type="button" class="btn ghost sm" id="wg-copy">复制</button></div>
-            <textarea id="wg-config" readonly spellcheck="false"></textarea>
-          </div>
-          <div class="wg-export-qr"><div class="qr" id="wg-qr"></div><p class="hint">扫码导入</p></div>
-        </div>
-        <p class="hint" id="wg-config-note"></p>
+        <p class="hint">配置将通过该节点的公网入口接入网络。官方 Hub 未加入时会自动接入。</p>
+        <p class="msg" id="wg-gateway-state"></p>
       </div>`,
-    footer: `<button data-close class="btn ghost">关闭</button><button id="wg-copy-foot" class="btn" hidden>复制配置</button><button id="wg-new" class="btn ghost" hidden>生成新配置</button><button id="wg-generate" class="btn" disabled>生成配置</button>`,
+    footer: `<button data-close class="btn ghost">取消</button><button id="wg-generate" class="btn" disabled>生成配置</button>`,
     onBody: (body) => {
       const select = body.querySelector<HTMLSelectElement>("#wg-gateway")!;
       const state = body.querySelector<HTMLElement>("#wg-gateway-state")!;
       const generate = body.querySelector<HTMLButtonElement>("#wg-generate")!;
-      const newBtn = body.querySelector<HTMLButtonElement>("#wg-new")!;
-      const copyFoot = body.querySelector<HTMLButtonElement>("#wg-copy-foot")!;
-      const gatewayStep = body.querySelector<HTMLElement>("#wg-step-gateway")!;
-      const configStep = body.querySelector<HTMLElement>("#wg-step-config")!;
-      const configArea = body.querySelector<HTMLTextAreaElement>("#wg-config")!;
-      const configNote = body.querySelector<HTMLElement>("#wg-config-note")!;
-      const qr = body.querySelector<HTMLElement>("#wg-qr")!;
-      const copy = async (btn: HTMLButtonElement) => {
-        await copyText(configArea.value, btn);
-      };
-      body.querySelector<HTMLButtonElement>("#wg-copy")?.addEventListener("click", (e) => void copy(e.currentTarget as HTMLButtonElement));
-      copyFoot.addEventListener("click", (e) => void copy(e.currentTarget as HTMLButtonElement));
-
-      const showConfig = (cfg: string, gatewayName: string) => {
-        configArea.value = cfg;
-        gatewayStep.hidden = true;
-        configStep.hidden = false;
-        generate.hidden = true;
-        newBtn.hidden = false;
-        copyFoot.hidden = false;
-        configNote.textContent = `网关：${gatewayName || "-"} · 配置仅保存在当前页面内存中；刷新页面后需重新生成。`;
-        renderQR(qr, cfg);
-      };
-      const showGateway = () => {
-        configStep.hidden = true;
-        gatewayStep.hidden = false;
-        generate.hidden = false;
-        newBtn.hidden = true;
-        copyFoot.hidden = true;
-        update();
-      };
+      select.value = preferred.id;
       const update = () => {
         const g = gateways.find((x) => x.id === select.value);
         if (!g) {
           state.className = "msg";
-          state.textContent = gateways.length ? "" : "没有可选网关，请确认网络节点在线。";
+          state.textContent = "";
           generate.disabled = true;
           return;
         }
@@ -2353,18 +2370,27 @@ async function openWireGuardExportModal(nid: string, cachedOnly = false) {
         state.textContent = g.canBeGateway ? "✓ 该节点具备公网入口，可以生成配置。" : `✗ 无法生成：${g.reason || "该节点不可用"}`;
         generate.disabled = !g.canBeGateway;
       };
-      if (preferred) select.value = preferred.id;
       select.addEventListener("change", update);
       update();
-      newBtn.addEventListener("click", showGateway);
       generate.addEventListener("click", async () => {
         generate.disabled = true;
         generate.innerHTML = `${SPIN} 生成中…`;
         try {
-          const cfg = await backend.wireguardConfig(nid, select.value);
           const g = gateways.find((x) => x.id === select.value);
-          wgConfigCache[nid] = { config: cfg, gatewayName: g?.name || "", createdAt: Date.now() };
-          showConfig(cfg, g?.name || "");
+          const resp = await backend.wireguardConfig(nid, select.value);
+          const exp: WireGuardExport = {
+            nodeId: resp.nodeId,
+            networkId: nid,
+            gatewayNodeId: select.value,
+            gatewayName: g?.name || "",
+            config: resp.config,
+            createdAt: new Date().toISOString(),
+          };
+          if (!wgExports[nid]) wgExports[nid] = {};
+          wgExports[nid][resp.nodeId] = exp;
+          closeModal();
+          void refresh();
+          openWireGuardConfigModal(nid, resp.nodeId, exp, "WireGuard 客户端");
         } catch (e) {
           generate.disabled = false;
           generate.textContent = "生成配置";
@@ -2372,7 +2398,6 @@ async function openWireGuardExportModal(nid: string, cachedOnly = false) {
           state.textContent = `生成失败：${e}`;
         }
       });
-      if (cached) showConfig(cached.config, cached.gatewayName);
     },
   });
 }
@@ -2396,8 +2421,7 @@ function networkDetailHTML(n: NetInfo): string {
     <button type="button" class="btn ghost sm" id="detail-more-btn">${iconMore}更多</button>
     <div class="detail-more-menu" id="detail-more-menu" hidden>
       <button type="button" data-detail-act="detail">网络详情</button>
-      ${canManage ? '<button type="button" data-detail-act="wg-export">导出 WireGuard 配置</button>' : ""}
-      ${canManage && wgConfigCache[n.networkId] ? '<button type="button" data-detail-act="wg-last">查看上次 WireGuard 配置</button>' : ""}
+      ${canManage ? '<button type="button" data-detail-act="wg-export">生成 WireGuard 配置</button>' : ""}
       ${canManage ? '<button type="button" data-detail-act="settings">编辑网络</button>' : ""}
       ${canManage ? '<button type="button" data-detail-act="subnets">子网路由管理</button>' : ""}
       ${canManage ? "" : '<button type="button" data-detail-act="leave">退出网络</button>'}
@@ -2601,6 +2625,11 @@ function bindNetworkDetailEvents() {
       await runPeerPing(pingEl);
       return;
     }
+    const wgBtn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-wg-config]");
+    if (wgBtn && detailNid) {
+      openWireGuardConfigModal(detailNid, wgBtn.dataset.wgConfig || "", undefined, wgBtn.dataset.wgName || "");
+      return;
+    }
     const el = (e.target as HTMLElement).closest<HTMLElement>("[data-detail-act], [data-detail-kick]");
     if (!el || !detailNid) return;
     const nid = detailNid;
@@ -2635,7 +2664,6 @@ function bindNetworkDetailEvents() {
       switch (el.dataset.detailAct) {
         case "detail": await openNetworkDetailModal(nid); break;
         case "wg-export": await openWireGuardExportModal(nid); break;
-        case "wg-last": await openWireGuardExportModal(nid, true); break;
         case "invite": await openInviteModal(nid); break;
         case "settings": await openNetworkSettings(nid); break;
         case "subnets": await openSubnetRouteModal(nid); break;

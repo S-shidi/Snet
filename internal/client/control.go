@@ -96,18 +96,18 @@ func (c *apiClient) do(method, path string, token string, body any, out any) err
 }
 
 // doText is do for endpoints that return a plain-text body (WireGuard .conf).
-func (c *apiClient) doText(method, path, token string, body any) (string, error) {
+func (c *apiClient) doText(method, path, token string, body any) (string, http.Header, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		rdr = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(c.ctx, method, c.server+path, rdr)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -118,7 +118,7 @@ func (c *apiClient) doText(method, path, token string, body any) (string, error)
 	req.Header.Set(protocol.VersionHeader, fmt.Sprint(protocol.APIVersion))
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 	c.noteServerVersion(resp.Header.Get(protocol.VersionHeader))
@@ -126,9 +126,9 @@ func (c *apiClient) doText(method, path, token string, body any) (string, error)
 	if resp.StatusCode >= 400 {
 		var e protocol.ErrResp
 		_ = json.Unmarshal(data, &e)
-		return "", &httpStatusErr{code: resp.StatusCode, msg: e.Error}
+		return "", nil, &httpStatusErr{code: resp.StatusCode, msg: e.Error}
 	}
-	return string(data), nil
+	return string(data), resp.Header, nil
 }
 
 // noteServerVersion records the API major version the server advertises and
@@ -312,9 +312,14 @@ func (c *apiClient) Gateways(nid, token string) ([]protocol.GatewayInfo, error) 
 }
 
 // WireGuardConfig requests a standard WireGuard client config from the server.
-func (c *apiClient) WireGuardConfig(nid, token, gatewayNodeID string) (string, error) {
-	return c.doText(http.MethodPost, "/api/v1/networks/"+nid+"/wireguard-config", token,
+// The server returns the newly created node ID in a response header.
+func (c *apiClient) WireGuardConfig(nid, token, gatewayNodeID string) (string, string, error) {
+	cfg, headers, err := c.doText(http.MethodPost, "/api/v1/networks/"+nid+"/wireguard-config", token,
 		protocol.WireGuardConfigReq{GatewayNodeID: gatewayNodeID})
+	if err != nil {
+		return "", "", err
+	}
+	return cfg, headers.Get("X-Snet-WireGuard-Node"), nil
 }
 
 // PeersState returns peers plus the caller's own node (with current IP) and
