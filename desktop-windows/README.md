@@ -50,8 +50,8 @@ wintun.dll
 4. 执行 `wails3 build GOOS=windows GOARCH=amd64`
 5. 将运行文件复制到 `desktop-windows/bin/`
 6. 执行 `wails3 package` 生成 NSIS 安装包
-7. 生成 `dist/SnetWindows-Setup-v1.1.6.exe`
-8. 生成 `dist/SnetWindows-v1.1.6-amd64.zip`
+7. 生成 `dist/SnetWindows-Setup-v1.1.7.exe`
+8. 生成 `dist/SnetWindows-v1.1.7-amd64.zip`
 
 产物：
 
@@ -60,13 +60,13 @@ desktop-windows/bin/SnetWindows.exe
 desktop-windows/bin/snetd.exe
 desktop-windows/bin/snetctl.exe
 desktop-windows/bin/wintun.dll
-dist/SnetWindows-Setup-v1.1.6.exe
-dist/SnetWindows-v1.1.6-amd64.zip
+dist/SnetWindows-Setup-v1.1.7.exe
+dist/SnetWindows-v1.1.7-amd64.zip
 ```
 
 ## 安装运行
 
-运行 `dist/SnetWindows-Setup-v1.1.6.exe`。安装器会写入：
+运行 `dist/SnetWindows-Setup-v1.1.7.exe`。安装器会写入：
 
 ```text
 C:\Program Files\SNET\SnetWindows.exe

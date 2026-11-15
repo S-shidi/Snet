@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  当前版本：<b>v1.1.6</b> · <a href="https://github.com/S-shidi/Snet/releases/latest">下载最新版</a>
+  当前版本：<b>v1.1.7</b> · <a href="https://github.com/S-shidi/Snet/releases/latest">下载最新版</a>
 </p>
 
 ## 核心特性
@@ -83,7 +83,7 @@ curl -fsS https://snet.example.com:8090/healthz
 预期：
 
 ```json
-{"serverVersion":"1.1.6","status":"ok"}
+{"serverVersion":"1.1.7","status":"ok"}
 ```
 
 如果不想从源码构建，可以直接使用预构建镜像：
@@ -91,7 +91,7 @@ curl -fsS https://snet.example.com:8090/healthz
 ```yaml
 services:
   relay:
-    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.1.6
+    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.1.7
     container_name: snet-relay
     restart: unless-stopped
     environment:
@@ -101,7 +101,7 @@ services:
       - "8092:8092/udp"
 
   server:
-    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.1.6
+    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.1.7
     container_name: snet-server
     restart: unless-stopped
     depends_on:
@@ -136,13 +136,13 @@ volumes:
 客户端镜像使用阿里云 ACR 公开仓库，无需登录：
 
 ```text
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.6
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.7
 ```
 
 也可以直接拉取：
 
 ```bash
-docker pull crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.6
+docker pull crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.7
 ```
 
 标准 Linux 创建：
@@ -151,7 +151,7 @@ docker pull crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet
 # /opt/stacks/snet/compose.yaml
 services:
   snetd:
-    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.6
+    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.7
     container_name: snetd
     restart: unless-stopped
     network_mode: host
@@ -221,7 +221,7 @@ SNET_HUB_ENDPOINT=<public-ip>:51820
 
 1. 打开最新 Release：
    <https://github.com/S-shidi/Snet/releases/latest>
-2. 下载并运行 `SnetWindows-Setup-v1.1.6.exe`。
+2. 下载并运行 `SnetWindows-Setup-v1.1.7.exe`。
 3. 安装包会请求一次管理员授权，用于安装后台服务 `SNetDaemon`。
 4. 安装完成后从桌面或开始菜单启动 `SNET`；以后启动不再弹 UAC。
 5. 卸载时安装器会停止并删除 `SNetDaemon`，同时清理 `C:\ProgramData\SNET`。
@@ -234,7 +234,7 @@ SNET_HUB_ENDPOINT=<public-ip>:51820
 
    <https://github.com/S-shidi/Snet/releases/latest>
 
-2. 下载 `SnetMac-v1.1.6-*.dmg`。
+2. 下载 `SnetMac-v1.1.7-*.dmg`。
 
 3. 打开 DMG，把 `SnetMac.app` 拖入 `Applications`。
 
