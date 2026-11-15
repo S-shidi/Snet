@@ -123,14 +123,8 @@ header::after {
 /* Windows has no traffic-light controls on the left, so the brand aligns with
    the network tabs instead of reserving macOS window-control space. */
 .wails-desktop.wails-windows { --header-left-padding: var(--content-padding-x); }
-.wails-drag-strip { display: none; }
-.wails-desktop .wails-drag-strip {
-  display: block; position: absolute; top: 0; left: 0; right: 0; height: 68px;
-  z-index: 0;
-}
 .wails-desktop .header-inner {
   position: relative; z-index: 1; pointer-events: none;
-  --wails-draggable: drag !important;
   user-select: none;
 }
 .wails-desktop .header-inner .brand,
@@ -138,21 +132,16 @@ header::after {
 .wails-desktop .header-inner .header-actions,
 .wails-desktop .header-inner .header-more { pointer-events: auto; }
 .wails-desktop .network-tabs { position: relative; z-index: 1; }
-.wails-desktop header {
-  --wails-draggable: drag !important;
-  user-select: none;
-}
-.wails-desktop header button,
-.wails-desktop header a,
-.wails-desktop header input,
-.wails-desktop header select,
-.wails-desktop header label,
-.wails-desktop header .header-dropdown,
-.wails-desktop header .header-actions,
-.wails-desktop header .header-more,
-.wails-desktop header .network-tabs,
-.wails-desktop header .network-tabs button {
-  --wails-draggable: no-drag !important;
+.wails-desktop header { user-select: none; }
+
+/* Native drag overlay (macOS). The runtime CSS drag path is unreliable under
+   the desktop webview, so this transparent strip drives the native
+   `wails:drag` bridge directly. It deliberately leaves the traffic lights
+   (left) and header action buttons (right) uncovered. */
+.mac-drag-region { display: none; }
+.wails-desktop.wails-macos .mac-drag-region {
+  display: block; position: fixed; top: 0; left: 78px; right: 150px;
+  height: 52px; z-index: 30; cursor: default; user-select: none;
 }
 
 /* ── header dropdown (mobile) ───────────── */

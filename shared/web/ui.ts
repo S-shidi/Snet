@@ -165,18 +165,71 @@ async function refreshPeerSubnets(force = false) {
   );
 }
 
-function initWailsWindowDrag() {
+// Wails v3 exposes no public SetAsDragRegion() API. Its runtime only turns
+// elements with `--wails-draggable: drag` into drag handles, which is exactly
+// the path that fails here because the webview/layer tree consumes the event.
+// Drive the same native bridge directly from a dedicated transparent overlay
+// instead. This keeps every real control clickable while AppKit performs the
+// actual window drag.
+function isWailsMac(): boolean {
+  return (window as any)._wails?.environment?.OS === "darwin";
+}
+
+function invokeWailsNative(message: string): boolean {
   const wails = (window as any)._wails;
-  if (typeof wails?.invoke !== "function") return;
+  if (typeof wails?.invoke === "function") {
+    wails.invoke(message);
+    return true;
+  }
+  const external = (window as any).webkit?.messageHandlers?.external;
+  if (typeof external?.postMessage === "function") {
+    external.postMessage(message);
+    return true;
+  }
+  return false;
+}
+
+function initWailsWindowDrag() {
+  if (!isWailsMac() || document.getElementById("mac-drag-region")) return;
   const header = document.querySelector<HTMLElement>("header");
   if (!header) return;
-  header.addEventListener("mousedown", (e) => {
+
+  const dragRegion = document.createElement("div");
+  dragRegion.id = "mac-drag-region";
+  dragRegion.className = "mac-drag-region";
+  dragRegion.setAttribute("aria-hidden", "true");
+  header.appendChild(dragRegion);
+
+  let armed = false;
+  let startX = 0;
+  let startY = 0;
+
+  const stop = () => {
+    armed = false;
+    window.removeEventListener("mousemove", onMove, true);
+    window.removeEventListener("mouseup", stop, true);
+  };
+  const onMove = (e: MouseEvent) => {
+    if (!armed) return;
+    if (Math.hypot(e.screenX - startX, e.screenY - startY) < 3) return;
+    stop();
+    invokeWailsNative("wails:drag");
+  };
+
+  dragRegion.addEventListener("mousedown", (e) => {
     if (e.button !== 0 || e.detail !== 1) return;
-    const target = e.target as HTMLElement;
-    if (target.closest("button, a, input, select, label, .network-tabs, .header-dropdown, .switch")) return;
     e.preventDefault();
-    wails.invoke("wails:drag");
+    armed = true;
+    startX = e.screenX;
+    startY = e.screenY;
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", stop, true);
   }, true);
+
+  dragRegion.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    invokeWailsNative("wails:drag:doubleclick");
+  });
 }
 
 /* ── Header ───────────────────────────────────────────────────── */
