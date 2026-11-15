@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 
 ####
 ## Please note: Template replacements don't work in this file. They are provided with default defines like
@@ -132,11 +132,15 @@ Section
         nsExec::ExecToLog '"$INSTDIR\snetd.exe" uninstall'
         Pop $0
     ${EndIf}
-    nsExec::ExecToLog '"$SYSDIR\sc.exe" stop SNetDaemon'
+    # Expected to fail on a first install (service absent). Use ExecToStack so
+    # these benign 1060 errors do not pollute the installation log.
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" stop SNetDaemon'
     Pop $0
+    Pop $1
     Sleep 1200
-    nsExec::ExecToLog '"$SYSDIR\sc.exe" delete SNetDaemon'
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" delete SNetDaemon'
     Pop $0
+    Pop $1
     nsExec::ExecToStack '"$SYSDIR\sc.exe" query SNetDaemon'
     Pop $0
     Pop $1
@@ -145,10 +149,12 @@ Section
         MessageBox MB_ICONEXCLAMATION|MB_OKCANCEL "检测到旧服务正在后台清理，建议重启电脑后再安装。$\r$\n$\r$\n点击「确定」忽略并继续，点击「取消」退出安装。"
         Abort
     ${EndIf}
-    nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM snetd.exe /T'
+    nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM snetd.exe /T'
     Pop $0
-    nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM Snet.exe /T'
+    Pop $1
+    nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM Snet.exe /T'
     Pop $0
+    Pop $1
     Delete /REBOOTOK "$INSTDIR\SnetWindows.exe"
     Sleep 2000
 
@@ -192,6 +198,13 @@ Section
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SNETSnetWindows"
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SNETSnetWindows"
 
+    # Refresh the shell's icon cache so an upgraded install immediately shows
+    # the current Snet icon instead of the previous Wails artwork.
+    nsExec::ExecToStack '"$SYSDIR\ie4uinit.exe" -show'
+    Pop $0
+    Pop $1
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+
     !insertmacro wails.associateFiles
     !insertmacro wails.associateCustomProtocols
     
@@ -203,8 +216,9 @@ Section "uninstall"
 
     # Remove the service first so snetd.exe is not locked while $INSTDIR is
     # deleted. The service keeps no data outside ProgramData.
-    nsExec::ExecToLog '"$INSTDIR\snetd.exe" uninstall'
+    nsExec::ExecToStack '"$INSTDIR\snetd.exe" uninstall'
     Pop $0
+    Pop $1
 
     # Never remove the device identity or network config unless the user
     # explicitly selected the destructive option above. Losing device.id is
