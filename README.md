@@ -203,6 +203,18 @@ docker exec snetd snetd -version
 3. 保存，客户端会先校验目标 `/healthz`。
 4. 校验通过后自动重新连接；点击「恢复默认」可切回官方服务端。
 
+## 官方 Hub / WireGuard 配置导出
+
+服务端可选配置：
+
+```text
+SNET_HUB_NODE_ID=hub-node-id    # Hub 在网络中的 nodeId（不是 deviceId）
+SNET_HUB_PUBLIC_KEY=<base64 WireGuard public key>
+SNET_HUB_ENDPOINT=<public-ip>:51820
+```
+
+配置后，网络 Owner 可在「更多 → 导出 WireGuard 配置」中按需把官方 Hub 加入网络并生成标准 `.conf`。
+
 ## Windows 安装
 
 系统要求：Windows 10/11 x64，需安装 WebView2 Runtime（通常系统已自带）。

@@ -46,6 +46,8 @@ export type NetInfo = {
   role?: string;
   serverState?: string;
   relayPath?: RelayPath;
+  hubNodeId?: string;
+  useHubNode?: boolean;
 };
 export type PendingJoin = {
   pendingId: string;
@@ -84,6 +86,8 @@ export type DaemonStatus = {
   natMapping?: NatStatus;
   /** Whether this device may act as a relay gateway for the network. */
   allowRelay?: boolean;
+  /** Whether the current platform supports the delegated relay gateway. */
+  relayGatewaySupported?: boolean;
   /** Whether this device honours the network's delegated relay routes. */
   useRelay?: boolean;
   /** Why the local relay gateway setup failed (empty when healthy). */
@@ -105,7 +109,10 @@ export type NetInfoDetail = {
   pending?: Array<{ id: string; publicKey: string; deviceId?: string; createdAt?: string; deviceName?: string }>;
   nodes?: Array<{ id: string; ip: string; deviceId?: string; deviceName?: string; online?: boolean; role?: string; publicKey?: string; allowRelay?: boolean; relayError?: string }>;
 };
-export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; deviceName?: string; online?: boolean; role?: string; natType?: string; allowRelay?: boolean; relayError?: string; endpoint?: string; endpointV6?: string; publicIPv4?: string; publicIPv6?: string };
+export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; deviceName?: string; online?: boolean; role?: string; natType?: string; allowRelay?: boolean; relayError?: string; endpoint?: string; endpointV6?: string; publicIPv4?: string; publicIPv6?: string; isHub?: boolean };
+export type GatewayInfo = { id: string; name: string; canBeGateway: boolean; reason?: string; joined: boolean; online?: boolean; isHub?: boolean };
+export type WireGuardExport = { nodeId: string; networkId: string; gatewayNodeId?: string; gatewayName?: string; config: string; createdAt: string };
+export type WireGuardConfigResp = { nodeId: string; config: string };
 export type PeersResp = { peers?: NetNode[]; self?: NetNode; subnet?: string; approvalRequired?: boolean; routes?: RelayRoute[] };
 export type CreateResp = { networkId: string; ip: string; pairingCode: string; link: string };  
 export type JoinResp = { ip?: string; networkId?: string; status?: string; pendingId?: string };
@@ -143,6 +150,12 @@ export interface Backend {
   netinfo(nid: string): Promise<NetInfoDetail>;
   /** Get peers for a network */
   peers(nid: string): Promise<PeersResp>;
+  /** List WireGuard gateway candidates (owner only) */
+  gateways(nid: string): Promise<GatewayInfo[]>;
+  /** Export a standard WireGuard config through a gateway (owner only) */
+  wireguardConfig(nid: string, gatewayNodeID: string): Promise<WireGuardConfigResp>;
+  /** Locally saved WireGuard exports for a network */
+  wireguardExports(nid: string): Promise<WireGuardExport[]>;
   /** Update network settings (owner only) */
   updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null }): Promise<void>;
   /** Enable or disable automatic inbound NAT mapping for this device */

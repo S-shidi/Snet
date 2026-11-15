@@ -217,6 +217,7 @@ type networkRecord struct {
 	Tags             []string         `json:"tags,omitempty"`
 	Visibility       string           `json:"visibility,omitempty"`
 	Routes           []protocol.Route `json:"routes,omitempty"`
+	UseHubNode       bool             `json:"useHubNode,omitempty"`
 }
 
 // networkShareOpts carries the optional community-sharing metadata for a
@@ -278,6 +279,15 @@ type Store struct {
 	devices   map[string]*deviceRecord
 	authCodes map[string]*authCodeRecord // key = public auth-code ID
 	netSeq    uint64                     // monotonic creation counter for networks
+
+	// Official Hub configuration. The Hub is a logical relay node the server
+	// can attach to a network on demand for WireGuard export. The ID is
+	// required; public key/endpoint are either configured directly or taken
+	// from an existing node with the same ID in another network.
+	hubNodeID    string
+	hubPublicKey string
+	hubEndpoint  string
+	hubName      string
 
 	// relayHost is the public relay endpoint advertised to peers; when empty,
 	// relay mode is disabled and peers keep their self-advertised endpoints.
@@ -419,6 +429,7 @@ func (s *Store) load() error {
 						Tags:             r.Tags,
 						Visibility:       r.Visibility,
 						Routes:           r.Routes,
+						UseHubNode:       r.UseHubNode,
 					},
 					pairing: &pairing{
 						codeHash:    r.CodeHash,
@@ -627,6 +638,7 @@ func (s *Store) persistNetwork(ns *networkState) error {
 		Tags:             ns.n.Tags,
 		Visibility:       ns.n.Visibility,
 		Routes:           ns.n.Routes,
+		UseHubNode:       ns.n.UseHubNode,
 	}
 	b, err := json.Marshal(r)
 	if err != nil {
@@ -2534,6 +2546,12 @@ func (s *Store) CancelPending(pendingID, deviceID string) error {
 }
 
 func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinResp, error) {
+	return s.JoinWithOptions(nid, rawCode, publicKey, deviceID, false)
+}
+
+// JoinWithOptions is Join plus optional server-managed features. useHub asks
+// the server to attach the official Hub to the network before returning.
+func (s *Store) JoinWithOptions(nid, rawCode, publicKey, deviceID string, useHub bool) (protocol.JoinResp, error) {
 	code := protocol.NormalizeCode(rawCode)
 	now := time.Now()
 
@@ -2574,6 +2592,11 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 	}
 	if deviceID != "" && pendingForDevice(ns, deviceID) != nil {
 		return protocol.JoinResp{}, errors.New("已向该网络发起申请，请勿重复请求！")
+	}
+	if useHub {
+		if _, err := s.ensureHubLocked(ns); err != nil {
+			return protocol.JoinResp{}, err
+		}
 	}
 	if p.remaining > 0 {
 		p.remaining--
@@ -2979,6 +3002,7 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 	fillNodeView := func(n2 *protocol.Node) {
 		// Live online status: online within the same TTL the owner view uses.
 		n2.Online = now-n2.LastSeen < int64(lastSeenTTL/time.Second)
+		n2.IsHub = n2.ID == s.hubNodeIDLocked()
 		// The node record stores only the device id; attach the human-readable
 		// device name from the device registry when available.
 		if d := s.devices[n2.DeviceID]; d != nil {
@@ -3340,6 +3364,29 @@ func (s *Store) ClaimNetwork(nid, token, deviceID string) error {
 	}
 	ns.n.OwnerDeviceID = deviceID
 	return s.persistNetwork(ns)
+}
+
+// MarkNodesSeen refreshes LastSeen for peers whose WireGuard handshake was
+// observed by the caller (typically the gateway receiving an exported client).
+// This keeps WireGuard-only nodes, which never call the coordination API,
+// visible as online while they are connected.
+func (s *Store) MarkNodesSeen(token string, nodeIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	for _, id := range nodeIDs {
+		if id == "" || id == meID {
+			continue
+		}
+		if n := ns.nodes[id]; n != nil {
+			n.LastSeen = now
+		}
+	}
+	return nil
 }
 
 // ---- owner API ----
@@ -3825,6 +3872,8 @@ func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
 	n.NodeCount = len(ns.nodes)
 	n.Online = now-ns.lastActivityAt < int64(netAliveTTL/time.Second)
 	n.LastActivityAt = ns.lastActivityAt
+	n.HubNodeID = s.hubNodeIDLocked()
+	n.UseHubNode = ns.n.UseHubNode
 	n.PendingCount = 0
 	for _, p := range ns.pending {
 		if p.Status == "pending" {
@@ -3835,6 +3884,7 @@ func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
 	for _, nd := range ns.nodes {
 		c := *nd
 		c.Online = now-c.LastSeen < int64(lastSeenTTL/time.Second)
+		c.IsHub = c.ID == n.HubNodeID
 		if d := s.devices[c.DeviceID]; d != nil {
 			c.DeviceName = d.Name
 		}
@@ -4003,6 +4053,13 @@ func (s *Store) KickNode(token, nodeID string) error {
 	}
 	if nodeID == ns.n.OwnerNodeID {
 		return errors.New("cannot remove the owner node")
+	}
+	if nodeID == s.hubNodeID && ns.n.UseHubNode {
+		ns.n.UseHubNode = false
+		if err := s.persistNetwork(ns); err != nil {
+			return err
+		}
+		log.Printf("官方 Hub 已被用户手动移除 (network=%s)", ns.n.ID)
 	}
 	// Release the node's per-node unicast relay port before dropping the node,
 	// matching RemoveNode/AdminRemoveNode. releaseNodePortLocked is idempotent.
@@ -4497,6 +4554,8 @@ func (s *Store) DeviceNetworks(deviceID string) []protocol.Network {
 				c.NodeCount = len(ns.nodes)
 				c.Online = time.Now().Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second)
 				c.LastActivityAt = ns.lastActivityAt
+				c.HubNodeID = s.hubNodeIDLocked()
+				c.UseHubNode = ns.n.UseHubNode
 				out = append(out, c)
 				break
 			}
@@ -4556,6 +4615,8 @@ func (s *Store) DeviceNetworkDetails(deviceID string) ([]protocol.DeviceNetworkD
 				c.NodeCount = len(ns.nodes)
 				c.Online = time.Now().Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second)
 				c.LastActivityAt = ns.lastActivityAt
+				c.HubNodeID = s.hubNodeIDLocked()
+				c.UseHubNode = ns.n.UseHubNode
 				out = append(out, c)
 				break
 			}

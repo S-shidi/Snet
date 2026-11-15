@@ -70,13 +70,13 @@ func main() {
 		e.Cancel()
 		window.Hide()
 	})
-	statusItem, ipItem, subnetItem := setupSystray(app, window, svc)
+	statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem := setupSystray(app, window, svc)
 	var trayWatchOnce sync.Once
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		log.Printf("SnetWindows: application started")
 		showWindow(window)
 		trayWatchOnce.Do(func() {
-			go watchTrayStatus(statusItem, ipItem, subnetItem)
+			go watchTrayStatus(statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem)
 		})
 		watchShowRequests(showEvent, func() {
 			log.Printf("SnetWindows: second launch requested window")
@@ -114,7 +114,7 @@ func showWindow(window *application.WebviewWindow) {
 	window.Focus()
 }
 
-func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) (*application.MenuItem, *application.MenuItem, *application.MenuItem) {
+func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) (*application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem) {
 	tray := app.SystemTray.New()
 	if len(trayIcon) == 0 {
 		log.Printf("SnetWindows: tray icon is empty; continuing without icon")
@@ -122,18 +122,34 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 		tray.SetIcon(trayIcon)
 	}
 	tray.SetTooltip("SNET 虚拟组网")
+	tray.OnClick(func() { showWindow(window) })
 
 	menu := app.NewMenu()
 	statusItem := menu.Add("未连接").SetEnabled(true).SetBitmap(dotIcon(color.RGBA{R: 239, G: 68, B: 68, A: 255}))
 	ipItem := menu.Add("IP: -").SetEnabled(true).SetBitmap(ipIcon())
 	subnetItem := menu.Add("子网: -").SetEnabled(true).SetBitmap(subnetIcon())
 	subnetItem.SetHidden(true)
+	allowRelayItem := menu.AddCheckbox("允许本设备作为中继网关", false)
+	// Windows cannot host the delegated relay gateway safely; keep the
+	// capability hidden instead of letting users toggle a non-functional option.
+	allowRelayItem.SetHidden(true)
+	useRelayItem := menu.AddCheckbox("使用网络内的中继网关", true)
 	menu.AddSeparator()
 	openItem := menu.Add("打开控制面板")
 	openItem.SetBitmap(windowIcon())
 	openItem.OnClick(func(*application.Context) {
 		showWindow(window)
 	})
+	toggleRelay := func(changed *application.MenuItem) {
+		allow := allowRelayItem.Checked()
+		use := useRelayItem.Checked()
+		if err := setRelayOptions(allow, use); err != nil {
+			changed.SetChecked(!changed.Checked())
+			log.Printf("tray relay options: %v", err)
+		}
+	}
+	allowRelayItem.OnClick(func(*application.Context) { toggleRelay(allowRelayItem) })
+	useRelayItem.OnClick(func(*application.Context) { toggleRelay(useRelayItem) })
 	quitItem := menu.Add("退出 SNET")
 	quitItem.SetBitmap(quitIcon())
 	quitItem.OnClick(func(*application.Context) {
@@ -142,7 +158,7 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 		app.Quit()
 	})
 	tray.SetMenu(menu)
-	return statusItem, ipItem, subnetItem
+	return statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem
 }
 
 func makeIcon(draw func(*image.RGBA)) []byte {
@@ -267,33 +283,35 @@ type trayStatusResponse struct {
 			Ready bool `json:"ready"`
 		} `json:"relayPath"`
 	} `json:"networks"`
+	AllowRelay bool `json:"allowRelay"`
+	UseRelay   bool `json:"useRelay"`
 }
 
-func queryTrayStatus() (string, string, string, color.RGBA) {
+func queryTrayStatus() (string, string, string, color.RGBA, bool, bool) {
 	red := color.RGBA{R: 239, G: 68, B: 68, A: 255}
 	yellow := color.RGBA{R: 217, G: 161, B: 58, A: 255}
 	green := color.RGBA{R: 52, G: 199, B: 123, A: 255}
 	token, err := readCtlToken()
 	if err != nil {
-		return "未连接", "-", "", red
+		return "未连接", "-", "", red, false, true
 	}
 	req, err := http.NewRequest(http.MethodGet, "http://"+ctlAddr+"/ctl/status", nil)
 	if err != nil {
-		return "未连接", "-", "", red
+		return "未连接", "-", "", red, false, true
 	}
 	req.Header.Set("X-Ctl-Token", token)
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "未连接", "-", "", red
+		return "未连接", "-", "", red, false, true
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "未连接", "-", "", red
+		return "未连接", "-", "", red, false, true
 	}
 	var st trayStatusResponse
 	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
-		return "未连接", "-", "", red
+		return "未连接", "-", "", red, false, true
 	}
 	for _, n := range st.Networks {
 		if !n.Active || n.ServerState == "gone" {
@@ -309,11 +327,11 @@ func queryTrayStatus() (string, string, string, color.RGBA) {
 		}
 		subnets := queryOnlineSubnets(token, n.NetworkID)
 		if n.RelayPath != nil && n.RelayPath.Ready {
-			return "已连接 (" + name + ")", ip, subnets, green
+			return "已连接 (" + name + ")", ip, subnets, green, st.AllowRelay, st.UseRelay
 		}
-		return "打洞中", ip, subnets, yellow
+		return "打洞中", ip, subnets, yellow, st.AllowRelay, st.UseRelay
 	}
-	return "未连接", "-", "", red
+	return "未连接", "-", "", red, false, true
 }
 
 func queryOnlineSubnets(token, nid string) string {
@@ -354,11 +372,11 @@ func queryOnlineSubnets(token, nid string) string {
 	return strings.Join(out, ", ")
 }
 
-func watchTrayStatus(statusItem, ipItem, subnetItem *application.MenuItem) {
+func watchTrayStatus(statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem *application.MenuItem) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
-		label, ip, subnets, statusColor := queryTrayStatus()
+		label, ip, subnets, statusColor, allowRelay, useRelay := queryTrayStatus()
 		application.InvokeSync(func() {
 			statusItem.SetLabel(label)
 			statusItem.SetBitmap(dotIcon(statusColor))
@@ -369,6 +387,8 @@ func watchTrayStatus(statusItem, ipItem, subnetItem *application.MenuItem) {
 				subnetItem.SetLabel("子网: " + subnets)
 				subnetItem.SetHidden(false)
 			}
+			allowRelayItem.SetChecked(allowRelay)
+			useRelayItem.SetChecked(useRelay)
 		})
 		<-ticker.C
 	}

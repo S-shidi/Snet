@@ -186,6 +186,32 @@ func waitForCtl(timeout time.Duration) error {
 
 func ctlTokenPath() string { return filepath.Join(sandboxConfigDir, "ctl-token") }
 
+// setRelayOptions updates the daemon-wide relay switches used by the tray
+// menu. It is deliberately a small ctl call so the tray and web UI share the
+// same source of truth.
+func setRelayOptions(allowRelay, useRelay bool) error {
+	token, err := readCtlToken()
+	if err != nil {
+		return err
+	}
+	body := fmt.Sprintf(`{"allowRelay":%t,"useRelay":%t}`, allowRelay, useRelay)
+	req, err := http.NewRequest(http.MethodPost, "http://"+ctlAddr+"/ctl/relay", strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Ctl-Token", token)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("设置中继选项失败: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func readCtlToken() (string, error) {
 	b, err := os.ReadFile(ctlTokenPath())
 	if err != nil {

@@ -39,6 +39,9 @@ services:
     environment:
       SNET_RELAY_SECRET: ${SNET_RELAY_SECRET:?set SNET_RELAY_SECRET in deploy-prod/docker-server/.env}
       SNET_RELAY_V2_ENDPOINTS: ${SNET_RELAY_V2_ENDPOINTS:-snet.uizhi.eu.org:8092}
+      SNET_HUB_NODE_ID: ${SNET_HUB_NODE_ID:-}
+      SNET_HUB_PUBLIC_KEY: ${SNET_HUB_PUBLIC_KEY:-}
+      SNET_HUB_ENDPOINT: ${SNET_HUB_ENDPOINT:-}
     command:
       - "-addr"
       - "0.0.0.0:8090"

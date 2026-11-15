@@ -48,6 +48,19 @@ type NetworkCfg struct {
 // Config is the daemon configuration (v2, multi-network). PrivateKey is the
 // single WireGuard identity of this device and DeviceID is its stable
 // identity that survives reinstalls.
+// WireGuardExport is a generated standalone WireGuard client config. It is
+// persisted in the local daemon config only (never on the coordination
+// server) so the owner can re-open the QR/private key later. The key is
+// sensitive; the config file is already mode 0600.
+type WireGuardExport struct {
+	NodeID        string `json:"nodeId"`
+	NetworkID     string `json:"networkId"`
+	GatewayNodeID string `json:"gatewayNodeId,omitempty"`
+	GatewayName   string `json:"gatewayName,omitempty"`
+	Config        string `json:"config"`
+	CreatedAt     string `json:"createdAt"`
+}
+
 type Config struct {
 	ServerAddr    string                  `json:"serverAddr"`
 	WireguardPort int                     `json:"wireguardPort"`
@@ -56,6 +69,9 @@ type Config struct {
 	DeviceName    string                  `json:"deviceName,omitempty"`
 	Networks      map[string]*NetworkCfg  `json:"networks,omitempty"`     // key = network ID
 	PendingJoins  map[string]*PendingJoin `json:"pendingJoins,omitempty"` // key = pending ID`
+	// WireGuardExports stores generated WireGuard configs by "nid/nodeID".
+	// The private key is deliberately local-only and never uploaded.
+	WireGuardExports map[string]WireGuardExport `json:"wireGuardExports,omitempty"`
 
 	// KeyRotationDays is the interval in days between automatic WireGuard key
 	// rotations (0 disables rotation). LastKeyRotatedAt is the unix second of

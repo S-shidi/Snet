@@ -27,12 +27,18 @@ export async function loadQR() {
 export function renderQR(container: HTMLElement, text: string) {
   container.innerHTML = "";
   if (qrcodeFn) {
-    const qr = qrcodeFn(0, "M");
+    // WireGuard configs are dense. L gives fewer modules, and the 4-module
+    // quiet zone + crisp edges make screen-to-phone scanning reliable.
+    const qr = qrcodeFn(0, "L");
     qr.addData(text);
     qr.make();
-    const svg = qr.createSvgTag({ cellSize: 4, margin: 1, scalable: true });
+    const svg = qr.createSvgTag({ cellSize: 8, margin: 4, scalable: true });
     container.innerHTML = svg;
-    container.querySelector("svg")?.setAttribute("style", "width:100%;height:auto;display:block");
+    const el = container.querySelector("svg");
+    if (el) {
+      el.setAttribute("shape-rendering", "crispEdges");
+      el.setAttribute("style", "width:100%;height:100%;display:block");
+    }
   } else {
     // Fallback: show link text
     container.innerHTML = `<p style="color:var(--dim);font-size:12px;text-align:center">${esc(text)}</p>`;

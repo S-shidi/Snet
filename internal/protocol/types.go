@@ -63,6 +63,11 @@ type Network struct {
 	// Routes 是网络所有者委派出去的中继路由（双向确认）。
 	// 每条路由必须由目标节点确认开启 allow_relay 后才会生效。
 	Routes []Route `json:"routes,omitempty"`
+	// HubNodeID identifies the official Hub node when this network has one.
+	HubNodeID string `json:"hubNodeId,omitempty"`
+	// UseHubNode records whether the owner enabled the official Hub for this
+	// network. Removing the Hub clears it.
+	UseHubNode bool `json:"useHubNode,omitempty"`
 }
 
 // Route 是一条由网络所有者委派的中继路由：目标节点（TargetNodeID）被要求
@@ -164,6 +169,8 @@ type Node struct {
 	// RelayError 描述网关配置失败的原因（例如缺少 iptables 权限）。
 	// 非空表示节点虽然想当网关但实际不可用，路由会一直保持 pending。
 	RelayError string `json:"relayError,omitempty"`
+	// IsHub marks the official relay Hub in member views.
+	IsHub bool `json:"isHub,omitempty"`
 }
 
 type CreateNetworkReq struct {
@@ -195,6 +202,9 @@ type JoinReq struct {
 	Code      string `json:"code"`
 	PublicKey string `json:"publicKey"`
 	DeviceID  string `json:"deviceId,omitempty"`
+	// UseHub asks the server to add the configured official Hub to the
+	// network before/while joining.
+	UseHub bool `json:"use_hub,omitempty"`
 }
 
 type JoinResp struct {
@@ -350,6 +360,26 @@ type PendingStatusResp struct {
 	Subnet    string `json:"subnet,omitempty"`
 	RelayPort int    `json:"relayPort,omitempty"`
 	Peers     []Node `json:"peers,omitempty"`
+}
+
+// GatewayInfo describes a node that can be used as the public WireGuard
+// gateway for an exported configuration.
+type GatewayInfo struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	CanBeGateway bool   `json:"canBeGateway"`
+	Reason       string `json:"reason,omitempty"`
+	Joined       bool   `json:"joined"`
+	Online       bool   `json:"online,omitempty"`
+	IsHub        bool   `json:"isHub,omitempty"`
+}
+
+type MarkNodesSeenReq struct {
+	NodeIDs []string `json:"nodeIds"`
+}
+
+type WireGuardConfigReq struct {
+	GatewayNodeID string `json:"gatewayNodeID"`
 }
 
 type NetworksResp struct {
