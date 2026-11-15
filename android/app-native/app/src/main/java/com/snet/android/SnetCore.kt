@@ -1,5 +1,7 @@
 package com.snet.android
 
+import com.snet.android.snetbind.Snetbind
+
 /**
  * Thin Kotlin facade over the gomobile-generated Snetbind class.
  *
@@ -8,9 +10,9 @@ package com.snet.android
  */
 object SnetCore {
     fun start(configDir: String, tunFD: Int, ctlPort: Int): String =
-        Snetbind.Start(configDir, tunFD, ctlPort)
+        Snetbind.start(configDir, tunFD, ctlPort)
 
-    fun stop(): String = Snetbind.Stop()
+    fun stop(): String = Snetbind.stop()
 
-    fun getStatus(): String = Snetbind.GetStatus()
+    fun getStatus(): String = Snetbind.getStatus()
 }
