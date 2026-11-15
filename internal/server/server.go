@@ -59,6 +59,7 @@ type handler struct {
 	joins        *rateLimiter
 	logins       *rateLimiter
 	registers    *rateLimiter
+	deviceSyncs  *rateLimiter
 	pendingPolls *rateLimiter
 
 	// adminMu guards adminUser and adminPassHash, which are rotated while
@@ -94,6 +95,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		joins:        newRateLimiter(joinPerMinute, time.Minute),
 		logins:       newRateLimiter(5, time.Minute),
 		registers:    newRateLimiter(defaultRegisterPerMin, time.Minute),
+		deviceSyncs:  newRateLimiter(defaultRegisterPerMin, time.Minute),
 		pendingPolls: newRateLimiter(defaultPendingPollsPerMin, time.Minute),
 		sessions:     make(map[string]sessionEntry),
 	}
@@ -120,7 +122,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		t := time.NewTicker(limiterPruneInterval)
 		defer t.Stop()
 		for range t.C {
-			for _, rl := range []*rateLimiter{h.creates, h.joins, h.logins, h.registers, h.pendingPolls} {
+			for _, rl := range []*rateLimiter{h.creates, h.joins, h.logins, h.registers, h.deviceSyncs, h.pendingPolls} {
 				rl.prune()
 			}
 		}
@@ -198,11 +200,55 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		if err := s.RegisterDevice(req.DeviceID, req.PublicKey, req.Name); err != nil {
+		if err := s.RegisterDevice(req.DeviceID, req.PublicKey, req.Name, req.Fresh); err != nil {
 			handleStoreErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, protocol.RegisterDeviceResp{DeviceID: req.DeviceID})
+	})
+
+	// Issue the stable recovery token for this device. The caller must prove
+	// ownership by presenting a node token that belongs to a node of the
+	// device, so knowing a deviceId alone cannot take over its memberships.
+	mux.HandleFunc("POST /api/v1/devices/{deviceID}/recovery-token", func(w http.ResponseWriter, r *http.Request) {
+		if h.deviceSyncs.blocked(h.clientIP(r)) {
+			writeErr(w, http.StatusTooManyRequests, errors.New("too many requests"))
+			return
+		}
+		token, err := s.IssueRecoveryToken(r.PathValue("deviceID"), tokenOf(r))
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, protocol.RecoveryTokenResp{
+			DeviceID:      r.PathValue("deviceID"),
+			RecoveryToken: token,
+		})
+	})
+
+	// Restore a device's memberships after its local config was lost. The
+	// deviceId is not sufficient on its own: the request must also present
+	// the recovery token issued while the device still had a live node.
+	mux.HandleFunc("GET /api/v1/devices/{deviceID}/networks", func(w http.ResponseWriter, r *http.Request) {
+		if h.deviceSyncs.blocked(h.clientIP(r)) {
+			writeErr(w, http.StatusTooManyRequests, errors.New("too many requests"))
+			return
+		}
+		deviceID := r.PathValue("deviceID")
+		if err := validateDeviceID(deviceID); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if !s.ValidateDeviceToken(deviceID, deviceTokenOf(r)) {
+			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+			return
+		}
+		details, err := s.DeviceNetworkDetails(deviceID)
+		if err != nil {
+			writeInternalErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, protocol.DeviceNetworksResp{Networks: details})
 	})
 
 	// Update a node's WireGuard public key. Used after a client reinstall
@@ -1282,6 +1328,8 @@ func handleStoreErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusForbidden, err)
 	case errors.Is(err, ErrDeviceNetworkExists):
 		writeErr(w, http.StatusConflict, err)
+	case errors.Is(err, ErrDeviceIDCollision):
+		writeErr(w, http.StatusBadRequest, err)
 	case errors.Is(err, ErrRouteCIDRConflict):
 		writeErr(w, http.StatusBadRequest, err)
 	case errors.Is(err, ErrNodeIPInvalid):

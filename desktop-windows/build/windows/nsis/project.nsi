@@ -53,6 +53,7 @@ VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 ManifestDPIAware true
 
 !include "MUI.nsh"
+!include "nsDialogs.nsh"
 
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
@@ -66,7 +67,12 @@ ManifestDPIAware true
 !insertmacro MUI_PAGE_INSTFILES # Installing page.
 !insertmacro MUI_PAGE_FINISH # Finished installation page.
 
+!insertmacro MUI_UNPAGE_CONFIRM # Confirm the uninstall.
+UninstPage custom un.DataPage un.DataPageLeave # Keep data by default.
 !insertmacro MUI_UNPAGE_INSTFILES # Uninstalling page
+
+Var DeleteAllDataCheckbox
+Var DeleteAllData
 
 !insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
 
@@ -85,6 +91,30 @@ ShowInstDetails show # This will always show the installation details.
 
 Function .onInit
    !insertmacro wails.checkArchitecture
+FunctionEnd
+
+# Uninstall data policy: Snet's device identity, networks and private key live
+# in ProgramData. They must survive an uninstall so reinstalling does not turn
+# this machine into a new device or lose access to its networks. Only an
+# explicit checkbox may erase them.
+Function un.DataPage
+    !insertmacro MUI_HEADER_TEXT "卸载 Snet" "选择是否保留本地数据"
+    nsDialogs::Create 1018
+    Pop $0
+    ${If} $0 == error
+        Abort
+    ${EndIf}
+
+    ${NSD_CreateLabel} 0 0 100% 28u "默认保留设备 ID、网络配置和密钥。重新安装后，Snet 会继续使用同一台设备的身份并自动恢复网络。"
+    Pop $0
+    ${NSD_CreateCheckbox} 0 38u 100% 14u "同时删除所有本地数据（包括设备 ID，删除后无法恢复历史网络）"
+    Pop $DeleteAllDataCheckbox
+    ${NSD_SetState} $DeleteAllDataCheckbox ${BST_UNCHECKED}
+    nsDialogs::Show
+FunctionEnd
+
+Function un.DataPageLeave
+    ${NSD_GetState} $DeleteAllDataCheckbox $DeleteAllData
 FunctionEnd
 
 Section
@@ -172,12 +202,21 @@ Section "uninstall"
     !insertmacro wails.setShellContext
 
     # Remove the service first so snetd.exe is not locked while $INSTDIR is
-    # deleted. The service owns no data outside ProgramData.
+    # deleted. The service keeps no data outside ProgramData.
     nsExec::ExecToLog '"$INSTDIR\snetd.exe" uninstall'
     Pop $0
-    RMDir /r "C:\ProgramData\SNET"
 
-    RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+    # Never remove the device identity or network config unless the user
+    # explicitly selected the destructive option above. Losing device.id is
+    # what made a reinstall look like a brand-new device and lose history.
+    ${If} $DeleteAllData == ${BST_CHECKED}
+        ReadEnvStr $9 "PROGRAMDATA"
+        ${If} $9 == ""
+            StrCpy $9 "C:\ProgramData"
+        ${EndIf}
+        RMDir /r "$9\SNET"
+        RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+    ${EndIf}
 
     RMDir /r $INSTDIR
 

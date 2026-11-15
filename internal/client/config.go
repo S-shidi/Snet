@@ -62,11 +62,16 @@ type WireGuardExport struct {
 }
 
 type Config struct {
-	ServerAddr    string                  `json:"serverAddr"`
-	WireguardPort int                     `json:"wireguardPort"`
-	PrivateKey    string                  `json:"privateKey"`
-	DeviceID      string                  `json:"deviceId,omitempty"`
-	DeviceName    string                  `json:"deviceName,omitempty"`
+	ServerAddr    string `json:"serverAddr"`
+	WireguardPort int    `json:"wireguardPort"`
+	PrivateKey    string `json:"privateKey"`
+	DeviceID      string `json:"deviceId,omitempty"`
+	DeviceName    string `json:"deviceName,omitempty"`
+	// RecoveryToken authenticates device-scoped recovery requests (fetching
+	// this device's existing memberships after its local config was lost).
+	// It is issued by the coordination server and also persisted in device.id
+	// so it survives a reinstall that keeps the identity file.
+	RecoveryToken string                  `json:"recoveryToken,omitempty"`
 	Networks      map[string]*NetworkCfg  `json:"networks,omitempty"`     // key = network ID
 	PendingJoins  map[string]*PendingJoin `json:"pendingJoins,omitempty"` // key = pending ID`
 	// WireGuardExports stores generated WireGuard configs by "nid/nodeID".

@@ -318,6 +318,13 @@ type Daemon struct {
 	// deviceIDFile is the on-disk stable device identity; empty disables it
 	// (used in tests / read-only environments).
 	deviceIDFile string
+	// deviceIDFresh is true when this process just generated a new identity
+	// and has not yet confirmed with the server that it is unused. It drives
+	// the collision check before the first network operation.
+	deviceIDFresh bool
+	// syncMu serializes membership recovery so startup and an explicit
+	// refresh cannot rotate node tokens concurrently.
+	syncMu sync.Mutex
 	// netErrs records the last tunnel bring-up failure per network so the
 	// status API can explain why an active-looking network has no tunnel.
 	netErrs map[string]string
@@ -593,19 +600,60 @@ func (d *Daemon) ensureKeys(serverAddr string, port int) error {
 			return err
 		}
 	}
+	if err := d.ensureDeviceIdentityLocked(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureDeviceIdentityLocked makes the on-disk identity file and the in-memory
+// config agree, without ever silently deriving an identity from hardware.
+// The device.id file is authoritative when present; a config value is adopted
+// only when the file is missing, and then written back immediately.
+func (d *Daemon) ensureDeviceIdentityLocked() error {
+	changed := false
+	if d.deviceIDFile != "" {
+		storedID, storedKey, storedToken, err := LoadDeviceIdentity(d.deviceIDFile)
+		if err != nil {
+			return err
+		}
+		if storedID != "" && validDeviceID(storedID) {
+			if d.cfg.DeviceID != storedID {
+				d.cfg.DeviceID = storedID
+				changed = true
+			}
+			if d.cfg.PrivateKey == "" && storedKey != "" {
+				d.cfg.PrivateKey = storedKey
+				changed = true
+			}
+			if d.cfg.RecoveryToken == "" && storedToken != "" {
+				d.cfg.RecoveryToken = storedToken
+				changed = true
+			}
+		}
+	}
 	if d.cfg.DeviceID == "" {
-		id, err := LoadOrCreateDeviceID(d.deviceIDFile, "")
+		id, created, err := loadOrCreateDeviceID(d.deviceIDFile, "")
 		if err != nil {
 			return err
 		}
 		d.cfg.DeviceID = id
+		d.deviceIDFresh = d.deviceIDFresh || created
+		changed = true
+	} else if !validDeviceID(d.cfg.DeviceID) {
+		return fmt.Errorf("invalid persisted device id %q", d.cfg.DeviceID)
+	}
+	if changed {
 		if err := d.save(); err != nil {
 			return err
 		}
 	}
-	// Persist the private key alongside the device ID so it survives reinstalls.
+	// Always rewrite the full identity (id + key + recovery token) so the
+	// identity survives even if a previous version wrote only the id line.
 	if d.deviceIDFile != "" {
-		_ = SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey)
+		if err := SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey, d.cfg.RecoveryToken); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -714,7 +762,7 @@ func (d *Daemon) RotateKeys() error {
 	d.cfg.PrivateKey = newPrivHex
 	d.cfg.LastKeyRotatedAt = now
 	if d.deviceIDFile != "" {
-		_ = SaveDeviceKeypair(d.deviceIDFile, deviceID, newPrivHex)
+		_ = SaveDeviceKeypair(d.deviceIDFile, deviceID, newPrivHex, d.cfg.RecoveryToken)
 	}
 	if err := d.save(); err != nil {
 		d.mu.Unlock()
@@ -842,6 +890,10 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 		d.rollbackSwitchLocked(sw)
 		return protocol.CreateNetworkResp{}, err
 	}
+	if err := d.ensureDeviceIDUniqueLocked(d.apiLocked()); err != nil {
+		d.rollbackSwitchLocked(sw)
+		return protocol.CreateNetworkResp{}, err
+	}
 	// Reject an explicitly chosen subnet that collides with this machine's real
 	// LAN before creating the network on the server (avoids an orphan network
 	// that attach would refuse to bring up).
@@ -885,6 +937,10 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 	}
 	sw := d.beginSwitchLocked(serverAddr)
 	if err := d.ensureKeys(serverAddr, port); err != nil {
+		d.rollbackSwitchLocked(sw)
+		return protocol.JoinResp{}, err
+	}
+	if err := d.ensureDeviceIDUniqueLocked(d.apiLocked()); err != nil {
 		d.rollbackSwitchLocked(sw)
 		return protocol.JoinResp{}, err
 	}
@@ -1101,6 +1157,71 @@ func (d *Daemon) reconcileOwnership(nid string) {
 			log.Printf("save owner flag: %v", err)
 		}
 	}
+	if d.cfg.RecoveryToken == "" && nc.Token != "" {
+		d.ensureRecoveryTokenLocked(nc)
+	}
+}
+
+// ensureRecoveryTokenLocked obtains the device-scoped recovery token using a
+// node token this device already holds, then persists it in both the config
+// and device.id so it survives local config loss. Errors are non-fatal.
+func (d *Daemon) ensureRecoveryTokenLocked(nc *NetworkCfg) {
+	if nc == nil || nc.Token == "" || d.cfg.DeviceID == "" {
+		return
+	}
+	token, err := d.apiLocked().EnsureRecoveryToken(d.cfg.DeviceID, nc.Token)
+	if err != nil {
+		log.Printf("ensure recovery token: %v", err)
+		return
+	}
+	if token == "" {
+		return
+	}
+	d.cfg.RecoveryToken = token
+	if err := SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey, token); err != nil {
+		log.Printf("ensure recovery token: persist: %v", err)
+	}
+	if err := d.save(); err != nil {
+		log.Printf("ensure recovery token: save config: %v", err)
+	}
+}
+
+// ensureDeviceIDUniqueLocked verifies with the server that a freshly generated
+// identity is unused. A 400 collision response triggers regeneration and a
+// retry; every other error is returned to the caller so a network is never
+// created under an unverified fresh identity. Caller must hold d.mu.
+func (d *Daemon) ensureDeviceIDUniqueLocked(api *apiClient) error {
+	if !d.deviceIDFresh || d.cfg.DeviceID == "" {
+		return nil
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		err := api.RegisterDeviceFresh(d.cfg.DeviceID, d.publicKeyLocked(), d.hostnameLocked())
+		if err == nil {
+			d.deviceIDFresh = false
+			return nil
+		}
+		var se *httpStatusErr
+		if !errors.As(err, &se) || se.code != http.StatusBadRequest || !strings.Contains(se.msg, "deviceId") {
+			return err
+		}
+		id, genErr := deviceIDGen()
+		if genErr != nil {
+			return genErr
+		}
+		if !validDeviceID(id) {
+			continue
+		}
+		d.cfg.DeviceID = id
+		if d.deviceIDFile != "" {
+			if err := SaveDeviceKeypair(d.deviceIDFile, id, d.cfg.PrivateKey, d.cfg.RecoveryToken); err != nil {
+				return err
+			}
+		}
+		if err := d.save(); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("could not allocate a unique device id")
 }
 
 // Start resumes from persisted state (tunnels + poll loops) for every active
@@ -1116,23 +1237,25 @@ func (d *Daemon) Start() error {
 		return nil
 	}
 
-	if d.cfg.DeviceID == "" {
-		id, err := LoadOrCreateDeviceID(d.deviceIDFile, "")
+	// Reconcile identity and keys before any network activity. The identity
+	// file wins over a stale or missing config so a reinstall that preserved
+	// ProgramData keeps the same device ID.
+	if err := d.ensureDeviceIdentityLocked(); err != nil {
+		return err
+	}
+	if d.cfg.PrivateKey == "" {
+		priv, _, err := GenerateKeyPair()
 		if err != nil {
 			return err
 		}
-		d.cfg.DeviceID = id
+		d.cfg.PrivateKey = b64ToHex(priv)
+		if d.deviceIDFile != "" {
+			if err := SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey, d.cfg.RecoveryToken); err != nil {
+				return err
+			}
+		}
 		if err := d.save(); err != nil {
 			return err
-		}
-	}
-	// Try to restore private key from the persistent device file if missing.
-	if d.cfg.PrivateKey == "" {
-		if _, key, err := LoadDeviceKeypair(d.deviceIDFile); err == nil && key != "" {
-			d.cfg.PrivateKey = key
-			if err := d.save(); err != nil {
-				log.Printf("start: save restored key: %v", err)
-			}
 		}
 	}
 	// Relay gateway mode: when the user allowed this device to act as a
@@ -1157,6 +1280,14 @@ func (d *Daemon) Start() error {
 	for pendingID := range d.cfg.PendingJoins {
 		d.startPendingLoopLocked(pendingID)
 	}
+	// Make sure every network (even a currently disconnected one) can hand
+	// us a recovery token, so a later config loss can still be recovered.
+	for nid := range d.cfg.Networks {
+		if d.cfg.RecoveryToken != "" {
+			break
+		}
+		d.ensureRecoveryTokenLocked(d.cfg.Networks[nid])
+	}
 	// Periodic WireGuard key rotation (KeyRotationDays > 0) for forward secrecy.
 	if d.cfg.KeyRotationDays > 0 {
 		d.startKeyRotationLocked()
@@ -1170,8 +1301,166 @@ func (d *Daemon) Start() error {
 	// Run asynchronously so daemon startup is not blocked on the server.
 	go d.pingAllServerStates()
 	go d.relayCapabilityHeartbeat()
+	// Reconcile memberships with the server after startup. This restores the
+	// config when device.id survived but config.json did not, and refreshes
+	// node tokens for networks that still exist locally.
+	go func() {
+		if err := d.SyncNetworks(); err != nil {
+			log.Printf("startup sync networks: %v", err)
+		}
+	}()
 
 	d.started = true
+	return nil
+}
+
+// SyncNetworks fetches this device's historical memberships from the server
+// and reconstructs the local config. It is used after a reinstall where the
+// device identity survived but the local config (networks/tokens) was lost.
+// A successful response is authoritative: memberships the server no longer
+// returns are removed locally. Errors are logged by the caller and never
+// delete local state.
+func (d *Daemon) SyncNetworks() error {
+	d.syncMu.Lock()
+	defer d.syncMu.Unlock()
+
+	d.mu.Lock()
+	api := d.apiLocked()
+	server := api.server
+	deviceID := d.cfg.DeviceID
+	recoveryToken := d.cfg.RecoveryToken
+	localBefore := make(map[string]struct{}, len(d.cfg.Networks))
+	for nid := range d.cfg.Networks {
+		localBefore[nid] = struct{}{}
+	}
+	d.mu.Unlock()
+	if deviceID == "" || recoveryToken == "" {
+		return nil
+	}
+
+	details, err := api.DeviceNetworks(deviceID, recoveryToken)
+	if err != nil {
+		return fmt.Errorf("fetch device networks: %w", err)
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// The server changed while the request was in flight; the new server owns
+	// the next sync and this response must not mutate its config.
+	if d.apiLocked().server != server {
+		return nil
+	}
+	api = d.apiLocked()
+	pub := d.publicKeyLocked()
+
+	// Refresh the device record with the current public key/name.
+	if err := api.RegisterDevice(deviceID, pub, d.hostnameLocked()); err != nil {
+		log.Printf("sync networks: register device: %v", err)
+	}
+
+	if d.cfg.Networks == nil {
+		d.cfg.Networks = map[string]*NetworkCfg{}
+	}
+	synced, updated := 0, false
+	seen := make(map[string]struct{}, len(details))
+	for _, detail := range details {
+		nid := detail.Network.ID
+		if nid == "" {
+			continue
+		}
+		seen[nid] = struct{}{}
+
+		if existing := d.cfg.Networks[nid]; existing != nil {
+			if detail.Token != "" && existing.Token != detail.Token {
+				existing.Token = detail.Token
+				updated = true
+				if d.serverState != nil {
+					delete(d.serverState, nid)
+				}
+				if rt := d.nets[nid]; rt != nil && rt.path != nil {
+					rt.path.SetToken(existing.Token)
+				}
+			}
+			if detail.PublicKey != "" && detail.PublicKey != pub {
+				if err := api.UpdateNodePublicKeyByToken(nid, detail.NodeID, detail.Token, pub); err != nil {
+					log.Printf("sync networks: update public key %s: %v", nid, err)
+				}
+			}
+			continue
+		}
+
+		// The server rotated this node's token in the response; use it to
+		// adopt the current public key before the node is used again.
+		if detail.PublicKey != "" && detail.PublicKey != pub && detail.Token != "" {
+			if err := api.UpdateNodePublicKeyByToken(nid, detail.NodeID, detail.Token, pub); err != nil {
+				log.Printf("sync networks: update public key %s: %v", nid, err)
+			}
+		}
+		active := true
+		for other, oc := range d.cfg.Networks {
+			if other != nid && subnetsOverlap(detail.Subnet, oc.Subnet) {
+				log.Printf("sync networks: subnet %s overlaps with %s (%s), restoring %s inactive", detail.Subnet, other, oc.Subnet, nid)
+				active = false
+				break
+			}
+		}
+		nc := &NetworkCfg{
+			Name:     detail.Name,
+			NodeID:   detail.NodeID,
+			IP:       detail.IP,
+			Token:    detail.Token,
+			Subnet:   detail.Subnet,
+			Port:     0,
+			Active:   active,
+			Owner:    detail.Owner,
+			JoinedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+		d.cfg.Networks[nid] = nc
+		if err := api.SetNodeDevice(nid, detail.NodeID, detail.Token, deviceID); err != nil {
+			log.Printf("sync networks: bind node device %s: %v", nid, err)
+		}
+		if detail.Owner {
+			if err := api.ClaimNetwork(nid, detail.Token, deviceID); err != nil {
+				log.Printf("sync networks: claim %s: %v", nid, err)
+			}
+		}
+		synced++
+	}
+
+	removed := 0
+	for nid := range d.cfg.Networks {
+		if _, ok := seen[nid]; ok {
+			continue
+		}
+		// Only reconcile networks that existed before this request started.
+		// A Create/Join racing with startup sync must not be removed just
+		// because its membership was not in the older server response.
+		if _, existed := localBefore[nid]; !existed {
+			continue
+		}
+		log.Printf("sync networks: removing deleted local network %s", nid)
+		d.leaveLocked(nid)
+		delete(d.cfg.Networks, nid)
+		if d.serverState != nil {
+			delete(d.serverState, nid)
+		}
+		removed++
+	}
+	if synced > 0 || updated || removed > 0 {
+		if err := d.save(); err != nil {
+			log.Printf("sync networks: save: %v", err)
+		}
+	}
+	for nid, nc := range d.cfg.Networks {
+		if nc.Active && d.nets[nid] == nil {
+			if err := d.bringUp(nid); err != nil {
+				log.Printf("sync networks: bring up %s: %v", nid, err)
+			}
+		}
+	}
+	if synced > 0 {
+		log.Printf("sync networks: restored %d network(s)", synced)
+	}
 	return nil
 }
 
@@ -3562,13 +3851,19 @@ func (d *Daemon) pingAllServerStates() {
 }
 
 // SetDeviceID replaces this machine's device identity (advanced; normally
-// auto-generated and persisted at /usr/local/snet/device.id).
+// auto-generated and persisted at /usr/local/snet/device.id). The key and
+// recovery token are preserved.
 func (d *Daemon) SetDeviceID(id string) error {
+	id = strings.TrimSpace(id)
+	if !validDeviceID(id) {
+		return fmt.Errorf("invalid device id (8-64 chars, alphanumeric, '-' or '_')")
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.cfg.DeviceID = id
+	d.deviceIDFresh = false
 	if d.deviceIDFile != "" {
-		if err := writeDeviceIDFile(d.deviceIDFile, id); err != nil {
+		if err := SaveDeviceKeypair(d.deviceIDFile, id, d.cfg.PrivateKey, d.cfg.RecoveryToken); err != nil {
 			return err
 		}
 	}
@@ -3588,10 +3883,6 @@ func (d *Daemon) Claim(nid string) error {
 	}
 	nc.Owner = true
 	return d.save()
-}
-
-func writeDeviceIDFile(path, id string) error {
-	return writeFile0600(path, []byte(id+"\n"))
 }
 
 // Close tears down every running tunnel without persisting config changes, so
