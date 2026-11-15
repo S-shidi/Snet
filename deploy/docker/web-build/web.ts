@@ -87,6 +87,10 @@ function isWailsDesktop(): boolean {
     (!!loc && (loc.protocol === "wails:" || loc.hostname === "wails.localhost"));
 }
 
+function isAndroidWebView(): boolean {
+  return (globalThis as any).__SNET_ANDROID__ === true;
+}
+
 /* ── Page routing ─────────────────────────────────────────────── */
 function showPage(id: string) {
   for (const p of ["app", "login-page", "setup-page"]) {
@@ -261,12 +265,17 @@ const backend: Backend = {
 /* ── Bootstrap ────────────────────────────────────────────────── */
 function startApp() {
   showPage("app");
-  if (isWailsDesktop()) {
-    document.documentElement.classList.add("wails-desktop");
-    backend.hasDaemonControl = true;
-    // The desktop app is a trusted local process and its Go ctl proxy already
-    // injects the ctl-token. Do not expose the browser login/logout flow, and
-    // ignore stale browser-era state from a previous Web/Docker deployment.
+  const android = isAndroidWebView();
+  if (android) {
+    document.documentElement.classList.add("wails-android");
+  }
+  if (isWailsDesktop() || android) {
+    if (isWailsDesktop()) {
+      document.documentElement.classList.add("wails-desktop");
+      backend.hasDaemonControl = true;
+    }
+    // Desktop and Android are trusted local shells. Their native layer injects
+    // the ctl-token; do not expose the browser login/logout flow.
     authToken = null;
     try {
       for (let i = localStorage.length - 1; i >= 0; i--) {
@@ -353,9 +362,9 @@ document.addEventListener("DOMContentLoaded", () => {
     showPage("login-page");
   });
 
-  // Initial auth check. Wails desktop is a trusted local process and must not
-  // show the browser setup/login pages.
-  if (isWailsDesktop()) {
+  // Initial auth check. Wails desktop and the Android WebView are trusted
+  // local shells and must not show the browser setup/login pages.
+  if (isWailsDesktop() || isAndroidWebView()) {
     startApp();
     return;
   }
