@@ -1,290 +1,167 @@
-<h1 align="center">SNET</h1>
+<div align="center">
 
-<p align="center">
-  端到端加密的私有虚拟局域网。WireGuard 负责数据面，HTTPS 协调服务负责成员与网络状态，UDP Relay 负责在无法直连时保证连通性。
-</p>
+# SNET
 
-<p align="center">
-  当前版本：<b>v1.1.7</b> · <a href="https://github.com/S-shidi/Snet/releases/latest">下载最新版</a>
-</p>
+**无需公网 IP，扫码即连的私有 WireGuard 网络。**
 
-## 核心特性
+WireGuard 加密数据面 · P2P 直连 + 按需中继 · 全平台客户端 · 标准 WireGuard 移动端接入
 
-- **WireGuard 加密数据面**：节点之间使用 WireGuard 隧道通信。
-- **P2P 优先**：同 LAN、全局 IPv6、NAT 打洞直连优先，失败自动回退 Relay。
-- **Relay v2**：signed ticket + 节点级 UDP 转发，支持多 relay 候选与故障切换。
-- **委派子网路由**：网络创建者把 CIDR 委派给网关节点，其他成员自动通过该节点访问目标子网。
-- **Web 控制台**：网络详情、成员管理、路径监控、子网路由、自定义 SnetServ。
-- **Docker 客户端**：一个镜像包含 `snetd`、nginx 和 Web UI，适合 Linux 主机与群晖 NAS。
-- **macOS 原生客户端**：DMG 安装，内置 LaunchDaemon、菜单栏状态与中继网关模式。
-- **安全默认值**：HTTPS、鉴权、限流、安全头和设备身份持久化。
+[![License](https://img.shields.io/badge/License-BSD--3--Clause%20%2F%20AGPL--3.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/S-shidi/Snet?display_name=tag)](https://github.com/S-shidi/Snet/releases/latest)
+[![Tests](https://github.com/S-shidi/Snet/actions/workflows/ci.yml/badge.svg)](https://github.com/S-shidi/Snet/actions/workflows/ci.yml)
+[![Build macOS](https://github.com/S-shidi/Snet/actions/workflows/build-mac.yml/badge.svg)](https://github.com/S-shidi/Snet/actions/workflows/build-mac.yml)
+[![Build Windows](https://github.com/S-shidi/Snet/actions/workflows/build-windows.yml/badge.svg)](https://github.com/S-shidi/Snet/actions/workflows/build-windows.yml)
 
-## 架构简介
+[![Download macOS](https://img.shields.io/badge/Download-macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/S-shidi/Snet/releases/latest)
+[![Download Windows](https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/S-shidi/Snet/releases/latest)
+[![Docker](https://img.shields.io/badge/Docker-NAS%20%2F%20Linux-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://github.com/S-shidi/Snet/blob/master/deploy-prod/docker-client/README.md)
 
-```text
-客户端 A ── WireGuard ── 客户端 B
-    │                         │
-    └──── 直连 / Relay v2 ────┘
-              │
-       HTTPS 协调服务
-       ├── 网络与成员
-       ├── 自定义 SnetServ
-       ├── NAT 探测 :8091/udp
-       └── Relay v2 :8092/udp
-```
+</div>
 
-- `cmd/server`：协调服务器与管理控制台。
-- `cmd/relay`：Relay v2 数据面。
-- `cmd/client/snetd`：客户端 daemon。
-- `cmd/client/snetctl`：本地控制命令。
-- `shared/web`：客户端 Web UI 源码。
-- `internal/client/routeplanner.go`：委派路由与直连/中继路径规划。
+<div align="center">
+  <img src="docs/assets/web-console.png" alt="SNET Web Console" width="100%" />
+</div>
 
-## Docker 部署
+## ✨ 为什么是 SNET
+
+SNET 把 WireGuard 的加密数据面、HTTPS 协调服务、NAT 打洞和按需中继组合成一个开箱即用的私有网络。设备之间优先直连；无法直连时自动切到 Relay；需要让手机或软路由接入时，官方 Hub 会生成标准 WireGuard 配置，扫码即可连入。
+
+- **全平台**：macOS、Windows、Linux / Docker / 群晖 NAS，同一套 Web 控制台体验。
+- **P2P 优先，按需中继**：LAN、IPv6、NAT 打洞优先；失败自动 Relay v2，不需要公网 IP。
+- **标准 WireGuard 接入**：一键生成 `.conf` 和二维码，手机、软路由、任何标准 WireGuard 客户端都能直接导入。
+- **官方 Hub / 原生网关**：无需改造现有 LAN，通过 Hub 或委派路由访问 `10.7.86.0/24` 等内网网段。
+- **适合自托管**：单个 Go 二进制、Docker Compose、SQLite/bbolt 持久化，没有外部数据库依赖。
+
+## 🚀 Quick Start
 
 ### 1. 部署服务端
 
-前置条件：
-
-- Linux VPS，Docker 与 Docker Compose。
-- 一个域名，例如 `snet.example.com`，解析到 VPS。
-- TLS 证书，默认示例使用 Let's Encrypt 路径。
-- 放行 `8090/tcp`、`8091/udp`、`8092/udp`。
-
-创建部署目录和 `.env`：
+在 Linux VPS 上执行：
 
 ```bash
-git clone https://github.com/S-shidi/Snet.git
-cd Snet/deploy-prod/docker-server
-cp .env.example .env
+curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install-server.sh | sudo bash
 ```
 
-编辑 `.env`，至少设置：
+脚本会：
 
-```dotenv
-SNET_RELAY_SECRET=用 openssl rand -hex 32 生成
-SNET_RELAY_V2_ENDPOINTS=snet.example.com:8092
-TLS_CERT_PATH=/etc/letsencrypt/live/snet.example.com/fullchain.pem
-TLS_KEY_PATH=/etc/letsencrypt/live/snet.example.com/privkey.pem
-```
+- 安装到 `/opt/snet`
+- 生成 Relay 密钥
+- 启动 `snet-server` + `snet-relay`
+- 输出管理控制台和健康检查地址
 
-启动：
+生产环境建议配置域名和 TLS，并阅读 [服务端部署文档](deploy-prod/docker-server/README.md)。
 
-```bash
-docker compose --env-file .env up -d --build
-```
-
-验证：
-
-```bash
-curl -fsS https://snet.example.com:8090/healthz
-```
-
-预期：
-
-```json
-{"serverVersion":"1.1.7","status":"ok"}
-```
-
-如果不想从源码构建，可以直接使用预构建镜像：
-
-```yaml
-services:
-  relay:
-    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.1.7
-    container_name: snet-relay
-    restart: unless-stopped
-    environment:
-      SNET_RELAY_SECRET: ${SNET_RELAY_SECRET}
-    command: ["-addr", "0.0.0.0:8092", "-metrics-addr", "127.0.0.1:8094"]
-    ports:
-      - "8092:8092/udp"
-
-  server:
-    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.1.7
-    container_name: snet-server
-    restart: unless-stopped
-    depends_on:
-      - relay
-    environment:
-      SNET_RELAY_SECRET: ${SNET_RELAY_SECRET}
-      SNET_RELAY_V2_ENDPOINTS: ${SNET_RELAY_V2_ENDPOINTS}
-    command:
-      - "-addr"
-      - "0.0.0.0:8090"
-      - "-probe-addr"
-      - "0.0.0.0:8091"
-      - "-db"
-      - "/data/snet.db"
-      - "-tls-cert"
-      - "${TLS_CERT_PATH}"
-      - "-tls-key"
-      - "${TLS_KEY_PATH}"
-    ports:
-      - "8090:8090/tcp"
-      - "8091:8091/udp"
-    volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      - snet-data:/data
-
-volumes:
-  snet-data:
-```
-
-### 2. 部署 Docker 客户端 / NAS
-
-客户端镜像使用阿里云 ACR 公开仓库，无需登录：
+管理控制台：
 
 ```text
+http://<VPS_IP>:8090/admin
+```
+
+### 2. 安装客户端
+
+- **macOS**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `.dmg`
+- **Windows**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `SnetWindows-Setup-*.exe`
+- **NAS / Linux**：[Docker 客户端部署](deploy-prod/docker-client/README.md)
+
+客户端首次启动后打开 Web 控制台，设置管理密码。
+
+### 3. 创建网络并邀请设备
+
+1. 在客户端点击「添加网络」→「创建新网络」。
+2. 把邀请链接发给另一台设备。
+3. 对方在「加入网络」中粘贴链接。
+4. 需要手机接入时，在 Owner 客户端打开网络详情 → 更多 → **生成 WireGuard 配置**。
+
+## 🧭 架构
+
+```mermaid
+flowchart LR
+    A["Mac / iPhone<br/>WireGuard"]
+    B["Home NAS<br/>Docker client"]
+    C["Remote laptop<br/>Windows / macOS"]
+    S["SNET Coordinator<br/>HTTPS :8090"]
+    R["Relay v2<br/>UDP :8092"]
+    H["Official Hub<br/>public endpoint"]
+    L["Home LAN<br/>10.7.86.0/24"]
+
+    A <-->|"P2P / WireGuard"| B
+    A <-->|"P2P / WireGuard"| C
+    A -.->|"fallback"| R
+    R -.-> B
+    C ---|"control"| S
+    B ---|"control"| S
+    A ---|"control"| S
+    H <-->|"WireGuard / relay"| A
+    H <-->|"LAN gateway"| L
+    H ---|"network member"| S
+```
+
+- **Client A ↔ Client B**：优先 LAN / IPv6 / NAT 打洞直连。
+- **Client ↔ Relay**：直连失败时自动回退，Relay 不读取业务明文。
+- **Client ↔ Hub ↔ LAN**：手机或外部 WireGuard 客户端通过 Hub 接入私有网段。
+
+## 🛠 技术栈
+
+| 层 | 实现 |
+|---|---|
+| 数据面 | WireGuard（wireguard-go） |
+| 协调面 | Go + HTTPS + bbolt |
+| 中继 | Relay v2，signed ticket，多实例候选 |
+| 客户端 | Wails v3（macOS / Windows），Docker + Nginx + Web UI |
+| 移动接入 | 标准 WireGuard `.conf` + QR |
+| CI/CD | GitHub Actions（macOS DMG、Windows NSIS、Docker ACR） |
+
+## 📦 服务端 / 客户端
+
+服务端、Relay 和客户端镜像：
+
+```text
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.1.7
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.1.7
 crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.7
 ```
 
-也可以直接拉取：
+## 🔐 安全
 
-```bash
-docker pull crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.7
-```
+- 数据面端到端由 WireGuard 加密；协调服务不接触业务明文。
+- 服务端使用 HTTPS、Bearer Token、速率限制和严格 JSON body 限制。
+- 客户端设备身份持久化；账号密码使用 bcrypt。
+- 生成的 WireGuard 私钥只保存在本机 daemon 配置，不上传协调服务器。
+- 漏洞披露：请通过 GitHub Security Advisories 私下报告，不要公开 Issue。
 
-标准 Linux 创建：
-
-```yaml
-# /opt/stacks/snet/compose.yaml
-services:
-  snetd:
-    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.7
-    container_name: snetd
-    restart: unless-stopped
-    network_mode: host
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    volumes:
-      - /etc/snet:/etc/snet
-```
-
-群晖 NAS 把数据卷改成：
-
-```yaml
-    volumes:
-      - /volume1/docker/snet/etc:/etc/snet
-```
-
-启动：
-
-```bash
-cd /opt/stacks/snet       # 标准 Linux
-# 或 cd /volume1/docker/snet   # 群晖 NAS
-docker compose up -d
-```
-
-打开控制台：
-
-```text
-http://<主机IP>:8081
-```
-
-首次打开需要设置 Web 管理密码。更新客户端：
-
-```bash
-docker compose pull
-docker compose up -d --force-recreate
-docker exec snetd snetd -version
-```
-
-客户端容器需要 `/dev/net/tun` 和 `NET_ADMIN`；`network_mode: host` 可让 nginx、WireGuard 和本机控制 API 正常工作。
-
-### 3. 连接自托管 SnetServ
-
-默认连接官方 SnetServ。使用自建服务端时，在客户端 Web UI 或 macOS App 的「信息」页面：
-
-1. 点击「协调服务」旁的修改按钮。
-2. 填入 `https://snet.example.com:8090`。
-3. 保存，客户端会先校验目标 `/healthz`。
-4. 校验通过后自动重新连接；点击「恢复默认」可切回官方服务端。
-
-## 官方 Hub / WireGuard 配置导出
-
-服务端可选配置：
-
-```text
-SNET_HUB_NODE_ID=hub-node-id    # Hub 在网络中的 nodeId（不是 deviceId）
-SNET_HUB_PUBLIC_KEY=<base64 WireGuard public key>
-SNET_HUB_ENDPOINT=<public-ip>:51820
-```
-
-配置后，网络 Owner 可在「更多 → 导出 WireGuard 配置」中按需把官方 Hub 加入网络并生成标准 `.conf`。
-
-## Windows 安装
-
-系统要求：Windows 10/11 x64，需安装 WebView2 Runtime（通常系统已自带）。
-
-1. 打开最新 Release：
-   <https://github.com/S-shidi/Snet/releases/latest>
-2. 下载并运行 `SnetWindows-Setup-v1.1.7.exe`。
-3. 安装包会请求一次管理员授权，用于安装后台服务 `SNetDaemon`。
-4. 安装完成后从桌面或开始菜单启动 `SNET`；以后启动不再弹 UAC。
-5. 卸载时安装器会停止并删除 `SNetDaemon`，同时清理 `C:\ProgramData\SNET`。
-
-## macOS 安装
-
-系统要求：macOS 10.13+，建议使用 Apple Silicon Mac。
-
-1. 打开最新 Release：
-
-   <https://github.com/S-shidi/Snet/releases/latest>
-
-2. 下载 `SnetMac-v1.1.7-*.dmg`。
-
-3. 打开 DMG，把 `SnetMac.app` 拖入 `Applications`。
-
-4. 第一次打开前，在「终端」执行：
-
-   ```bash
-   sudo xattr -cr /Applications/SnetMac.app && open /Applications/SnetMac.app
-   ```
-
-   输入 Mac 开机密码。该命令只需执行一次，用于解除未公证应用的隔离限制。
-
-5. 首次启动会请求管理员授权，安装后台服务：
-
-   ```text
-   /Library/LaunchDaemons/com.snet.daemon.plist
-   /usr/local/bin/snetd
-   /usr/local/etc/snet/
-   ```
-
-6. 打开 App 后，在「信息」中设置 Web 管理密码，即可创建或加入网络。
-
-7. 关闭窗口后 App 会留在菜单栏继续运行；彻底退出请从菜单栏选择「退出 SNET」。
-
-macOS 客户端支持作为中继网关：在「信息」页面打开「允许本设备作为中继网关转发流量」。如果委派 CIDR 与本机物理局域网冲突，客户端会跳过该路由，并在网络状态中显示原因。
-
-## 本地构建
-
-```bash
-./scripts/build-release.sh
-```
-
-脚本会读取 `VERSION`，交叉编译 Linux/Darwin amd64/arm64 的 `server`、`relay`、`snetd`、`snetctl`，输出到 `dist/` 并生成校验和。
-
-运行测试：
+## 🧑‍💻 开发
 
 ```bash
 go test ./...
+./scripts/build-release.sh
 ```
 
-## 文档
+客户端 UI：
 
-- [VPS 部署](docs/VPS-DEPLOY-VIA-HOSTODO.md)
+```bash
+cd desktop-windows/frontend && ./build-frontend.sh
+```
+
+## 📚 文档
+
+- [服务端部署（Docker / TLS / Relay）](deploy-prod/docker-server/README.md)
+- [Docker 客户端 / 群晖 NAS](deploy-prod/docker-client/README.md)
+- [VPS 部署记录](docs/VPS-DEPLOY-VIA-HOSTODO.md)
 - [部署环境与路径](docs/DEPLOYMENTS.md)
-- [客户端 Docker 说明](deploy-prod/docker-client/README.md)
-- [项目总览](docs/PROJECT-ATLAS.md)
-- [网络架构评审](docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md)
-- [macOS 开发排坑记录](docs/MAC-DEV-NOTES.md)
+- [贡献指南](CONTRIBUTING.md)
+- [安全策略](SECURITY.md)
 
-## 安全
+## 📄 许可证
 
-- 不要提交 `.env`、`device.id`、`ctl-token`、Registry 密码、私钥或手机 WireGuard 配置。
-- 服务端 `.env` 与 Registry 密码只保存在部署主机，权限保持 `0600`。
-- 发布前运行 `git status` 和安全扫描，确认工作区干净且没有真实凭据。
+SNET 采用按组件拆分许可：
+
+- 客户端组件：[BSD 3-Clause](LICENSE)
+- 服务端与 Relay 组件：[AGPL-3.0-only](LICENSE)
+
+闭源商业使用服务端代码需要单独商业许可，见 [COMMERCIAL.md](COMMERCIAL.md)。
+
+---
+
+<div align="center">
+  <sub>Built with WireGuard, Go, Wails and a lot of NAT traversal.</sub>
+</div>
