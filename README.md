@@ -59,18 +59,106 @@ http://<VPS_IP>:8090/admin
 
 ### 2. 安装客户端
 
-- **macOS**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `.dmg`
+- **macOS（Apple Silicon）**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `.dmg`
 - **Windows**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `Snet-v*-win-Setup.zip`，解压后运行安装程序（ZIP 可避免浏览器拦截未签名 `.exe` 下载）
 - **NAS / Linux**：[Docker 客户端部署](deploy-prod/docker-client/README.md)
 
 客户端首次启动后打开 Web 控制台，设置管理密码。
+
+#### macOS 终端安装
+
+当前发布包为 Apple Silicon（arm64）。在“终端”中执行：
+
+```bash
+curl -fL -o /tmp/Snet-v1.1.9-mac.dmg \
+  https://github.com/S-shidi/Snet/releases/download/v1.1.9/Snet-v1.1.9-mac.dmg
+
+hdiutil attach /tmp/Snet-v1.1.9-mac.dmg -nobrowse
+sudo cp -R "/Volumes/Snet Installer/Snet.app" /Applications/
+sudo xattr -cr /Applications/Snet.app
+hdiutil detach "/Volumes/Snet Installer"
+open /Applications/Snet.app
+```
+
+首次启动会安装后台服务，系统可能要求输入管理员密码。升级时退出 Snet 后重复上述步骤即可。
 
 ### 3. 创建网络并邀请设备
 
 1. 在客户端点击「添加网络」→「创建新网络」。
 2. 把邀请链接发给另一台设备。
 3. 对方在「加入网络」中粘贴链接。
-4. 需要手机接入时，在 Owner 客户端打开网络详情 → 更多 → **生成 WireGuard 配置**。
+4. 需要手机或标准 WireGuard 客户端接入时，继续看下一节。
+
+### 4. iPhone / iPad 通过 WireGuard 接入
+
+1. 在 App Store 安装 **WireGuard**。
+2. 在 Owner 客户端打开网络详情 →「更多」→「生成 WireGuard 配置」。
+3. 选择出口网关：
+   - 已有官方 Hub：选择「官方中继 (Hub)」；
+   - 自建公网节点：选择下一节部署的中继节点。
+4. 点击「生成配置」，在 iPhone 的 WireGuard App 中点击 `+` → **从二维码创建**，扫描页面上的二维码。
+   - 也可以复制配置文本，保存为 `.conf` 后通过「从文件或归档创建」导入。
+5. 打开该隧道并允许 VPN 配置。iPhone 会作为「WireGuard 客户端」出现在网络成员中。
+
+说明：
+
+- 每个手机应单独生成一份配置，不要多台设备共用同一个配置。
+- 配置的 `AllowedIPs` 只包含该网络网段和当前生效的委派路由，不是全局科学上网。
+- 修改网络网段、删除/新增委派路由后，旧的手机构建不会自动更新，需要重新生成并导入配置。
+
+### 5. 在公网服务器部署 WireGuard 中继节点
+
+如果服务端已经配置官方 Hub，可跳过本节，直接在第 4 步选择官方 Hub。要让 iPhone 从一个自控的公网入口接入，可以在 VPS 上运行一个普通 Snet 客户端节点，并让它充当 WireGuard 出口网关。
+
+前置条件：
+
+- 公网服务器有固定公网 IPv4
+- 已安装 Docker
+- 防火墙放行 `UDP 51820`（或你自定义的 WireGuard 端口）
+- 能访问协调服务 `https://<你的服务端>:8090`
+
+创建配置目录：
+
+```bash
+sudo install -d -m 0700 /opt/snet-gateway
+sudo tee /opt/snet-gateway/config.json >/dev/null <<'JSON'
+{
+  "serverAddr": "https://<你的服务端>:8090",
+  "wireguardPort": 51820,
+  "networks": {},
+  "keyRotationDays": 30,
+  "natMapping": true,
+  "allowRelay": true
+}
+JSON
+sudo chmod 600 /opt/snet-gateway/config.json
+```
+
+启动中继节点：
+
+```bash
+sudo docker run -d \
+  --name snet-gateway \
+  --restart unless-stopped \
+  --network host \
+  --cap-add NET_ADMIN \
+  --device /dev/net/tun \
+  -v /opt/snet-gateway:/etc/snet \
+  crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.9
+```
+
+然后：
+
+1. 浏览器打开 `http://<公网服务器IP>:8081`，设置 Web 管理密码。
+2. 用网络的邀请链接加入目标网络。
+3. 打开「设置」，确认「允许本设备作为中继网关」已开启。
+4. 回到 Owner 客户端，在网络详情中生成 WireGuard 配置，选择这个节点作为出口网关。
+
+注意：
+
+- `8081` 只用于管理，建议通过防火墙限制来源；`51820/udp` 必须对公网开放。
+- 公网 VPS 负责让手机接入 Snet 网络。若要访问家里的 `10.7.86.0/24` 等物理 LAN，应在家庭侧节点上开启中继网关并委派该网段，而不是只依赖公网 VPS。
+- 若服务器已有其他服务占用 `51820`，请同时修改 `wireguardPort` 和防火墙规则。
 
 ## 🧭 架构
 
