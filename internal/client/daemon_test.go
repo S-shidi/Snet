@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1688,3 +1689,154 @@ func TestResolvePeerEndpointsSkipsSameEgressPublicFallback(t *testing.T) {
 
 // TestSyncNetworksRemovesDeletedLocalNetwork ensures a cached network that the
 // server no longer returns is removed instead of becoming a permanent ghost.
+
+// TestReinstallWithNewDeviceIDCanCreate reproduces the reported bug: the user
+// uninstalls without cleaning data, the daemon fails to keep its identity, and
+// the next create is rejected by the server's one-network-per-device rule.
+// With a genuinely new random ID the server must accept the new network.
+func TestReinstallWithNewDeviceIDCanCreate(t *testing.T) {
+	ts := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer ts.Close()
+
+	oldDaemon, _ := newTestDaemon(t)
+	if _, err := oldDaemon.Create(ts.URL, 0, "before-reinstall", "", false); err != nil {
+		t.Fatal(err)
+	}
+	oldID := oldDaemon.cfg.DeviceID
+
+	// A reinstall starts from an empty config and no device.id file.
+	newDaemon, _ := newTestDaemon(t)
+	resp, err := newDaemon.Create(ts.URL, 0, "after-reinstall", "", false)
+	if err != nil {
+		t.Fatalf("create after reinstall: %v", err)
+	}
+	if newDaemon.cfg.DeviceID == oldID {
+		t.Fatalf("reinstall reused device id %q", oldID)
+	}
+	if resp.NetworkID == "" {
+		t.Fatal("no network created after reinstall")
+	}
+}
+
+// TestSyncNetworksRestoresConfig covers the path where device.id survived but
+// the local config was lost: the daemon pulls its memberships back from the
+// server and persists the rotated node tokens.
+func TestSyncNetworksRestoresConfig(t *testing.T) {
+	const (
+		deviceID = "device-sync-0001"
+		nodeID   = "node-sync-0001"
+		nid      = "network-sync-01"
+		token1   = "node-token-1111"
+		token2   = "node-token-2222"
+	)
+	var token = token1
+	var sawRecovery bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/devices":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/publickey":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/device":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/networks/"+nid+"/claim":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/devices/"+deviceID+"/networks":
+			sawRecovery = r.Header.Get("X-Device-Token") == "recovery-token"
+			_ = json.NewEncoder(w).Encode(protocol.DeviceNetworksResp{Networks: []protocol.DeviceNetworkDetail{{
+				Network: protocol.Network{
+					ID: nid, Name: "home", Subnet: "10.88.0.0/24", OwnerDeviceID: deviceID,
+				},
+				NodeID: nodeID, IP: "10.88.0.2", Token: token, Owner: true,
+				PublicKey: "old-public-key",
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	d, _ := newTestDaemon(t)
+	if err := d.ensureKeys(ts.URL, 0); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	d.cfg.DeviceID = deviceID
+	d.cfg.RecoveryToken = "recovery-token"
+	d.mu.Unlock()
+
+	if err := d.SyncNetworks(); err != nil {
+		t.Fatal(err)
+	}
+	if !sawRecovery {
+		t.Fatal("recovery request did not carry the recovery token")
+	}
+	d.mu.Lock()
+	nc := d.cfg.Networks[nid]
+	d.mu.Unlock()
+	if nc == nil {
+		t.Fatal("network was not restored")
+	}
+	if nc.NodeID != nodeID || nc.IP != "10.88.0.2" || nc.Token != token1 || !nc.Owner {
+		t.Fatalf("restored network = %+v", nc)
+	}
+
+	// A later sync rotates the token; the existing config must adopt it.
+	token = token2
+	if err := d.SyncNetworks(); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	got := d.cfg.Networks[nid].Token
+	d.mu.Unlock()
+	if got != token2 {
+		t.Fatalf("rotated token not persisted: %q", got)
+	}
+}
+
+// TestDeviceIDSurvivesConfigLossAndRestart verifies the on-disk identity is
+// authoritative: a missing/stale config must not create a new device ID.
+func TestDeviceIDSurvivesConfigLossAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	idFile := filepath.Join(dir, "ProgramData", "SNET", "device.id")
+	cfgPath := filepath.Join(dir, "config.json")
+
+	first, err := LoadConfigAt(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d1 := NewDaemonAt(first, cfgPath)
+	d1.SetDeviceIDFile(idFile)
+	if err := d1.ensureKeys("https://snet.invalid", 0); err != nil {
+		t.Fatal(err)
+	}
+	wantID := d1.cfg.DeviceID
+	firstKey := d1.cfg.PrivateKey
+
+	// Reinstall: config.json is gone, but ProgramData/SNET/device.id remains.
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	second, err := LoadConfigAt(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2 := NewDaemonAt(second, cfgPath)
+	d2.SetDeviceIDFile(idFile)
+	if err := d2.ensureKeys("https://snet.invalid", 0); err != nil {
+		t.Fatal(err)
+	}
+	if d2.cfg.DeviceID != wantID {
+		t.Fatalf("device id changed after config loss: %q -> %q", wantID, d2.cfg.DeviceID)
+	}
+	if d2.cfg.PrivateKey != firstKey {
+		t.Fatal("private key changed after config loss")
+	}
+	persisted, _, err := LoadDeviceKeypair(idFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted != wantID {
+		t.Fatalf("persisted id = %q, want %q", persisted, wantID)
+	}
+}

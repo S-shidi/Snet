@@ -175,6 +175,51 @@ func (c *apiClient) RegisterDevice(deviceID, publicKey, name string) error {
 		protocol.RegisterDeviceReq{DeviceID: deviceID, PublicKey: publicKey, Name: name}, nil)
 }
 
+// RegisterDeviceFresh registers a just-generated identity and asks the server
+// to reject it if the ID is already in use.
+func (c *apiClient) RegisterDeviceFresh(deviceID, publicKey, name string) error {
+	return c.do(http.MethodPost, "/api/v1/devices", "",
+		protocol.RegisterDeviceReq{DeviceID: deviceID, PublicKey: publicKey, Name: name, Fresh: true}, nil)
+}
+
+// EnsureRecoveryToken asks the server for the device-scoped recovery token.
+// The caller proves it owns a node of this device by presenting that node's
+// bearer token.
+func (c *apiClient) EnsureRecoveryToken(deviceID, nodeToken string) (string, error) {
+	var out protocol.RecoveryTokenResp
+	err := c.do(http.MethodPost, "/api/v1/devices/"+deviceID+"/recovery-token", nodeToken, nil, &out)
+	return out.RecoveryToken, err
+}
+
+// DeviceNetworks fetches every membership of this device, including the node
+// credentials needed to rebuild the local config after it was lost.
+func (c *apiClient) DeviceNetworks(deviceID, recoveryToken string) ([]protocol.DeviceNetworkDetail, error) {
+	var out protocol.DeviceNetworksResp
+	req, err := http.NewRequest(http.MethodGet, c.server+"/api/v1/devices/"+deviceID+"/networks", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Device-Token", recoveryToken)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var e protocol.ErrResp
+		_ = json.Unmarshal(data, &e)
+		return nil, &httpStatusErr{code: resp.StatusCode, msg: e.Error}
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out.Networks, nil
+}
+
 func (c *apiClient) CancelPending(pendingID, deviceID string) error {
 	return c.do(http.MethodPost, "/api/v1/pending/"+pendingID+"/cancel", "",
 		protocol.CancelPendingReq{DeviceID: deviceID}, nil)

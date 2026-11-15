@@ -434,6 +434,18 @@ type RegisterDeviceReq struct {
 	DeviceID  string `json:"deviceId"`
 	PublicKey string `json:"publicKey"`
 	Name      string `json:"name,omitempty"`
+	// Fresh asks the server to reject the registration if this deviceId is
+	// already known. Clients set it only immediately after generating a new
+	// random identity, so a (very unlikely) collision is surfaced instead of
+	// two physical devices sharing one ID.
+	Fresh bool `json:"fresh,omitempty"`
+}
+
+// RecoveryTokenResp returns the bearer token used for device-scoped recovery
+// (fetching this device's memberships after local config loss).
+type RecoveryTokenResp struct {
+	DeviceID      string `json:"deviceId"`
+	RecoveryToken string `json:"recoveryToken"`
 }
 
 // DeviceNameReq updates the display name of the calling device.

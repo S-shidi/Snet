@@ -2,10 +2,11 @@ package client
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -14,106 +15,170 @@ import (
 // path is OS-dependent; platform files may override it (see device_windows.go).
 var DefaultDeviceIDFile = "/usr/local/snet/device.id"
 
-// hardwareIDFn is the hardware identifier source used by newDeviceID. Tests
-// override it to exercise the deterministic path regardless of the host.
-var hardwareIDFn = hardwareID
+// deviceIDBytes is the amount of entropy in a generated device identity.
+// 16 bytes (128 bits) makes accidental collisions and guessing infeasible.
+const deviceIDBytes = 16
 
-// newDeviceID returns a deterministic 16-hex device identity derived from the
-// machine's hardware identifier when available, so it survives both an app
-// and an OS reinstall. It falls back to a random 8-byte ID (still 16 hex)
-// when no hardware identifier can be read (virtual machines, and containers,
-// where the host identifier is shared and must not become a device identity).
+var deviceIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$`)
+
+// deviceIDGen generates a fresh identity when no persisted identity exists.
+// Tests override it only to make IDs deterministic; production always uses
+// crypto/rand through newDeviceID.
+var deviceIDGen = newDeviceID
+
+// newDeviceID returns a random 128-bit device identity encoded as 32 hex
+// characters. Device identity is deliberately NOT derived from hardware:
+// cloned machines (VMs, disk images, golden images) share hardware
+// identifiers, and two physical devices must never share an identity.
 func newDeviceID() (string, error) {
-	if hw, err := hardwareIDFn(); err == nil && hw != "" {
-		sum := sha256.Sum256([]byte(hw))
-		return hex.EncodeToString(sum[:8]), nil
-	}
-	b := make([]byte, 8)
+	b := make([]byte, deviceIDBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
 }
 
-// deviceIDGen is the identity generator used when no stored device ID exists.
-// Tests override it so multiple test daemons in one process don't share the
-// single hardware-derived identity.
-var deviceIDGen = newDeviceID
-
-// LoadOrCreateDeviceID returns this machine's stable device identity. It
-// prefers the on-disk identity file, then an already persisted config value,
-// and finally generates a fresh ID (persisting it to the file when possible).
-func LoadOrCreateDeviceID(deviceIDFile, existing string) (string, error) {
-	if deviceIDFile != "" {
-		if b, err := os.ReadFile(deviceIDFile); err == nil {
-			if s := strings.TrimSpace(string(b)); s != "" {
-				// Support both legacy (ID only) and new (ID + key) formats.
-				if lines := strings.SplitN(s, "\n", 2); len(lines) > 0 {
-					return strings.TrimSpace(lines[0]), nil
-				}
-			}
-		}
-	}
-	if existing != "" {
-		return existing, nil
-	}
-	// An explicit SNET_DEVICE_ID wins over hardware derivation. It lets an
-	// operator pin a stable identity when no persisted file is available yet
-	// (for example, a fresh container without its data volume).
-	id := strings.TrimSpace(os.Getenv("SNET_DEVICE_ID"))
-	if id == "" {
-		var err error
-		id, err = deviceIDGen()
-		if err != nil {
-			return "", err
-		}
-	}
-	if deviceIDFile != "" {
-		if err := os.WriteFile(deviceIDFile, []byte(id+"\n"), 0o600); err != nil {
-			return "", fmt.Errorf("persist device id: %w", err)
-		}
-	}
-	return id, nil
+func validDeviceID(id string) bool {
+	return deviceIDRe.MatchString(id)
 }
 
-// LoadDeviceKeypair reads the persisted device identity and private key from
-// the device ID file. Returns ("", "") when no key is stored (legacy client
-// or first start). The file format is:
+// LoadOrCreateDeviceID returns this machine's stable device identity. The
+// on-disk file is authoritative. When it is missing, a previously persisted
+// config value is reused (and written back to the file), then SNET_DEVICE_ID,
+// and finally a fresh cryptographically random identity is generated.
+func LoadOrCreateDeviceID(deviceIDFile, existing string) (string, error) {
+	id, _, err := loadOrCreateDeviceID(deviceIDFile, existing)
+	return id, err
+}
+
+// loadOrCreateDeviceID also reports whether this call generated a brand-new
+// identity, so the caller can perform a server-side collision check before
+// using it.
+func loadOrCreateDeviceID(deviceIDFile, existing string) (id string, created bool, err error) {
+	if deviceIDFile != "" {
+		if b, readErr := os.ReadFile(deviceIDFile); readErr == nil {
+			if stored := storedDeviceID(b); stored != "" {
+				return stored, false, nil
+			}
+			log.Printf("device id file %s contains no usable identity; generating a new one", deviceIDFile)
+		} else if !os.IsNotExist(readErr) {
+			return "", false, fmt.Errorf("read device id: %w", readErr)
+		}
+	}
+
+	if existing = strings.TrimSpace(existing); existing != "" {
+		if !validDeviceID(existing) {
+			return "", false, fmt.Errorf("invalid persisted device id %q", existing)
+		}
+		if err := persistDeviceID(deviceIDFile, existing); err != nil {
+			return "", false, err
+		}
+		return existing, false, nil
+	}
+
+	if env := strings.TrimSpace(os.Getenv("SNET_DEVICE_ID")); env != "" {
+		if !validDeviceID(env) {
+			return "", false, fmt.Errorf("invalid SNET_DEVICE_ID %q", env)
+		}
+		if err := persistDeviceID(deviceIDFile, env); err != nil {
+			return "", false, err
+		}
+		return env, false, nil
+	}
+
+	for attempt := 0; attempt < 8; attempt++ {
+		id, err = deviceIDGen()
+		if err != nil {
+			return "", false, err
+		}
+		if !validDeviceID(id) {
+			continue
+		}
+		if err := persistDeviceID(deviceIDFile, id); err != nil {
+			return "", false, err
+		}
+		return id, true, nil
+	}
+	return "", false, fmt.Errorf("generate device id: generator produced no valid id")
+}
+
+func storedDeviceID(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if s == "" {
+		return ""
+	}
+	lines := strings.SplitN(s, "\n", 2)
+	id := strings.TrimSpace(lines[0])
+	if !validDeviceID(id) {
+		return ""
+	}
+	return id
+}
+
+func persistDeviceID(deviceIDFile, id string) error {
+	if deviceIDFile == "" {
+		return nil
+	}
+	if err := writeFile0600(deviceIDFile, []byte(id+"\n")); err != nil {
+		return fmt.Errorf("persist device id: %w", err)
+	}
+	return nil
+}
+
+// LoadDeviceKeypair reads the persisted device identity, private key and
+// recovery token from the device ID file. Returns empty strings when no file
+// is stored (legacy client or first start). The file format is:
 //
 //	line 1: device ID
-//	line 2: hex-encoded private key (optional, added by v2+ clients)
+//	line 2: hex-encoded WireGuard private key (optional)
+//	line 3: device recovery token (optional, v3+ clients)
 func LoadDeviceKeypair(deviceIDFile string) (deviceID, privateKey string, err error) {
+	deviceID, privateKey, _, err = LoadDeviceIdentity(deviceIDFile)
+	return deviceID, privateKey, err
+}
+
+// LoadDeviceIdentity reads every value persisted in the device ID file.
+func LoadDeviceIdentity(deviceIDFile string) (deviceID, privateKey, recoveryToken string, err error) {
 	if deviceIDFile == "" {
-		return "", "", nil
+		return "", "", "", nil
 	}
 	b, err := os.ReadFile(deviceIDFile)
 	if err != nil {
-		return "", "", nil // file missing is not an error
+		return "", "", "", nil // file missing is not an error
 	}
 	s := strings.TrimSpace(string(b))
 	if s == "" {
-		return "", "", nil
+		return "", "", "", nil
 	}
 	lines := strings.Split(s, "\n")
 	deviceID = strings.TrimSpace(lines[0])
 	if len(lines) > 1 {
 		privateKey = strings.TrimSpace(lines[1])
 	}
-	return deviceID, privateKey, nil
+	if len(lines) > 2 {
+		recoveryToken = strings.TrimSpace(lines[2])
+	}
+	return deviceID, privateKey, recoveryToken, nil
 }
 
-// SaveDeviceKeypair persists the device identity and private key to the device
-// ID file, replacing any previous content. Both values are written only when
-// non-empty; a missing private key line is allowed (legacy format).
-func SaveDeviceKeypair(deviceIDFile, deviceID, privateKey string) error {
+// SaveDeviceKeypair persists the device identity, private key and optional
+// recovery token to the device ID file, replacing any previous content. An
+// empty private key or token is written as an empty line so later lines keep
+// their position and the file remains parseable by older clients.
+func SaveDeviceKeypair(deviceIDFile, deviceID, privateKey string, recoveryToken ...string) error {
 	if deviceIDFile == "" {
 		return nil
 	}
-	var content string
-	if privateKey != "" {
-		content = deviceID + "\n" + privateKey + "\n"
-	} else {
-		content = deviceID + "\n"
+	token := ""
+	if len(recoveryToken) > 0 {
+		token = strings.TrimSpace(recoveryToken[0])
 	}
-	return writeFile0600(deviceIDFile, []byte(content))
+	content := deviceID + "\n" + privateKey + "\n"
+	if token != "" {
+		content += token + "\n"
+	}
+	if err := writeFile0600(deviceIDFile, []byte(content)); err != nil {
+		return fmt.Errorf("persist device identity: %w", err)
+	}
+	return nil
 }

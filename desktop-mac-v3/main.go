@@ -79,6 +79,26 @@ func main() {
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		log.Printf("Snet: application started")
 		showWindow(window)
+		// Install the native title-bar drag handle once AppKit has created the
+		// NSWindow. Dispatch from a goroutine so InvokeSync can never wait on
+		// the main thread that is currently delivering this callback.
+		go func() {
+			for attempt := 0; attempt < 50; attempt++ {
+				installed := false
+				application.InvokeSync(func() {
+					if native := window.NativeWindow(); native != nil {
+						installMacDragRegion(native)
+						installed = true
+					}
+				})
+				if installed {
+					log.Printf("Snet: native drag region installed")
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			log.Printf("Snet: native drag region not installed: no NSWindow")
+		}()
 		trayWatchOnce.Do(func() {
 			go watchTrayStatus(statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem)
 		})

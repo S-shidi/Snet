@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 
 ####
 ## Please note: Template replacements don't work in this file. They are provided with default defines like
@@ -53,6 +53,7 @@ VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 ManifestDPIAware true
 
 !include "MUI.nsh"
+!include "nsDialogs.nsh"
 
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
@@ -66,7 +67,12 @@ ManifestDPIAware true
 !insertmacro MUI_PAGE_INSTFILES # Installing page.
 !insertmacro MUI_PAGE_FINISH # Finished installation page.
 
+!insertmacro MUI_UNPAGE_CONFIRM # Confirm the uninstall.
+UninstPage custom un.DataPage un.DataPageLeave # Keep data by default.
 !insertmacro MUI_UNPAGE_INSTFILES # Uninstalling page
+
+Var DeleteAllDataCheckbox
+Var DeleteAllData
 
 !insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
 
@@ -87,6 +93,30 @@ Function .onInit
    !insertmacro wails.checkArchitecture
 FunctionEnd
 
+# Uninstall data policy: Snet's device identity, networks and private key live
+# in ProgramData. They must survive an uninstall so reinstalling does not turn
+# this machine into a new device or lose access to its networks. Only an
+# explicit checkbox may erase them.
+Function un.DataPage
+    !insertmacro MUI_HEADER_TEXT "卸载 Snet" "选择是否保留本地数据"
+    nsDialogs::Create 1018
+    Pop $0
+    ${If} $0 == error
+        Abort
+    ${EndIf}
+
+    ${NSD_CreateLabel} 0 0 100% 28u "默认保留设备 ID、网络配置和密钥。重新安装后，Snet 会继续使用同一台设备的身份并自动恢复网络。"
+    Pop $0
+    ${NSD_CreateCheckbox} 0 38u 100% 14u "同时删除所有本地数据（包括设备 ID，删除后无法恢复历史网络）"
+    Pop $DeleteAllDataCheckbox
+    ${NSD_SetState} $DeleteAllDataCheckbox ${BST_UNCHECKED}
+    nsDialogs::Show
+FunctionEnd
+
+Function un.DataPageLeave
+    ${NSD_GetState} $DeleteAllDataCheckbox $DeleteAllData
+FunctionEnd
+
 Section
     !insertmacro wails.setShellContext
 
@@ -102,11 +132,15 @@ Section
         nsExec::ExecToLog '"$INSTDIR\snetd.exe" uninstall'
         Pop $0
     ${EndIf}
-    nsExec::ExecToLog '"$SYSDIR\sc.exe" stop SNetDaemon'
+    # Expected to fail on a first install (service absent). Use ExecToStack so
+    # these benign 1060 errors do not pollute the installation log.
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" stop SNetDaemon'
     Pop $0
+    Pop $1
     Sleep 1200
-    nsExec::ExecToLog '"$SYSDIR\sc.exe" delete SNetDaemon'
+    nsExec::ExecToStack '"$SYSDIR\sc.exe" delete SNetDaemon'
     Pop $0
+    Pop $1
     nsExec::ExecToStack '"$SYSDIR\sc.exe" query SNetDaemon'
     Pop $0
     Pop $1
@@ -115,10 +149,12 @@ Section
         MessageBox MB_ICONEXCLAMATION|MB_OKCANCEL "检测到旧服务正在后台清理，建议重启电脑后再安装。$\r$\n$\r$\n点击「确定」忽略并继续，点击「取消」退出安装。"
         Abort
     ${EndIf}
-    nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM snetd.exe /T'
+    nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM snetd.exe /T'
     Pop $0
-    nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM Snet.exe /T'
+    Pop $1
+    nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM Snet.exe /T'
     Pop $0
+    Pop $1
     Delete /REBOOTOK "$INSTDIR\SnetWindows.exe"
     Sleep 2000
 
@@ -162,6 +198,13 @@ Section
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SNETSnetWindows"
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SNETSnetWindows"
 
+    # Refresh the shell's icon cache so an upgraded install immediately shows
+    # the current Snet icon instead of the previous Wails artwork.
+    nsExec::ExecToStack '"$SYSDIR\ie4uinit.exe" -show'
+    Pop $0
+    Pop $1
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+
     !insertmacro wails.associateFiles
     !insertmacro wails.associateCustomProtocols
     
@@ -172,12 +215,22 @@ Section "uninstall"
     !insertmacro wails.setShellContext
 
     # Remove the service first so snetd.exe is not locked while $INSTDIR is
-    # deleted. The service owns no data outside ProgramData.
-    nsExec::ExecToLog '"$INSTDIR\snetd.exe" uninstall'
+    # deleted. The service keeps no data outside ProgramData.
+    nsExec::ExecToStack '"$INSTDIR\snetd.exe" uninstall'
     Pop $0
-    RMDir /r "C:\ProgramData\SNET"
+    Pop $1
 
-    RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+    # Never remove the device identity or network config unless the user
+    # explicitly selected the destructive option above. Losing device.id is
+    # what made a reinstall look like a brand-new device and lose history.
+    ${If} $DeleteAllData == ${BST_CHECKED}
+        ReadEnvStr $9 "PROGRAMDATA"
+        ${If} $9 == ""
+            StrCpy $9 "C:\ProgramData"
+        ${EndIf}
+        RMDir /r "$9\SNET"
+        RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+    ${EndIf}
 
     RMDir /r $INSTDIR
 

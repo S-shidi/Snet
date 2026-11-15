@@ -104,6 +104,12 @@ header::after {
 }
 .network-tab.active::after { display: none; }
 .network-tab.pending { color: var(--warn); }
+.network-owner-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-right: 4px; vertical-align: -2px;
+  color: var(--warn);
+}
+.network-owner-mark svg { display: block; width: 13px; height: 13px; }
 .network-dot {
   display: inline-block; width: 7px; height: 7px; border-radius: 50%;
   margin-right: 6px; vertical-align: 1px; background: var(--faint);
@@ -118,19 +124,14 @@ header::after {
 }
 .network-tab-add:hover { color: var(--accent); border-color: var(--accent); }
 
-/* macOS Wails: leave room for traffic lights and make the header draggable. */
-.wails-desktop { --header-left-padding: 80px; }
+/* macOS Wails: leave room for the traffic lights; dragging is handled by
+   the native overlay below. */
+.wails-desktop { --header-left-padding: 96px; }
 /* Windows has no traffic-light controls on the left, so the brand aligns with
    the network tabs instead of reserving macOS window-control space. */
 .wails-desktop.wails-windows { --header-left-padding: var(--content-padding-x); }
-.wails-drag-strip { display: none; }
-.wails-desktop .wails-drag-strip {
-  display: block; position: absolute; top: 0; left: 0; right: 0; height: 68px;
-  z-index: 0;
-}
 .wails-desktop .header-inner {
   position: relative; z-index: 1; pointer-events: none;
-  --wails-draggable: drag !important;
   user-select: none;
 }
 .wails-desktop .header-inner .brand,
@@ -138,22 +139,7 @@ header::after {
 .wails-desktop .header-inner .header-actions,
 .wails-desktop .header-inner .header-more { pointer-events: auto; }
 .wails-desktop .network-tabs { position: relative; z-index: 1; }
-.wails-desktop header {
-  --wails-draggable: drag !important;
-  user-select: none;
-}
-.wails-desktop header button,
-.wails-desktop header a,
-.wails-desktop header input,
-.wails-desktop header select,
-.wails-desktop header label,
-.wails-desktop header .header-dropdown,
-.wails-desktop header .header-actions,
-.wails-desktop header .header-more,
-.wails-desktop header .network-tabs,
-.wails-desktop header .network-tabs button {
-  --wails-draggable: no-drag !important;
-}
+.wails-desktop header { user-select: none; }
 
 /* ── header dropdown (mobile) ───────────── */
 .header-more { position: relative; }
@@ -204,7 +190,8 @@ header::after {
 .btn.danger.ghost { background: transparent; color: var(--err); border-color: rgba(224,82,82,.4); }
 .btn.danger.ghost:hover { background: var(--err-soft); }
 .btn.sm { padding: 3px 9px; font-size: 12px; border-radius: 6px; }
-.btn.icon { padding: 5px; width: 28px; height: 28px; border-radius: 7px; background: transparent; color: var(--dim); border: 1px solid transparent; }
+.btn.icon { padding: 0; width: 28px; height: 28px; border-radius: 7px; background: transparent; color: var(--dim); border: 1px solid transparent; }
+.btn.icon svg { display: block; flex: none; margin: auto; }
 .btn.icon:hover { background: var(--card2); color: var(--text); border-color: var(--border); }
 .btn .spin { margin-left: 2px; }
 
@@ -348,6 +335,7 @@ body.empty-mode { overflow: hidden; }
 .pill.accent { background: var(--accent-soft); color: var(--accent2); }
 .pill.off  { background: rgba(154,163,178,.12); color: var(--dim); }
 .pill.owner { background: var(--accent-soft); color: var(--accent2); }
+.pill.created { background: var(--ok-soft); color: var(--ok); }
 .pill.subnet-route { background: #1a3a2a; color: var(--ok); }
 .pill.gone { background: rgba(220,53,69,.12); color: var(--err); }
 .badge-dot { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: var(--err); color: #fff; font-size: 11px; font-weight: 700; }
@@ -426,7 +414,11 @@ body.empty-mode { overflow: hidden; }
 .detail-head-actions { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
 .detail-heading { min-width: 0; flex: 1; }
 .detail-conn-switch { flex: none; margin: 0 2px; }
-.detail-more { position: relative; flex: none; }
+.detail-head-actions .btn {
+  height: 24px; padding: 0 11px; border-radius: 999px;
+  font-size: 12px; line-height: 1;
+}
+.detail-more { position: relative; flex: none; display: flex; align-items: center; }
 .detail-more-menu {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
   min-width: 150px; padding: 5px; border: 1px solid var(--border); border-radius: 9px;
@@ -454,6 +446,8 @@ body.empty-mode { overflow: hidden; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .detail-meta-line span + span::before { content: "·"; margin: 0 8px; color: var(--faint); }
+.detail-meta-line .detail-net-id { color: var(--text); }
+.detail-meta-line .detail-net-id code { color: var(--text); font-family: inherit; }
 .detail-section { margin-bottom: 16px; }
 .detail-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .detail-section-title { display: flex; align-items: center; gap: 9px; min-width: 0; }

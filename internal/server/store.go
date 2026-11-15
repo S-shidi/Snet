@@ -37,6 +37,7 @@ var (
 	ErrUnauthorized        = errors.New("unauthorized")
 	ErrManagedNetwork      = errors.New("服务端管理的网络不可认领")
 	ErrDeviceNetworkExists = errors.New("该设备已创建网络（每设备仅能创建一个）")
+	ErrDeviceIDCollision   = errors.New("deviceId 已存在，请重新生成")
 	ErrRouteCIDRConflict   = errors.New("该网段已被其他节点委派，不可重复添加")
 	ErrNodeIPInvalid       = errors.New("虚拟 IP 无效")
 	ErrRelayV2Disabled     = errors.New("relay v2 is not configured")
@@ -3176,9 +3177,15 @@ func validateEndpoint(ep string) error {
 }
 
 // RegisterDevice records (or refreshes) a device identity and binds the
-// device's WireGuard public key to it.  The name parameter seeds the display
+// device's WireGuard public key to it. The name parameter seeds the display
 // name on new devices; an empty string leaves any existing name untouched.
-func (s *Store) RegisterDevice(deviceID, publicKey, name string) error {
+//
+// When fresh is true the caller has just generated a random identity and is
+// asking the server to reject it if it is already known. This is the only
+// collision check that can be enforced unambiguously: ordinary registration
+// must stay idempotent because the same physical device re-registers on every
+// restart.
+func (s *Store) RegisterDevice(deviceID, publicKey, name string, fresh ...bool) error {
 	if err := validateDeviceID(deviceID); err != nil {
 		return err
 	}
@@ -3188,9 +3195,56 @@ func (s *Store) RegisterDevice(deviceID, publicKey, name string) error {
 	if deviceID == "" {
 		return nil
 	}
+	isFresh := len(fresh) > 0 && fresh[0]
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if isFresh {
+		if _, exists := s.devices[deviceID]; exists {
+			return ErrDeviceIDCollision
+		}
+	}
 	return s.upsertDeviceLocked(deviceID, publicKey, name)
+}
+
+// IssueRecoveryToken returns the device's recovery token after proving the
+// caller owns a node belonging to that device. The token is stable: issuing
+// it again returns the same value so clients can persist it across restarts.
+func (s *Store) IssueRecoveryToken(deviceID, nodeToken string) (string, error) {
+	if err := validateDeviceID(deviceID); err != nil {
+		return "", err
+	}
+	if deviceID == "" {
+		return "", errors.New("missing deviceId")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(nodeToken)]
+	if !ok {
+		return "", ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return "", ErrNotFound
+	}
+	node := ns.nodes[te.NodeID]
+	if node == nil || node.DeviceID != deviceID {
+		return "", ErrUnauthorized
+	}
+	d := s.devices[deviceID]
+	if d == nil {
+		return "", ErrNotFound
+	}
+	if d.DeviceToken == "" {
+		tok, err := randomToken()
+		if err != nil {
+			return "", err
+		}
+		d.DeviceToken = tok
+		if err := s.persistDevice(d); err != nil {
+			return "", err
+		}
+	}
+	return d.DeviceToken, nil
 }
 
 // RenameNetworkDevice lets the network owner rename another member's device.

@@ -165,20 +165,6 @@ async function refreshPeerSubnets(force = false) {
   );
 }
 
-function initWailsWindowDrag() {
-  const wails = (window as any)._wails;
-  if (typeof wails?.invoke !== "function") return;
-  const header = document.querySelector<HTMLElement>("header");
-  if (!header) return;
-  header.addEventListener("mousedown", (e) => {
-    if (e.button !== 0 || e.detail !== 1) return;
-    const target = e.target as HTMLElement;
-    if (target.closest("button, a, input, select, label, .network-tabs, .header-dropdown, .switch")) return;
-    e.preventDefault();
-    wails.invoke("wails:drag");
-  }, true);
-}
-
 /* ── Header ───────────────────────────────────────────────────── */
 /* ── Header ───────────────────────────────────────────────────── */
 function isWailsWindows(): boolean {
@@ -268,7 +254,7 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
   <div class="net" data-nid="${esc(n.networkId)}" data-owner="${n.owner ? "1" : "0"}" ${gone ? 'data-gone="1"' : ""}>
     <div class="net-row">
       <div class="net-main">
-        <div class="net-name">${esc(n.name || n.networkId)} ${n.owner ? `<span class="pill owner">owner</span>` : ""} ${sharePill} ${pendingPill}</div>
+        <div class="net-name">${esc(n.name || n.networkId)} ${n.owner ? `<span class="pill created">我创建的</span>` : ""} ${sharePill} ${pendingPill}</div>
         <div class="net-meta">
           <span>IP <code>${esc(n.ip ?? "-")}</code></span>
           <span>网段 <code>${esc(n.subnet ?? "-")}</code></span>
@@ -357,6 +343,11 @@ function toggleNetMenu(btn: HTMLButtonElement, nid: string, gone: boolean) {
 
 function sortedNetworks(): NetInfo[] {
   return [...(status?.networks ?? [])].sort((a, b) => {
+    // Networks created by this device always lead the tab strip; joined
+    // networks follow. Within each group keep the existing join-time order.
+    const ao = a.owner ? 0 : 1;
+    const bo = b.owner ? 0 : 1;
+    if (ao !== bo) return ao - bo;
     const ta = a.joinedAt || "";
     const tb = b.joinedAt || "";
     if (ta && tb) return ta.localeCompare(tb);
@@ -366,6 +357,8 @@ function sortedNetworks(): NetInfo[] {
   });
 }
 
+const ICON_CROWN = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m3 7 4.4 3.7L12 4l4.6 6.7L21 7l-2.1 11H5.1L3 7Z"/><path d="M5 20h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+
 function renderNetworkTabs(nets: NetInfo[]) {
   const tabs = $("#network-tabs");
   if (!tabs) return;
@@ -373,7 +366,12 @@ function renderNetworkTabs(nets: NetInfo[]) {
   const html = nets.filter((n) => n.serverState !== "gone").map((n) => {
     const active = n.networkId === detailNid ? " active" : "";
     const dot = n.interface ? "ok" : "off";
-    return `<button type="button" class="network-tab${active}" data-nid="${esc(n.networkId)}" title="${esc(n.name || n.networkId)}"><span class="network-dot ${dot}"></span>${esc(n.name || n.networkId)}</button>`;
+    const owner = n.owner ? " owner" : "";
+    const crown = n.owner
+      ? `<span class="network-owner-mark" title="我创建的网络" aria-label="我创建的网络">${ICON_CROWN}</span>`
+      : "";
+    const title = n.owner ? `我创建的网络 · ${n.name || n.networkId}` : (n.name || n.networkId);
+    return `<button type="button" class="network-tab${owner}${active}" data-nid="${esc(n.networkId)}" title="${esc(title)}"><span class="network-dot ${dot}"></span>${crown}${esc(n.name || n.networkId)}</button>`;
   }).join("") + pending.map((p) => {
     const active = p.pendingId === detailPendingId ? " active" : "";
     return `<button type="button" class="network-tab pending${active}" data-pid="${esc(p.pendingId)}" title="等待批准 · ${esc(p.networkId)}"><span class="network-dot warn"></span>${esc(p.networkId)}</button>`;
@@ -1290,9 +1288,6 @@ function openCreateModal() {
 }
 
 /* ── Join modal ───────────────────────────────────────────────── */
-// The link glyph above the invite-link field.
-const ICON_LINK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
-
 function linkServerOf(link: string): string | undefined {
   try {
     const u = new URL(link);
@@ -1310,7 +1305,6 @@ function openJoinModal() {
     body: `<div class="join-compact">
       <label class="join-field-label" for="m-link">邀请链接</label>
       <div class="join-link-box">
-        <span class="join-link-icon" aria-hidden="true">${ICON_LINK}</span>
         <input class="join-link-input" id="m-link" type="text" spellcheck="false" autocomplete="off"
                placeholder="粘贴 snet:// 邀请链接..." />
         ${backend.scanQR ? '<button id="m-scan" class="btn ghost" type="button" title="扫描二维码加入">扫码</button>' : ""}
@@ -2472,8 +2466,8 @@ function networkDetailHTML(n: NetInfo): string {
   const activeRoutes = routes.filter((rt) => rt.status === "active").length;
   const memberCount = r ? (r.peers ?? []).length + 1 : 0;
   const rolePill = role === "owner"
-    ? '<span class="pill owner">创建者</span>'
-    : '<span class="pill off">成员</span>';
+    ? '<span class="pill created">我创建的</span>'
+    : '<span class="pill off">已加入</span>';
   const iconInvite = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M16 11h6"/></svg>';
   const iconMore = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
   const more = `<div class="detail-more">
@@ -2491,6 +2485,7 @@ function networkDetailHTML(n: NetInfo): string {
     <div class="detail-heading">
       <div class="detail-title-row"><div class="detail-title">${esc(n.name || n.networkId)}</div>${rolePill}</div>
       <div class="detail-meta-line">
+        <span class="detail-net-id"><code>${esc(n.networkId)}</code></span>
         <span>↑ ${fmtSpeed(status?.txSpeed)} · ↓ ${fmtSpeed(status?.rxSpeed)}</span>
         <span>NAT ${esc(nat)}</span>
         <span>${activeRoutes} 条生效路由</span>
@@ -2897,7 +2892,6 @@ function bindEvents() {
 export async function init(b: Backend) {
   backend = b;
   await loadQR();
-  initWailsWindowDrag();
   initTabs();
   bindNetListEvents();
   bindNetworkDetailEvents();
