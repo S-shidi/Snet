@@ -1,295 +1,360 @@
-# 客户端部署（snetd + Web GUI 单镜像）
+# Snet Docker 客户端部署指南
 
-> 一个镜像、一个容器：snetd + nginx + shared/web，由 supervisord 管理。
-> `network_mode: host`：nginx 直接代理 `127.0.0.1:19432`，不需要 host.docker.internal。
-> 部署由用户在宿主机手动执行。
+一个容器同时运行 `snetd`、Nginx 和 Snet Web 控制台。部署完成后，用浏览器打开 `http://<服务器IP>:8081` 即可创建或加入网络。
 
-## 1. 前置检查
+> 适合：Linux 服务器、群晖 / 威联通 NAS、软路由等 x86_64 Docker 环境。
+>
+> 镜像架构：`linux/amd64`。ARM 设备需要自行构建镜像。
+
+## 1. 前提条件
+
+- Docker 20.10+
+- Docker Compose v2（使用 Compose 方式时需要）
+- 宿主机存在 `/dev/net/tun`
+- 至少 1 GB 内存、2 GB 可用磁盘
+- `8081/tcp` 未被占用
+- 如果这台机器要作为公网 WireGuard 网关，还需要一个公网 UDP 端口（默认 `51820/udp`）
+
+检查环境：
 
 ```bash
 uname -m
 ls -l /dev/net/tun
 docker --version
 docker compose version
-ss -lntup | grep -E ':(8081|19432|52100)' || true
-curl -s https://ifconfig.me; echo
-curl -fsS https://snet.uizhi.eu.org:8090/healthz
+ss -lntup | grep ':8081' || true
 ```
 
-期望：
-
-- `x86_64` → amd64 镜像；`aarch64` → 需 arm64 镜像
-- `/dev/net/tun` 存在
-- Docker + Compose 可用
-- 8081、19432、52100 空闲（B 的 WG 用 52101）
-- 服务端 healthz 可访问
-
-## 2. 目录
-
-```text
-deploy-prod/docker-client/
-├── compose.yaml
-├── Dockerfile.client
-├── nginx.conf
-├── nginx-entrypoint.sh
-├── supervisord.conf
-├── config.json.example
-└── README.md
-```
-
-构建 context 是 `../..`（仓库根），需要以下路径可访问：
-
-```text
-shared/web/
-deploy/docker/web-build/
-deploy-prod/docker-client/nginx.conf
-deploy-prod/docker-client/nginx-entrypoint.sh
-deploy-prod/docker-client/supervisord.conf
-dist-deploy/linux-amd64/snetd
-```
-
-## 3. 镜像
-
-官方客户端镜像发布在阿里云 ACR：
+`uname -m` 应输出 `x86_64`。如果 `/dev/net/tun` 不存在，在 Linux 上尝试：
 
 ```bash
-ACR=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet
-docker pull $ACR/snet-client:v1.1.9
+sudo modprobe tun
 ```
 
-如果 Registry 要求认证，请使用你自己的阿里云容器镜像服务凭据登录：
+群晖 / 威联通请在套件或内核设置中确认 TUN 已启用。
+
+## 2. 拉取镜像
+
+客户端镜像发布在阿里云 ACR：
+
+```bash
+export SNET_IMAGE=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.9
+docker pull "$SNET_IMAGE"
+```
+
+如果提示未授权：
 
 ```bash
 docker login crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com
 ```
 
-维护者重新构建：
+使用你自己的阿里云容器镜像服务账号登录，不要把账号密码写进脚本或提交到仓库。
+
+验证镜像：
 
 ```bash
-ACR=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet
-cd deploy-prod/docker-client
-docker build -f Dockerfile.client -t snet-client:v1.1.9 ../..
-docker tag snet-client:v1.1.9 $ACR/snet-client:v1.1.9
-docker push $ACR/snet-client:v1.1.9
+docker image inspect "$SNET_IMAGE" --format '{{.Id}}'
 ```
 
-构建 context 是 `../..`（仓库根），需要以下路径可访问：
+## 3. 准备数据目录
+
+所有持久化数据都放在一个目录里，升级或重建容器不会丢失设备身份和网络配置。
+
+```bash
+sudo mkdir -p /opt/snet/data
+sudo chmod 700 /opt/snet /opt/snet/data
+```
+
+目录内容：
 
 ```text
-shared/web/
-deploy/docker/web-build/
-deploy-prod/docker-client/{nginx.conf,nginx-entrypoint.sh,supervisord.conf}
-dist-deploy/linux-amd64/snetd
+/opt/snet/data/
+├── config.json      # 可选，首次可让 Web 控制台生成/修改
+├── device.id        # 设备身份，重装后必须保留
+├── ctl-token        # 本机控制 API 令牌
+└── snetd.log        # 运行日志
 ```
 
-## 4. 离线安装
+### 可选：预置配置文件
 
-在能访问阿里云 ACR 的机器上导出镜像：
+使用官方协调服务时，可以跳过这一步，直接在 Web 控制台里设置。
+
+使用自建服务端时，创建 `config.json`：
+
+```bash
+sudo tee /opt/snet/data/config.json >/dev/null <<'JSON'
+{
+  "serverAddr": "https://<你的服务端>:8090",
+  "wireguardPort": 51820,
+  "networks": {},
+  "keyRotationDays": 30,
+  "natMapping": true
+}
+JSON
+sudo chmod 600 /opt/snet/data/config.json
+```
+
+常用字段：
+
+| 字段 | 说明 |
+|---|---|
+| `serverAddr` | 协调服务地址；官方服务为 `https://snet.uizhi.eu.org:8090` |
+| `wireguardPort` | 本机 WireGuard UDP 端口，默认 `51820` |
+| `natMapping` | 自动尝试 UPnP / NAT-PMP / PCP 端口映射，建议 `true` |
+| `allowRelay` | 是否允许本机作为中继网关，普通成员保持 `false` |
+
+## 4. 启动方式一：普通 Docker
+
+如果只是单机部署，普通 `docker run` 最简单。先清理同名旧容器：
+
+```bash
+docker rm -f snetd 2>/dev/null || true
+```
+
+启动：
+
+```bash
+docker run -d \
+  --name snetd \
+  --restart unless-stopped \
+  --network host \
+  --cap-add NET_ADMIN \
+  --device /dev/net/tun:/dev/net/tun \
+  -v /opt/snet/data:/etc/snet \
+  crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.9
+```
+
+为什么需要这些参数：
+
+| 参数 | 原因 |
+|---|---|
+| `--network host` | Nginx 监听宿主机 `8081`，`snetd` 监听本机 `19432` 和 WireGuard UDP 端口 |
+| `--cap-add NET_ADMIN` | 创建 TUN、配置路由、NAT 和中继转发 |
+| `--device /dev/net/tun` | WireGuard 虚拟网卡 |
+| `-v ...:/etc/snet` | 持久化设备身份、配置和令牌 |
+
+查看状态：
+
+```bash
+docker ps --filter name=snetd
+docker logs -f snetd
+```
+
+## 5. 启动方式二：Docker Compose
+
+Compose 更适合长期维护和升级。以下步骤与普通 Docker 二选一。
+
+创建目录：
+
+```bash
+sudo mkdir -p /opt/snet/data
+cd /opt/snet
+```
+
+创建 `compose.yaml`：
+
+```yaml
+services:
+  snet:
+    image: ${SNET_IMAGE:-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.9}
+    container_name: snetd
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./data:/etc/snet
+```
+
+创建可选 `.env`：
+
+```dotenv
+SNET_IMAGE=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.9
+```
+
+启动：
+
+```bash
+cd /opt/snet
+docker compose pull
+docker compose up -d
+```
+
+查看状态和日志：
+
+```bash
+docker compose ps
+docker compose logs -f
+```
+
+停止：
+
+```bash
+docker compose down
+```
+
+## 6. 首次使用
+
+浏览器打开：
+
+```text
+http://<服务器IP>:8081
+```
+
+1. 设置 Web 管理密码。
+2. 如果使用自建服务端，在「设置 → 协调服务」中填写服务端地址；使用官方服务端可保持默认。
+3. 点击「添加网络」：
+   - 创建新网络；或
+   - 粘贴别人发来的邀请链接加入网络。
+4. 需要 iPhone / iPad / 标准 WireGuard 客户端接入时，在网络详情中打开「更多 → 生成 WireGuard 配置」。
+
+首次启动会自动生成 `device.id`、`ctl-token`。之后升级、重建容器都不要删除 `/opt/snet/data`。
+
+## 7. 端口与防火墙
+
+| 端口 | 协议 | 用途 | 是否公网开放 |
+|---|---|---|---|
+| `8081` | TCP | Web 控制台 | 建议仅内网，或通过反向代理 + HTTPS |
+| `51820` | UDP | WireGuard（默认） | 仅公网网关节点需要 |
+| `19432` | TCP | 本机控制 API | **不要开放** |
+
+因为使用 `--network host`，不需要写 `-p` / `ports:`。
+
+使用云服务器时，在安全组中放行需要的端口；只作为普通成员时，通常无需向公网开放 WireGuard 端口。
+
+## 8. 更新版本
+
+数据目录保持不变即可。
+
+普通 Docker：
+
+```bash
+export SNET_IMAGE=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.9
+docker pull "$SNET_IMAGE"
+docker rm -f snetd
+docker run -d \
+  --name snetd \
+  --restart unless-stopped \
+  --network host \
+  --cap-add NET_ADMIN \
+  --device /dev/net/tun:/dev/net/tun \
+  -v /opt/snet/data:/etc/snet \
+  "$SNET_IMAGE"
+```
+
+Docker Compose：
+
+```bash
+cd /opt/snet
+docker compose pull
+docker compose up -d
+```
+
+检查版本：
+
+```bash
+docker exec snetd /usr/local/bin/snetd -version
+```
+
+## 9. 离线安装
+
+在能访问阿里云 ACR 的机器上：
 
 ```bash
 ACR=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet
 docker pull $ACR/snet-client:v1.1.9
 docker save $ACR/snet-client:v1.1.9 | gzip -1 > snet-client-v1.1.9.tar.gz
-scp snet-client-v1.1.9.tar.gz root@<NAS_IP>:/tmp/
+scp snet-client-v1.1.9.tar.gz root@<目标机器IP>:/tmp/
 ```
 
-在目标机器导入并启动：
+在目标机器：
 
 ```bash
 gunzip -c /tmp/snet-client-v1.1.9.tar.gz | docker load
-cd /volume1/docker/snet   # 群晖 NAS
-# 或 cd /opt/stacks/snet  # 标准 Linux
-docker compose up -d
 ```
 
-## 5. 配置
+然后按第 4 节或第 5 节启动即可，镜像名保持 `crpi-.../snet-client:v1.1.9`。
 
-标准 Linux（客户端 A）：
+## 10. 卸载
+
+普通 Docker：
 
 ```bash
-install -d -m 0700 /etc/snet
-cp config.json.example /etc/snet/config.json
-chmod 0600 /etc/snet/config.json
+docker stop snetd
+docker rm snetd
 ```
 
-群晖 NAS（客户端 B）：
+Docker Compose：
 
 ```bash
-install -d -m 0700 /volume1/docker/snet/etc
-cp config.json.example /volume1/docker/snet/etc/config.json
-chmod 0600 /volume1/docker/snet/etc/config.json
+cd /opt/snet
+docker compose down
 ```
 
-字段：
-
-- `serverAddr`: `https://snet.uizhi.eu.org:8090`
-- `wireguardPort`: A 用 `52100`，B 用 `52101`
-- `networks`: 首次为空
-- `natMapping`: `true`
-
-首次启动自动生成：
-
-```text
-device.id
-ctl-token
-```
-
-群晖 Container Manager 可能把 `/etc/snet` 重定向到：
-
-```text
-/volume1/@appdata/ContainerManager/all_shares/docker/snet/etc
-```
-
-检查实际挂载：
+以上操作默认保留 `/opt/snet/data`。确认不再需要设备身份和网络配置后，才手动删除：
 
 ```bash
-docker inspect snetd --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
+sudo rm -rf /opt/snet/data
 ```
 
-ctl-token 在实际宿主机挂载源目录下。
+删除后重新部署会生成新的 `device.id`，在服务端会被视为一台新设备。
 
-## 6. 启动
-
-```bash
-cd /volume1/docker/snet
-docker compose up -d
-```
-
-- `network_mode: host`：nginx 监听宿主机 8081，snetd 监听 127.0.0.1:19432 和 WG 52100/52101。
-- 不需要 `ports:`；不需要单独的 `web` service。
-- supervisord 启动 snetd + nginx；nginx 会等待 `/etc/snet/ctl-token` 后生成配置。
-
-## 7. Web GUI
-
-浏览器访问：
-
-```text
-http://<NAS_IP>:8081
-```
-
-首次使用：设置/输入 **Web 管理密码**。nginx 自动从 `/etc/snet/ctl-token` 注入 `X-Ctl-Token` 并设置 `X-Snet-Web: 1`；不需要在页面输入 ctl-token。
-
-排障时 ctl-token 路径：
-
-```text
-/volume1/@appdata/ContainerManager/all_shares/docker/snet/etc/ctl-token
-# 或标准 Linux
-/etc/snet/ctl-token
-```
-
-8081 被占用时：
-
-- 改 `nginx.conf` 的 `listen 8081;` 为 `8082`，重建镜像；或
-- 改用 bridge + `ports: "8082:80"`，但需把 snetd `-ctl` 改为 `0.0.0.0:19432` 并用防火墙限制 19432；host network 更简单。
-
-## 8. 验证
-
-```bash
-docker compose ps
-docker logs snetd --tail 50
-
-TOKEN=$(cat /etc/snet/ctl-token)
-curl -s -H "X-Ctl-Token: $TOKEN" http://127.0.0.1:19432/ctl/status | head -c 500
-
-curl -sI http://127.0.0.1:8081/ | head
-```
-
-期望：
-
-- 容器 running；
-- 8081 返回 HTML；
-- ctl 返回 `mode=relay-v2` / 网络状态；
-- 日志无 TUN/nginx/token 错误。
-
-## 9. 建网 / 入网
-
-先在服务端完成 admin bootstrap：
-
-```text
-https://snet.uizhi.eu.org:8090/admin
-```
-
-镜像不包含 `snetctl`；用宿主机二进制：
-
-```bash
-scp root@66.187.6.46:/tmp/snetctl-linux-amd64 /usr/local/sbin/snetctl
-chmod 0755 /usr/local/sbin/snetctl
-
-export SNET_CTL_TOKEN_FILE=/etc/snet/ctl-token   # 群晖改成实际 ctl-token 路径
-
-# A 创建网络
-snetctl -ctl http://127.0.0.1:19432 create --name my-net
-
-# B 加入
-snetctl -ctl http://127.0.0.1:19432 join --nid <nid> --code <code>
-```
-
-若 `ApprovalRequired=true`，A 在 Web UI/`snetctl` 审批。
-
-## 10. 故障排查
+## 11. 故障排查
 
 | 现象 | 检查 |
 |---|---|
-| TUN 创建失败 | `cap_add: NET_ADMIN` + `devices: /dev/net/tun`；宿主内核 TUN |
-| 8081 被占 | `ss -lntp \| grep :8081`；改 nginx listen 并重建，或维护窗口 |
-| ctl 401 | `/etc/snet/ctl-token` 是否存在；群晖实际挂载路径 |
-| nginx 退出 | `docker logs snetd`；是否缺少 ctl-token 或 nginx 配置错误 |
-| 服务端不可达 | `curl -fsS https://snet.uizhi.eu.org:8090/healthz` |
-| 直连不通 | 公网 UDP 52100/52101、NAT 映射、`relayPath.peerDirect` |
+| 容器启动后立即退出 | `docker logs snetd`；通常是 `/dev/net/tun` 缺失或权限不足 |
+| 无法创建 TUN | 确认 `--cap-add NET_ADMIN` 和 `--device /dev/net/tun` |
+| `8081` 打不开 | `ss -lntup \| grep :8081`；容器是否 running；防火墙是否放行 |
+| `8081` 被占用 | 停止占用端口的程序，或修改镜像内 Nginx 配置后自行构建 |
+| 忘记 Web 密码 | 停止容器，备份并删除 `data/config.json` 中的密码相关字段后重启；不要删除 `device.id` |
+| 拉取镜像 401 / denied | `docker login` 阿里云 ACR，确认账号有镜像权限 |
+| 服务端不可达 | `curl -fsS https://<服务端>:8090/healthz` |
+| 手机连不上 | 网关节点必须有公网 UDP 入口，生成配置时选择可用的出口网关 |
+| 直连不稳定 | 检查 UDP 端口、NAT 映射和防火墙；失败时会自动尝试中继 |
 
-## 11. A/B 差异
+查看完整日志：
 
-| 项 | 客户端 A（标准 Linux） | 客户端 B（NAS/远程） |
-|---|---|---|
-| 目录 | `/opt/stacks/snet` | `/volume1/docker/snet` |
-| 配置 | `/etc/snet` | `/volume1/docker/snet/etc` 或 ContainerManager 重定向路径 |
-| 镜像 | registry pull 或离线 tar | registry pull 或离线 tar |
-| WG 端口 | 52100 | 52101 |
-| Web | `http://<A_IP>:8081` | `http://<NAS_IP>:8081` |
+```bash
+docker logs --tail 200 snetd
+```
 
-## 12. 安全说明
+进入容器检查版本：
 
-- 客户端镜像通过阿里云 ACR 分发；私有仓库的地址、账号和密码不要提交到仓库或文档。
-- 合并镜像内 nginx 只代理 `127.0.0.1:19432`；ctl 不暴露公网。
-- 不提交 `ctl-token`、`device.id`、config、Registry 密码或镜像 tar。
+```bash
+docker exec snetd /usr/local/bin/snetd -version
+```
 
-## 13. 网段冲突防护（v1.0.1）
+## 12. 安全建议
 
-v1.0.1 起，客户端与服务端都会主动拦截网段冲突，避免"加入成功但流量静默黑洞"。
+- `device.id`、`config.json`、`ctl-token` 包含设备身份或私密材料，不要提交到 Git，也不要发给别人。
+- `8081` 是管理入口，尽量不要直接暴露到公网；需要远程访问时，使用 VPN、内网穿透或 HTTPS 反向代理。
+- 不要在 `compose.yaml`、脚本或文档中写死阿里云 ACR 账号密码。
+- 公网 WireGuard 网关只开放必要的 UDP 端口，`19432` 永远不要暴露。
+- 定期备份 `/opt/snet/data`；恢复时保留原 `device.id`，网络身份才不会变化。
 
-### 客户端：物理局域网预检（P0-1）
+## 13. 常用命令速查
 
-- `attach` 在写入网络前会读取本机真实路由表（Linux `ip -4 route show`，macOS `netstat -rn -f inet`），
-  排除 `tun*/wg*/docker*/br-*/veth*` 等虚拟接口，并用 CIDR 包含关系与目标网段比较。
-- 冲突时**直接拒绝加入**，返回：`网段 X 与本机物理局域网冲突，无法加入`。
-- 高级用户可显式绕过（不推荐）：
+```bash
+# 查看容器
+docker ps --filter name=snetd
 
-  ```bash
-  # docker compose 环境：在 compose.yaml 的 snetd.environment 中加入
-  SNET_IGNORE_LAN_CONFLICT: "1"
-  ```
+# 查看日志
+docker logs -f snetd
 
-### 客户端：路由失败上报（P0-2）
+# 重启
+docker restart snetd
 
-- 虚拟网段/对端子网路由使用 `ip route add`（macOS `route add`），并区分三种情况：
-  - 路由已在本 TUN 上：幂等成功（避免每次轮询误报）；
-  - 路由已存在但在其他接口（通常是物理 LAN）：返回冲突；
-  - 其他失败：原样返回。
-- 路由失败会把该网络标记为 `state=error`，`error` 字段写入
-  `路由安装失败，可能与本机其他网络冲突`；Web UI 状态页显示红色“异常”标签与红色错误信息。
-- 修复后下一次成功应用 peer 会自动清除该错误。
+# 查看版本
+docker exec snetd /usr/local/bin/snetd -version
 
-### 服务端：自动网段分配（P0-3）
-
-- 自动分配池从 `10.88.0.0/24` 起扩展到对齐的 `/12`（`10.80.0.0/12`，4096 个 `/24`），
-  并**按 CIDR 包含关系**查重；已存在的 `/16`、`/12` 会阻止其覆盖的所有 `/24`。
-- 池耗尽时返回 `subnet allocation pool exhausted`，不再回落到固定 `10.89.0.0/24`。
-- 显式指定与现有网络重叠的网段时**默认拒绝**；确需重叠时在创建请求中提交
-  `"allowOverlap": true`（客户端 `/ctl/create` 与 admin `/admin/networks` 均支持）。
-
-### 相关环境变量/参数
-
-| 名称 | 作用 |
-|---|---|
-| `SNET_IGNORE_LAN_CONFLICT=1` | 客户端跳过物理 LAN 冲突预检 |
-| `allowOverlap: true` | 服务端允许显式重叠网段（默认 false） |
+# Compose 方式
+cd /opt/snet
+docker compose ps
+docker compose logs -f
+docker compose pull
+docker compose up -d
+docker compose down
+```
