@@ -70,11 +70,16 @@ async function refresh() {
     refreshAgain = false;
     try {
       status = await backend.status();
-      await refreshOwnerInfo();
-      await refreshPeerSubnets();
     } catch {
       status = null;
     }
+    // Render the shell and tabs from the local status immediately. Owner/peer
+    // requests go to the coordination server and can take seconds (or time
+    // out on a flaky uplink); waiting for them before the first paint left the
+    // whole page blank.
+    renderHeader();
+    renderNetworks();
+    await Promise.all([refreshOwnerInfo(), refreshPeerSubnets()]);
     renderHeader();
     renderNetworks();
     renderNetworkDetail();
@@ -95,7 +100,7 @@ async function refreshOwnerInfo(force = false) {
   await Promise.all(
     ownerNets.map(async (n) => {
       try {
-        ownerInfo[n.networkId] = await backend.netinfo(n.networkId);
+        ownerInfo[n.networkId] = await withTimeout(backend.netinfo(n.networkId), 5000, "网络详情加载超时");
       } catch {
         delete ownerInfo[n.networkId];
       }
