@@ -147,6 +147,12 @@ sudo docker run -d \
   crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.9
 ```
 
+如果 Registry 提示未授权，请先登录对应镜像仓库，或使用自己构建的 `snet-client` 镜像。查看运行日志：
+
+```bash
+sudo docker logs -f snet-gateway
+```
+
 然后：
 
 1. 浏览器打开 `http://<公网服务器IP>:8081`，设置 Web 管理密码。
