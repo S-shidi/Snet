@@ -119,6 +119,7 @@ Section
     Pop $0
     nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM Snet.exe /T'
     Pop $0
+    Delete /REBOOTOK "$INSTDIR\SnetWindows.exe"
     Sleep 2000
 
     # Try to move a locked old daemon aside. If the rename succeeds, the file
@@ -155,6 +156,12 @@ Section
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
+    # Remove legacy SnetWindows shortcuts/registration left by pre-1.1.8 builds.
+    Delete "$SMPROGRAMS\SnetWindows.lnk"
+    Delete "$DESKTOP\SnetWindows.lnk"
+    DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SNETSnetWindows"
+    DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SNETSnetWindows"
+
     !insertmacro wails.associateFiles
     !insertmacro wails.associateCustomProtocols
     
@@ -176,6 +183,8 @@ Section "uninstall"
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
+    Delete "$SMPROGRAMS\SnetWindows.lnk"
+    Delete "$DESKTOP\SnetWindows.lnk"
 
     !insertmacro wails.unassociateFiles
     !insertmacro wails.unassociateCustomProtocols
