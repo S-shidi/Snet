@@ -24,6 +24,9 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
@@ -48,6 +51,15 @@ class MainActivity : AppCompatActivity() {
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* A foreground VPN can still run; the notification is best-effort. */ }
+
+    private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
+        val contents = result.contents
+        if (contents.isNullOrBlank()) {
+            sendScanError("扫码已取消")
+        } else {
+            sendScanResult(contents)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -142,6 +154,14 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
     }
 
+    private fun sendScanResult(text: String) {
+        webView.evaluateJavascript("window.__snetScanResult(" + JSONObject.quote(text) + ")", null)
+    }
+
+    private fun sendScanError(message: String) {
+        webView.evaluateJavascript("window.__snetScanError(" + JSONObject.quote(message) + ")", null)
+    }
+
     inner class NetworkBridge {
         @JavascriptInterface
         fun onNetworksChanged() {
@@ -151,6 +171,18 @@ class MainActivity : AppCompatActivity() {
                 // running, so this is only a route/address refresh.
                 mainHandler.removeCallbacks(restartVpnRunnable)
                 mainHandler.postDelayed(restartVpnRunnable, 600)
+            }
+        }
+
+        @JavascriptInterface
+        fun startScan() {
+            runOnUiThread {
+                val options = ScanOptions()
+                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setPrompt("扫描 Snet 邀请二维码")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+                scanLauncher.launch(options)
             }
         }
     }

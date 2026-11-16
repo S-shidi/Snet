@@ -924,11 +924,26 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	if err := d.attach(resp.NetworkID, name, resp.NodeID, resp.IP, resp.Token, resp.PairingCode, resp.Subnet, true); err != nil {
 		return resp, err
 	}
-	d.reconcileOwnership(resp.NetworkID)
-	// Tell the server whether this device can act as a relay gateway, so a
-	// route delegated to it can become active.
-	d.publishRelayCapabilityLocked()
+	// Post-create reconciliation and relay-capability reporting can block on
+	// the coordination server. Do them after the HTTP response has had time to
+	// flush, otherwise a slow server makes the client's create request appear
+	// to time out even though the network was created.
+	go d.finishCreateAsync(resp.NetworkID)
 	return resp, nil
+}
+
+// finishCreateAsync performs the non-critical server reconciliation after a
+// network has been created locally. It intentionally runs outside the create
+// request's critical path.
+func (d *Daemon) finishCreateAsync(nid string) {
+	time.Sleep(100 * time.Millisecond)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.cfg.Networks[nid] == nil {
+		return
+	}
+	d.reconcileOwnership(nid)
+	d.publishRelayCapabilityLocked()
 }
 
 // Join joins an existing network by nid + pairing code.

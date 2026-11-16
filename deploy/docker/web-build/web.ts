@@ -262,6 +262,20 @@ const backend: Backend = {
   },
 };
 
+// Android QR scanning is provided by MainActivity through a Promise bridge.
+if (isAndroidWebView()) {
+  backend.scanQR = () => new Promise<string>((resolve, reject) => {
+    const bridge = (globalThis as any).SnetAndroid;
+    if (!bridge || typeof bridge.startScan !== "function") {
+      reject(new Error("当前环境不支持扫码"));
+      return;
+    }
+    (globalThis as any).__snetScanResolve = resolve;
+    (globalThis as any).__snetScanReject = reject;
+    bridge.startScan();
+  });
+}
+
 /* ── Bootstrap ────────────────────────────────────────────────── */
 function startApp() {
   showPage("app");

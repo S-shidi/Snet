@@ -911,9 +911,17 @@ body.empty-mode { overflow: hidden; }
   overflow: auto; white-space: pre-wrap; word-break: break-all;
 }
 @media (max-width: 480px) {
-  .settings-row { align-items: flex-start; }
+  .settings-row { align-items: flex-start; flex-wrap: wrap; }
   .settings-panel-head { padding: 10px 12px; }
   .settings-list { padding: 0 12px; }
+  .settings-row-device { flex-direction: column; align-items: stretch; gap: 8px; }
+  .settings-row-device .settings-row-main { width: 100%; }
+  .settings-row-device .settings-row-actions {
+    width: 100%; justify-content: flex-start; flex-wrap: wrap;
+  }
+  .settings-row-device .settings-device-id {
+    flex: 1 1 220px; min-width: 0; max-width: none;
+  }
 }
 
 /* ── modal ──────────────────────────────── */

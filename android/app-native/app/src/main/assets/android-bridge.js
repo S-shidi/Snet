@@ -26,4 +26,20 @@
     }
     return originalFetch(input, init);
   };
+
+  // QR scan bridge used by the join modal. MainActivity calls these globals
+  // after the ZXing scanner returns.
+  window.__snetScanResult = function (text) {
+    const resolve = window.__snetScanResolve;
+    window.__snetScanResolve = null;
+    window.__snetScanReject = null;
+    if (resolve) resolve(text);
+  };
+  window.__snetScanError = function (message) {
+    const reject = window.__snetScanReject;
+    window.__snetScanResolve = null;
+    window.__snetScanReject = null;
+    if (reject) reject(new Error(message || "扫码已取消"));
+  };
+
 })();

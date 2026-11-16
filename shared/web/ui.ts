@@ -1456,14 +1456,14 @@ function openSettingsModal() {
       <section class="settings-panel">
         <div class="settings-panel-head"><h3>设备</h3><span class="hint">本机身份</span></div>
         <div class="settings-list">
-          <div class="settings-row">
+          <div class="settings-row settings-row-device">
             <div class="settings-row-main">
               <div class="settings-row-title">设备 ID</div>
               <div class="settings-row-desc">用于在服务端和成员列表中识别这台设备</div>
             </div>
             <div class="settings-row-actions">
               <code class="settings-device-id" id="s-device-id">${esc(status?.deviceId || "-")}</code>
-              <button type="button" id="s-copy-device" class="btn icon sm" title="复制设备 ID" aria-label="复制设备 ID">⧉</button>
+              <button type="button" id="s-copy-device" class="btn icon sm" title="复制设备 ID" aria-label="复制设备 ID"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="14" height="14"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
             </div>
           </div>
         </div>
@@ -1557,7 +1557,7 @@ function openSettingsModal() {
           <p class="about-intro">Snet 是一个无需公网 IP、扫码即连的私有 WireGuard 网络，让设备之间优先直连，无法直连时自动中继。</p>
           <div class="about-meta">
             <span>作者 <b>S.shidi</b></span>
-            <a href="mailto:s.shidi@gmail.com">s.shidi@gmail.com</a>
+            <span>邮箱 <a href="mailto:s.shidi@gmail.com">s.shidi@gmail.com</a></span>
             <span>微信 <b>S-shidi</b></span>
           </div>
           <div class="about-version">
