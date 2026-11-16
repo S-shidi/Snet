@@ -1925,16 +1925,19 @@ function memberPathBadge(n: NetInfo, nd: NetNode, isSelf: boolean): string {
 
 /* ── Network detail view ──────────────────────────────────────── */
 function networkRole(n: NetInfo): string {
-  // The status card's owner flag is authoritative. The peer snapshot can be
-  // stale (or omit the self role), and must not downgrade the owner to member.
-  if (n.owner) return "owner";
+  // The live peer snapshot reflects ownership transfers immediately. The
+  // local status owner flag can be stale until Info() reconciles it, so use
+  // the fresh member-safe role first when available.
   const self = peerDetails[n.networkId]?.self;
-  const role = String(self?.role || n.role || "member").trim().toLowerCase();
+  const liveRole = String(self?.role || "").trim().toLowerCase();
+  if (liveRole) return liveRole === "owner" ? "owner" : "member";
+  if (n.owner) return "owner";
+  const role = String(n.role || "member").trim().toLowerCase();
   return role === "owner" ? "owner" : "member";
 }
 
 function canManageNetwork(n: NetInfo): boolean {
-  return networkRole(n) === "owner" || !!n.owner;
+  return networkRole(n) === "owner";
 }
 
 function lastActiveLabel(pd: PeerDirect | undefined, online: boolean): string {

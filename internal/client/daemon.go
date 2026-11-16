@@ -3734,33 +3734,36 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 	}
 	api := d.apiLocked()
 	token := nc.Token
-	owner := nc.Owner
 	deviceID := d.cfg.DeviceID
 	d.mu.Unlock()
-	var resp protocol.NetworkInfoResp
-	var err error
-	if owner {
-		resp, err = api.NetworkInfo(nid, token)
-	} else {
-		resp, err = api.MemberNetworkInfo(nid, token)
-		if err == nil {
-			// A server-side ownership change (or a config written by an older
-			// client) can leave the local Owner flag stale. Detect the role from
-			// the member-safe node list, persist it, and reload the owner view so
-			// pending join requests become visible immediately.
-			for _, node := range resp.Nodes {
-				if node.DeviceID == deviceID && node.Role == "owner" {
-					d.mu.Lock()
-					if current := d.cfg.Networks[nid]; current != nil {
-						current.Owner = true
-						_ = d.save()
-					}
-					d.mu.Unlock()
-					resp, err = api.NetworkInfo(nid, token)
-					break
-				}
+
+	// Always ask for the member-safe view first: it is available to owners and
+	// members and carries the authoritative owner device + node roles. A local
+	// Owner flag can be stale after an admin transfers ownership, in either
+	// direction (old owner -> member, or member -> owner).
+	resp, err := api.MemberNetworkInfo(nid, token)
+	if err != nil {
+		return resp, wrapNetGone(err)
+	}
+	isOwner := resp.OwnerDeviceID == deviceID
+	if !isOwner {
+		for _, node := range resp.Nodes {
+			if node.DeviceID == deviceID && node.Role == "owner" {
+				isOwner = true
+				break
 			}
 		}
+	}
+	d.mu.Lock()
+	if current := d.cfg.Networks[nid]; current != nil && current.Owner != isOwner {
+		current.Owner = isOwner
+		if err := d.save(); err != nil {
+			log.Printf("save owner flag %s: %v", nid, err)
+		}
+	}
+	d.mu.Unlock()
+	if isOwner {
+		resp, err = api.NetworkInfo(nid, token)
 	}
 	return resp, wrapNetGone(err)
 }
