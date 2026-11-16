@@ -1447,7 +1447,7 @@ func (d *Daemon) SyncNetworks() error {
 	}
 
 	removed := 0
-	for nid := range d.cfg.Networks {
+	for nid, nc := range d.cfg.Networks {
 		if _, ok := seen[nid]; ok {
 			continue
 		}
@@ -1457,7 +1457,35 @@ func (d *Daemon) SyncNetworks() error {
 		if _, existed := localBefore[nid]; !existed {
 			continue
 		}
-		log.Printf("sync networks: removing deleted local network %s", nid)
+		// Never remove a local network unless the server explicitly confirms
+		// 404 Not Found for that network. Transient 500/502/timeout errors or
+		// a node whose deviceId has not been bound yet must not wipe local state.
+		token := ""
+		nodeID := ""
+		if nc != nil {
+			token = nc.Token
+			nodeID = nc.NodeID
+		}
+		d.mu.Unlock()
+		_, checkErr := api.NetworkExists(nid, token)
+		if checkErr == nil && nodeID != "" && token != "" {
+			_ = api.SetNodeDevice(nid, nodeID, token, deviceID)
+		}
+		d.mu.Lock()
+		if d.apiLocked().server != server {
+			return nil
+		}
+		var se *httpStatusErr
+		if !errors.As(checkErr, &se) || se.code != http.StatusNotFound {
+			if checkErr != nil {
+				log.Printf("sync networks: keep local network %s (verify exists: %v)", nid, checkErr)
+			}
+			continue
+		}
+		if cur := d.cfg.Networks[nid]; cur == nil || cur.Token != token {
+			continue
+		}
+		log.Printf("sync networks: removing deleted local network %s (confirmed 404)", nid)
 		d.leaveLocked(nid)
 		delete(d.cfg.Networks, nid)
 		if d.serverState != nil {
@@ -2183,8 +2211,36 @@ func (d *Daemon) pollLoop(nid string) {
 		if err != nil {
 			var se *httpStatusErr
 			if errors.As(err, &se) && (se.code == 404 || se.code == 401) {
+				// Wait for any in-flight SyncNetworks call that may have just
+				// rotated the node token on the server before checking whether
+				// our token changed or the network is truly 404.
+				d.syncMu.Lock()
+				d.syncMu.Unlock()
+				d.mu.Lock()
+				cur := d.cfg.Networks[nid]
+				if cur == nil {
+					d.mu.Unlock()
+					return
+				}
+				if cur.Token != token {
+					d.mu.Unlock()
+					continue
+				}
+				d.mu.Unlock()
+				if se.code == 401 {
+					_, exErr := api.NetworkExists(nid, token)
+					var exSE *httpStatusErr
+					if !errors.As(exErr, &exSE) || exSE.code != http.StatusNotFound {
+						log.Printf("poll peers %s: transient 401 (verify exists: %v); keeping local config", nid, exErr)
+						continue
+					}
+				}
 				log.Printf("poll peers %s: network gone; removing local config", nid)
 				d.mu.Lock()
+				if cur := d.cfg.Networks[nid]; cur == nil || cur.Token != token {
+					d.mu.Unlock()
+					continue
+				}
 				d.leaveLocked(nid)
 				delete(d.cfg.Networks, nid)
 				delete(d.serverState, nid)
@@ -2281,10 +2337,19 @@ func (d *Daemon) pollLoop(nid string) {
 				go rt.path.Run()
 			}
 			subnets := d.DetectLocalSubnets()
-			selfIP := d.selfPub[nid]
+			selfIP := ""
 			if st.Self != nil && st.Self.PublicIPv4 != "" {
 				selfIP = st.Self.PublicIPv4
 				d.selfPub[nid] = selfIP
+			} else if mappedIP := rt.path.MappedPublicIP(); mappedIP != "" {
+				selfIP = mappedIP
+				d.selfPub[nid] = selfIP
+				if nc.PublicIP != mappedIP {
+					nc.PublicIP = mappedIP
+					if err := d.save(); err != nil {
+						log.Printf("save relay-v2 public IP %s: %v", nid, err)
+					}
+				}
 			}
 			rt.path.UpdatePeersWithContext(st.Peers, subnets, selfIP)
 			peers := rt.path.PreparePeers(st.Peers)

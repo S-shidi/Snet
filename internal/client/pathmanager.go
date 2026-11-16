@@ -177,7 +177,9 @@ func (pm *PathManager) UpdatePeersWithContext(peers []protocol.Node, localSubnet
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	pm.localNets = nets
-	pm.selfPublicIP = selfIP
+	if selfIP != nil {
+		pm.selfPublicIP = selfIP
+	}
 	nextPeers := make(map[string]protocol.Node, len(peers))
 	nextKeys := make(map[uint64]string, len(peers))
 	nextDirect := make(map[uint64]*directPeer, len(peers))
@@ -848,10 +850,11 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 	}
 	pm.mu.RUnlock()
 
+	hasV6 := dconn6 != nil || firstGlobalIPv6() != ""
 	if dconn == nil {
 		dconn = pm.ensureDirectConn(false)
 	}
-	if needV6 && dconn6 == nil {
+	if needV6 && hasV6 && dconn6 == nil {
 		dconn6 = pm.ensureDirectConn(true)
 	}
 	if dconn == nil && dconn6 == nil {
@@ -860,6 +863,7 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 
 	type target struct {
 		key  uint64
+		id   string
 		addr *net.UDPAddr
 	}
 	type registration struct {
@@ -891,13 +895,14 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 	}
 	lookupLink := pm.pickRelayLocked()
 	for key, dp := range pm.directPeers {
+		peerID := pm.peerKeys[key]
 		if lookupLink != nil {
 			interval := directLookupInterval
 			if dp.addr == nil || !dp.ready {
 				interval = directLookupRetry
 			}
 			if dp.lastLookup.IsZero() || now.Sub(dp.lastLookup) >= interval {
-				lookups = append(lookups, target{key: key})
+				lookups = append(lookups, target{key: key, id: peerID})
 				dp.lastLookup = now
 			}
 		}
@@ -910,7 +915,7 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 				continue
 			}
 			if dp.lastPing.IsZero() || now.Sub(dp.lastPing) >= directPingInterval {
-				pings = append(pings, target{key: key, addr: cloneUDPAddr(dp.addr)})
+				pings = append(pings, target{key: key, id: peerID, addr: cloneUDPAddr(dp.addr)})
 				dp.lastPing = now
 			}
 			// Keep probing better candidates (LAN > IPv6 > public) so a path
@@ -918,8 +923,11 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 			// without waiting for the active path to fail.
 			if dp.lastProbe.IsZero() || now.Sub(dp.lastProbe) >= directUpgradeInterval {
 				for _, c := range pm.candidatesLocked(dp) {
+					if c.kind == "ipv6" && !hasV6 {
+						continue
+					}
 					if pathRank(c.kind) > pathRank(dp.kind) {
-						probes = append(probes, target{key: key, addr: cloneUDPAddr(c.addr)})
+						probes = append(probes, target{key: key, id: peerID, addr: cloneUDPAddr(c.addr)})
 						dp.lastProbe = now
 						break
 					}
@@ -927,14 +935,21 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 			}
 			continue
 		}
-		cands := pm.candidatesLocked(dp)
+		rawCands := pm.candidatesLocked(dp)
+		cands := rawCands[:0]
+		for _, c := range rawCands {
+			if c.kind == "ipv6" && !hasV6 {
+				continue
+			}
+			cands = append(cands, c)
+		}
 		if len(cands) == 0 {
 			continue
 		}
 		if dp.lastProbe.IsZero() || now.Sub(dp.lastProbe) >= directProbeInterval {
 			c := cands[dp.probeIdx%len(cands)]
 			dp.probeIdx++
-			probes = append(probes, target{key: key, addr: cloneUDPAddr(c.addr)})
+			probes = append(probes, target{key: key, id: peerID, addr: cloneUDPAddr(c.addr)})
 			dp.lastProbe = now
 		}
 	}
@@ -959,6 +974,7 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 		}
 	}
 	for _, p := range probes {
+		log.Printf("path %s: DIRECT_PROBE to peer=%s addr=%s", pm.nid, p.id, p.addr)
 		pm.writeCandidate(p.key, p.addr, protocol.RelayTypeDirectProbe, sid, dconn, dconn6)
 	}
 	for _, p := range pings {
@@ -1165,6 +1181,7 @@ func (pm *PathManager) noteDirectPeer(key uint64, addr *net.UDPAddr, now time.Ti
 			dp.ready = true
 			dp.lastPing = now
 			dp.pathSince = now
+			log.Printf("path %s: DIRECT_PROBE established peer=%s addr=%s kind=%s", pm.nid, pm.peerKeys[key], addr, kind)
 		}
 		return true
 	}
@@ -1183,6 +1200,7 @@ func (pm *PathManager) noteDirectPeer(key uint64, addr *net.UDPAddr, now time.Ti
 	dp.lastRecv = now
 	dp.lastPing = now
 	dp.pathSince = now
+	log.Printf("path %s: DIRECT_PROBE established peer=%s addr=%s kind=%s", pm.nid, pm.peerKeys[key], addr, kind)
 	return true
 }
 
@@ -1199,12 +1217,32 @@ func pathRank(kind string) int {
 	}
 }
 
+func (pm *PathManager) isLocalNetLocked(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	for _, n := range pm.localNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func (pm *PathManager) matchCandidateLocked(dp *directPeer, addr *net.UDPAddr) string {
 	if addr == nil || addr.IP == nil || addr.IP.IsUnspecified() {
 		return ""
 	}
 	for _, c := range pm.candidatesLocked(dp) {
 		if !c.addr.IP.Equal(addr.IP) {
+			// When a local gateway router performs inbound DNAT + LAN
+			// masquerade (SNAT to the gateway's LAN IP) on hole-punched
+			// packets from a remote peer while preserving the peer's public
+			// source port, accept the gateway address as the public path so
+			// replies traverse the router's conntrack entry back to the peer.
+			if c.kind == "public" && dp.lanAddr == nil && c.addr.Port == addr.Port && pm.isLocalNetLocked(addr.IP) {
+				return "public"
+			}
 			continue
 		}
 		if c.kind == "lan" && c.addr.Port != addr.Port {
@@ -1219,6 +1257,20 @@ func (pm *PathManager) matchCandidateLocked(dp *directPeer, addr *net.UDPAddr) s
 		return "public"
 	}
 	return ""
+}
+
+// MappedPublicIP returns the most recent relay-observed public IPv4 address of
+// this node's direct socket, or empty string if none has been observed yet.
+func (pm *PathManager) MappedPublicIP() string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if pm.mappedAddr == nil || pm.mappedAddr.IP == nil {
+		return ""
+	}
+	if v4 := pm.mappedAddr.IP.To4(); v4 != nil {
+		return v4.String()
+	}
+	return pm.mappedAddr.IP.String()
 }
 
 func (pm *PathManager) noteDirectMapping(raw string) {
@@ -1236,14 +1288,15 @@ func (pm *PathManager) noteDirectMapping(raw string) {
 	now := time.Now()
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-	if pm.selfPublicIP != nil && !pm.selfPublicIP.Equal(addr.IP) {
-		pm.natType = "symmetric"
-	} else if pm.mappedAddr != nil && now.Sub(pm.mappedAt) < 10*time.Minute {
+	if pm.mappedAddr != nil && now.Sub(pm.mappedAt) < 10*time.Minute {
 		if pm.mappedAddr.Port == addr.Port && pm.mappedAddr.IP.Equal(addr.IP) {
 			pm.natType = "cone"
+			pm.selfPublicIP = append(net.IP(nil), addr.IP...)
 		} else {
 			pm.natType = "symmetric"
 		}
+	} else if pm.selfPublicIP != nil && !pm.selfPublicIP.Equal(addr.IP) {
+		pm.natType = "symmetric"
 	} else if pm.natType == "" {
 		pm.natType = "unknown"
 	}

@@ -1881,3 +1881,85 @@ func TestInfoClearsStaleOwnerAfterTransfer(t *testing.T) {
 		t.Fatal("stale owner flag was not cleared after admin transfer")
 	}
 }
+
+func TestSyncNetworksOnlyRemovesOnConfirmed404(t *testing.T) {
+	const (
+		deviceID = "device-sync-safe-01"
+		nid      = "net-safe-01"
+	)
+	listStatus := http.StatusBadGateway
+	existsStatus := http.StatusBadGateway
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/devices":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/networks/"+nid+"/nodes/node-1/device":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/devices/"+deviceID+"/networks":
+			if listStatus != http.StatusOK {
+				w.WriteHeader(listStatus)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(protocol.DeviceNetworksResp{Networks: nil})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/networks/"+nid+"/exists":
+			if existsStatus != http.StatusOK {
+				w.WriteHeader(existsStatus)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]bool{"exists": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	d, _ := newTestDaemon(t)
+	if err := d.ensureKeys(ts.URL, 0); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	d.cfg.ServerAddr = ts.URL
+	d.cfg.DeviceID = deviceID
+	d.cfg.RecoveryToken = "rec-tok"
+	d.cfg.Networks = map[string]*NetworkCfg{
+		nid: {Name: "HomeNET", NodeID: "node-1", Token: "tok-1", Subnet: "10.88.0.0/24"},
+	}
+	d.mu.Unlock()
+
+	// 1. 502 on DeviceNetworks must not clear local networks.
+	if err := d.SyncNetworks(); err == nil {
+		t.Fatal("expected error on 502 DeviceNetworks")
+	}
+	if d.cfg.Networks[nid] == nil {
+		t.Fatal("local network was removed on 502 DeviceNetworks")
+	}
+
+	// 2. Empty DeviceNetworks + 502 on NetworkExists must not clear local networks.
+	listStatus = http.StatusOK
+	existsStatus = http.StatusBadGateway
+	if err := d.SyncNetworks(); err != nil {
+		t.Fatalf("SyncNetworks: %v", err)
+	}
+	if d.cfg.Networks[nid] == nil {
+		t.Fatal("local network was removed when NetworkExists returned 502")
+	}
+
+	// 3. Empty DeviceNetworks + 200 OK on NetworkExists must keep local network.
+	existsStatus = http.StatusOK
+	if err := d.SyncNetworks(); err != nil {
+		t.Fatalf("SyncNetworks: %v", err)
+	}
+	if d.cfg.Networks[nid] == nil {
+		t.Fatal("local network was removed when NetworkExists returned 200 OK")
+	}
+
+	// 4. Empty DeviceNetworks + explicit 404 Not Found on NetworkExists removes it.
+	existsStatus = http.StatusNotFound
+	if err := d.SyncNetworks(); err != nil {
+		t.Fatalf("SyncNetworks: %v", err)
+	}
+	if d.cfg.Networks[nid] != nil {
+		t.Fatal("local network was not removed after confirmed 404 Not Found")
+	}
+}

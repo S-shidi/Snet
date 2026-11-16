@@ -1334,3 +1334,50 @@ func TestPathManagerStatusPeerDirectFields(t *testing.T) {
 		}
 	})
 }
+
+func TestPathManagerAcceptsGatewayMasqueradedPublicProbe(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
+	defer pm.Close()
+
+	key := protocol.RelayNodeKey("node-b")
+	pm.UpdatePeersWithContext([]protocol.Node{
+		{ID: "node-b", PublicKey: "pub-b", DirectEndpoint: "10.7.86.111:44062"},
+	}, []string{"10.10.11.0/24"}, "39.171.241.117")
+
+	pm.mu.Lock()
+	dp := pm.directPeers[key]
+	dp.relayAddr = mustPathAddr(t, "39.180.139.217:4405")
+	pm.mu.Unlock()
+
+	gwAddr := mustPathAddr(t, "10.10.11.1:4405")
+	if !pm.noteDirectPeer(key, gwAddr, time.Now(), true) {
+		t.Fatal("gateway-masqueraded public probe with matching port should be accepted")
+	}
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if !dp.ready || dp.kind != "public" || !sameUDPAddr(dp.addr, gwAddr) {
+		t.Fatalf("unexpected direct peer state after gateway-masqueraded probe: %+v", dp)
+	}
+}
+
+func TestPathManagerStaleSelfPublicIPRecoversCone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
+	defer pm.Close()
+
+	pm.mu.Lock()
+	pm.selfPublicIP = net.ParseIP("39.180.139.249")
+	pm.mu.Unlock()
+
+	pm.noteDirectMapping("39.180.139.217:4405")
+	pm.noteDirectMapping("39.180.139.217:4405")
+	if got := pm.Status()["natType"]; got != "cone" {
+		t.Fatalf("natType = %v, want cone after stable mapping on new public IP", got)
+	}
+	if got := pm.MappedPublicIP(); got != "39.180.139.217" {
+		t.Fatalf("MappedPublicIP = %q, want 39.180.139.217", got)
+	}
+}

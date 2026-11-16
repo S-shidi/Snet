@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -205,14 +206,17 @@ func (c *apiClient) DeviceNetworks(deviceID, recoveryToken string) ([]protocol.D
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
 		var e protocol.ErrResp
 		_ = json.Unmarshal(data, &e)
 		return nil, &httpStatusErr{code: resp.StatusCode, msg: e.Error}
 	}
 	if len(data) == 0 {
-		return nil, nil
+		return nil, errors.New("empty device networks response")
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, err
