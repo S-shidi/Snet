@@ -18,6 +18,10 @@ android {
     buildTypes {
         release {
             minifyEnabled false
+            // CI has no production keystore. Sign with the debug key so the
+            // release APK is installable; replace with a real signing config
+            // for store distribution.
+            signingConfig signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
