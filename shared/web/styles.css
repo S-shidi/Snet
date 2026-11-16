@@ -87,7 +87,7 @@ header::after {
 .network-tabs {
   display: flex; align-items: flex-end; gap: 2px; width: 100%; max-width: 1200px; min-width: 0;
   margin: 0 auto; padding: 0 var(--content-padding-x); overflow-x: auto; white-space: nowrap;
-  scrollbar-width: none;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
 }
 .network-tabs::-webkit-scrollbar { display: none; }
 .network-tab {
@@ -140,6 +140,14 @@ header::after {
 .wails-desktop .header-inner .header-more { pointer-events: auto; }
 .wails-desktop .network-tabs { position: relative; z-index: 1; }
 .wails-desktop header { user-select: none; }
+
+/* Android WebView: the native VPN service is controlled from MainActivity.
+   Hide desktop/web start affordances that do not apply to the mobile shell. */
+.wails-android #header-svc-btn,
+.wails-android #s-start-daemon,
+.wails-android [data-action="refresh"].android-hidden {
+  display: none !important;
+}
 
 /* ── header dropdown (mobile) ───────────── */
 .header-more { position: relative; }
@@ -268,7 +276,11 @@ body.empty-mode { overflow: hidden; }
 .empty-state-icon svg { width: 58px; height: 58px; }
 .empty-state h2 { font-size: 28px; margin-bottom: 10px; }
 .empty-state p { color: var(--dim); font-size: 15px; line-height: 1.7; margin-bottom: 28px; }
-.empty-state-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+.empty-state-actions {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;
+  width: 100%; max-width: 430px; margin: 0 auto;
+}
+.empty-state-actions .btn { width: 100%; }
 .btn.big { padding: 14px 24px; font-size: 15px; border-radius: 12px; }
 .btn.big .big-icon { font-size: 20px; margin-right: 4px; }
 .network-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -418,6 +430,9 @@ body.empty-mode { overflow: hidden; }
   height: 24px; padding: 0 11px; border-radius: 999px;
   font-size: 12px; line-height: 1;
 }
+.detail-head-actions .detail-action-icon {
+  width: 24px; padding: 0; flex: none;
+}
 .detail-more { position: relative; flex: none; display: flex; align-items: center; }
 .detail-more-menu {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
@@ -437,8 +452,10 @@ body.empty-mode { overflow: hidden; }
 .coordinator-card #s-server-editor input { width: 100%; }
 .info-json { margin-top: 16px; }
 .info-json .card { margin-bottom: 0; }
-.detail-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.detail-title { font-size: 19px; font-weight: 700; word-break: break-all; }
+.detail-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.detail-title { font-size: 19px; font-weight: 700; min-width: 0; word-break: break-all; }
+.detail-title-row > .pill { flex: none; }
+.detail-title-row > .detail-head-actions { margin-left: auto; }
 .detail-sub { margin-top: 3px; color: var(--dim); font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .detail-meta-line {
   display: flex; align-items: center; flex-wrap: wrap; gap: 3px 0;
@@ -894,9 +911,17 @@ body.empty-mode { overflow: hidden; }
   overflow: auto; white-space: pre-wrap; word-break: break-all;
 }
 @media (max-width: 480px) {
-  .settings-row { align-items: flex-start; }
+  .settings-row { align-items: flex-start; flex-wrap: wrap; }
   .settings-panel-head { padding: 10px 12px; }
   .settings-list { padding: 0 12px; }
+  .settings-row-device { flex-direction: column; align-items: stretch; gap: 8px; }
+  .settings-row-device .settings-row-main { width: 100%; }
+  .settings-row-device .settings-row-actions {
+    width: 100%; justify-content: flex-start; flex-wrap: wrap;
+  }
+  .settings-row-device .settings-device-id {
+    flex: 1 1 220px; min-width: 0; max-width: none;
+  }
 }
 
 /* ── modal ──────────────────────────────── */
@@ -1386,6 +1411,7 @@ pre.code { user-select: all; }
 
   /* ── network detail: compact overview ─── */
   .detail-overview { grid-template-columns: 1fr; }
+  .member-grid { grid-template-columns: 1fr; }
   .detail-actions .btn { flex: 1 1 auto; }
 }
 @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -1462,3 +1488,13 @@ pre.code { user-select: all; }
 .about-update { color: var(--faint); }
 .about-update.ok { color: var(--ok); }
 .about-update.new { color: var(--warn); }
+
+/* Phone / Android WebView: one member card per row. */
+@media (max-width: 640px) {
+  .member-grid { grid-template-columns: 1fr; }
+  .net-detail-head { gap: 10px; }
+  .empty-state-actions { grid-template-columns: 1fr; max-width: 360px; }
+  .detail-title-row { flex-wrap: nowrap; gap: 6px; }
+  .detail-title-row > .detail-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .detail-head-actions { width: auto; justify-content: flex-end; gap: 6px; }
+}

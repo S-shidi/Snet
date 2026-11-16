@@ -46,6 +46,37 @@ function currentServer(): string {
 /* ── Refresh ──────────────────────────────────────────────────── */
 let refreshing = false;
 let refreshAgain = false;
+let lastAndroidNetSig = "";
+
+// Android needs a new VpnService.Builder when the set of joined networks (or
+// their assigned IP/subnet) changes. The native shell exposes this callback;
+// other platforms simply have no SnetAndroid object.
+function syncAndroidVpnState() {
+  const bridge = (globalThis as any).SnetAndroid;
+  if (!bridge || typeof bridge.setVpnActive !== "function") return;
+  const active = (status?.networks ?? []).some((n) => n.active && n.serverState !== "gone");
+  try {
+    bridge.setVpnActive(active);
+  } catch {
+    // Ignore a stale WebView bridge; the next explicit toggle retries.
+  }
+}
+
+function notifyAndroidNetworkConfig() {
+  const bridge = (globalThis as any).SnetAndroid;
+  if (!bridge || typeof bridge.onNetworksChanged !== "function") return;
+  const sig = (status?.networks ?? [])
+    .map((n) => `${n.networkId}:${n.ip || ""}:${n.subnet || ""}:${n.active ? 1 : 0}`)
+    .sort()
+    .join("|");
+  if (!sig || sig === lastAndroidNetSig) return;
+  lastAndroidNetSig = sig;
+  try {
+    bridge.onNetworksChanged();
+  } catch {
+    // The WebView can outlive the Activity bridge; status polling continues.
+  }
+}
 let desktopDaemon = { running: false, starting: false, error: "" };
 let desktopPollTimer: number | undefined;
 let detailNid: string | null = null;
@@ -85,6 +116,7 @@ async function refresh() {
     renderNetworks();
     renderNetworkDetail();
     renderStatus();
+    notifyAndroidNetworkConfig();
   } while (refreshAgain);
   refreshing = false;
 }
@@ -1276,6 +1308,7 @@ function openCreateModal() {
           });
           mFoot.querySelector<HTMLButtonElement>("#m-close")!.addEventListener("click", closeModal);
           await refresh();
+          syncAndroidVpnState();
         } catch (e) {
           result.className = "msg";
           result.textContent = `创建失败: ${e}`;
@@ -1393,6 +1426,7 @@ function openJoinModal() {
             toast("加入请求已提交，等待网络创建者批准");
           }
           await refresh();
+          syncAndroidVpnState();
           closeModal();
         } catch (e) {
           result.className = "msg";
@@ -1435,14 +1469,14 @@ function openSettingsModal() {
       <section class="settings-panel">
         <div class="settings-panel-head"><h3>设备</h3><span class="hint">本机身份</span></div>
         <div class="settings-list">
-          <div class="settings-row">
+          <div class="settings-row settings-row-device">
             <div class="settings-row-main">
               <div class="settings-row-title">设备 ID</div>
               <div class="settings-row-desc">用于在服务端和成员列表中识别这台设备</div>
             </div>
             <div class="settings-row-actions">
               <code class="settings-device-id" id="s-device-id">${esc(status?.deviceId || "-")}</code>
-              <button type="button" id="s-copy-device" class="btn icon sm" title="复制设备 ID" aria-label="复制设备 ID">⧉</button>
+              <button type="button" id="s-copy-device" class="btn icon sm" title="复制设备 ID" aria-label="复制设备 ID"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="14" height="14"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
             </div>
           </div>
         </div>
@@ -1536,7 +1570,7 @@ function openSettingsModal() {
           <p class="about-intro">Snet 是一个无需公网 IP、扫码即连的私有 WireGuard 网络，让设备之间优先直连，无法直连时自动中继。</p>
           <div class="about-meta">
             <span>作者 <b>S.shidi</b></span>
-            <a href="mailto:s.shidi@gmail.com">s.shidi@gmail.com</a>
+            <span>邮箱 <a href="mailto:s.shidi@gmail.com">s.shidi@gmail.com</a></span>
             <span>微信 <b>S-shidi</b></span>
           </div>
           <div class="about-version">
@@ -1891,16 +1925,19 @@ function memberPathBadge(n: NetInfo, nd: NetNode, isSelf: boolean): string {
 
 /* ── Network detail view ──────────────────────────────────────── */
 function networkRole(n: NetInfo): string {
-  // The status card's owner flag is authoritative. The peer snapshot can be
-  // stale (or omit the self role), and must not downgrade the owner to member.
-  if (n.owner) return "owner";
+  // The live peer snapshot reflects ownership transfers immediately. The
+  // local status owner flag can be stale until Info() reconciles it, so use
+  // the fresh member-safe role first when available.
   const self = peerDetails[n.networkId]?.self;
-  const role = String(self?.role || n.role || "member").trim().toLowerCase();
+  const liveRole = String(self?.role || "").trim().toLowerCase();
+  if (liveRole) return liveRole === "owner" ? "owner" : "member";
+  if (n.owner) return "owner";
+  const role = String(n.role || "member").trim().toLowerCase();
   return role === "owner" ? "owner" : "member";
 }
 
 function canManageNetwork(n: NetInfo): boolean {
-  return networkRole(n) === "owner" || !!n.owner;
+  return networkRole(n) === "owner";
 }
 
 function lastActiveLabel(pd: PeerDirect | undefined, online: boolean): string {
@@ -2269,6 +2306,7 @@ async function leaveNetworkFromDetail(nid: string) {
     toast("已退出网络");
     closeNetworkDetail();
     await refresh();
+    syncAndroidVpnState();
   } catch (e) {
     toast(String(e), "err");
   }
@@ -2302,6 +2340,7 @@ async function deleteNetworkFromDetail(nid: string, btn: HTMLButtonElement) {
     toast("网络已删除");
     closeNetworkDetail();
     await refresh();
+    syncAndroidVpnState();
   } catch (e) {
     toast(String(e), "err");
     btn.disabled = false;
@@ -2471,7 +2510,7 @@ function networkDetailHTML(n: NetInfo): string {
   const iconInvite = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M16 11h6"/></svg>';
   const iconMore = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
   const more = `<div class="detail-more">
-    <button type="button" class="btn ghost sm" id="detail-more-btn">${iconMore}更多</button>
+    <button type="button" class="btn ghost sm detail-action-icon" id="detail-more-btn" title="更多" aria-label="更多">${iconMore}</button>
     <div class="detail-more-menu" id="detail-more-menu" hidden>
       <button type="button" data-detail-act="detail">网络详情</button>
       ${canManage ? '<button type="button" data-detail-act="wg-export">生成 WireGuard 配置</button>' : ""}
@@ -2483,7 +2522,18 @@ function networkDetailHTML(n: NetInfo): string {
   </div>`;
   return `<div class="net-detail-head">
     <div class="detail-heading">
-      <div class="detail-title-row"><div class="detail-title">${esc(n.name || n.networkId)}</div>${rolePill}</div>
+      <div class="detail-title-row">
+        <div class="detail-title">${esc(n.name || n.networkId)}</div>
+        ${rolePill}
+        <div class="detail-head-actions">
+          <label class="switch detail-conn-switch" title="连接 / 断开">
+            <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
+            <span class="slider"></span>
+          </label>
+          ${canManage ? `<button type="button" class="btn ghost sm detail-action-icon" id="detail-invite" data-detail-act="invite" title="邀请" aria-label="邀请">${iconInvite}</button>` : ""}
+          ${more}
+        </div>
+      </div>
       <div class="detail-meta-line">
         <span class="detail-net-id"><code>${esc(n.networkId)}</code></span>
         <span>↑ ${fmtSpeed(status?.txSpeed)} · ↓ ${fmtSpeed(status?.rxSpeed)}</span>
@@ -2491,14 +2541,6 @@ function networkDetailHTML(n: NetInfo): string {
         <span>${activeRoutes} 条生效路由</span>
         ${memberCount ? `<span>${memberCount} 位成员</span>` : ""}
       </div>
-    </div>
-    <div class="detail-head-actions">
-      <label class="switch detail-conn-switch" title="连接 / 断开">
-        <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
-        <span class="slider"></span>
-      </label>
-      ${canManage ? `<button type="button" class="btn ghost sm" id="detail-invite" data-detail-act="invite">${iconInvite}邀请</button>` : ""}
-      ${more}
     </div>
   </div>
   ${canManage ? pendingBannersHTML(n.networkId, ownerInfo[n.networkId]?.pending) : ""}
@@ -2745,6 +2787,7 @@ function bindNetworkDetailEvents() {
       if (r === null) return;
       toast(input.checked ? "已连接" : "已断开");
       await refresh();
+      syncAndroidVpnState();
     } catch (err) {
       toast(String(err), "err");
       input.checked = !input.checked;
@@ -2865,6 +2908,7 @@ function bindEvents() {
       toast(String(e), "err");
     }
     await refresh();
+    syncAndroidVpnState();
   });
 
   // Mobile header dropdown

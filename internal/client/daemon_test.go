@@ -1840,3 +1840,44 @@ func TestDeviceIDSurvivesConfigLossAndRestart(t *testing.T) {
 		t.Fatalf("persisted id = %q, want %q", persisted, wantID)
 	}
 }
+
+// TestInfoClearsStaleOwnerAfterTransfer verifies that an ownership transfer in
+// the admin console is reflected locally even when the cached Owner flag is
+// still true.
+func TestInfoClearsStaleOwnerAfterTransfer(t *testing.T) {
+	const deviceID = "stale-owner-device"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/networks/n1/member-info" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(protocol.NetworkInfoResp{
+				Network: protocol.Network{ID: "n1", Name: "HomeNET", OwnerDeviceID: "new-owner-device"},
+				Nodes: []protocol.Node{
+					{ID: "n1", DeviceID: deviceID, Role: "member"},
+					{ID: "n2", DeviceID: "new-owner-device", Role: "owner"},
+				},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	d, _ := newTestDaemon(t)
+	d.mu.Lock()
+	d.cfg.ServerAddr = ts.URL
+	d.cfg.DeviceID = deviceID
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"n1": {NodeID: "n1", Token: "tok", Subnet: "10.88.0.0/24", Owner: true},
+	}
+	d.mu.Unlock()
+
+	if _, err := d.Info("n1"); err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	d.mu.Lock()
+	owner := d.cfg.Networks["n1"].Owner
+	d.mu.Unlock()
+	if owner {
+		t.Fatal("stale owner flag was not cleared after admin transfer")
+	}
+}

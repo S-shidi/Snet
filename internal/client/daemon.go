@@ -421,14 +421,18 @@ func (d *Daemon) SetDeviceIDFile(path string) {
 // waiting for the next retry tick.
 func (d *Daemon) SetAndroidTunFD(fd int) {
 	d.mu.Lock()
-	hadFD := d.androidTunFD != 0
-	gotFD := fd != 0
+	oldFD := d.androidTunFD
 	d.androidTunFD = fd
-	// When the fd transitions from unavailable to available, bring up any
-	// active networks that were waiting (their previous bringUp failed with a
-	// clean "VPN TUN 未就绪" error and the fd is now ready).
-	if gotFD && !hadFD {
-		d.bringUpAllLocked()
+	// Android replaces the TUN fd whenever VpnService is rebuilt to add new
+	// network addresses/routes. The existing wireguard-go devices still hold
+	// duplicates of the old fd, so rebuild them on the new one. The daemon
+	// itself keeps running: the ctl proxy and WebView requests must not be
+	// interrupted by a route update.
+	if fd != oldFD {
+		d.stopAllNetworksLocked()
+		if fd != 0 && d.started {
+			d.bringUpAllLocked()
+		}
 	}
 	d.mu.Unlock()
 }
@@ -920,11 +924,26 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	if err := d.attach(resp.NetworkID, name, resp.NodeID, resp.IP, resp.Token, resp.PairingCode, resp.Subnet, true); err != nil {
 		return resp, err
 	}
-	d.reconcileOwnership(resp.NetworkID)
-	// Tell the server whether this device can act as a relay gateway, so a
-	// route delegated to it can become active.
-	d.publishRelayCapabilityLocked()
+	// Post-create reconciliation and relay-capability reporting can block on
+	// the coordination server. Do them after the HTTP response has had time to
+	// flush, otherwise a slow server makes the client's create request appear
+	// to time out even though the network was created.
+	go d.finishCreateAsync(resp.NetworkID)
 	return resp, nil
+}
+
+// finishCreateAsync performs the non-critical server reconciliation after a
+// network has been created locally. It intentionally runs outside the create
+// request's critical path.
+func (d *Daemon) finishCreateAsync(nid string) {
+	time.Sleep(100 * time.Millisecond)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.cfg.Networks[nid] == nil {
+		return
+	}
+	d.reconcileOwnership(nid)
+	d.publishRelayCapabilityLocked()
 }
 
 // Join joins an existing network by nid + pairing code.
@@ -3715,33 +3734,36 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 	}
 	api := d.apiLocked()
 	token := nc.Token
-	owner := nc.Owner
 	deviceID := d.cfg.DeviceID
 	d.mu.Unlock()
-	var resp protocol.NetworkInfoResp
-	var err error
-	if owner {
-		resp, err = api.NetworkInfo(nid, token)
-	} else {
-		resp, err = api.MemberNetworkInfo(nid, token)
-		if err == nil {
-			// A server-side ownership change (or a config written by an older
-			// client) can leave the local Owner flag stale. Detect the role from
-			// the member-safe node list, persist it, and reload the owner view so
-			// pending join requests become visible immediately.
-			for _, node := range resp.Nodes {
-				if node.DeviceID == deviceID && node.Role == "owner" {
-					d.mu.Lock()
-					if current := d.cfg.Networks[nid]; current != nil {
-						current.Owner = true
-						_ = d.save()
-					}
-					d.mu.Unlock()
-					resp, err = api.NetworkInfo(nid, token)
-					break
-				}
+
+	// Always ask for the member-safe view first: it is available to owners and
+	// members and carries the authoritative owner device + node roles. A local
+	// Owner flag can be stale after an admin transfers ownership, in either
+	// direction (old owner -> member, or member -> owner).
+	resp, err := api.MemberNetworkInfo(nid, token)
+	if err != nil {
+		return resp, wrapNetGone(err)
+	}
+	isOwner := resp.OwnerDeviceID == deviceID
+	if !isOwner {
+		for _, node := range resp.Nodes {
+			if node.DeviceID == deviceID && node.Role == "owner" {
+				isOwner = true
+				break
 			}
 		}
+	}
+	d.mu.Lock()
+	if current := d.cfg.Networks[nid]; current != nil && current.Owner != isOwner {
+		current.Owner = isOwner
+		if err := d.save(); err != nil {
+			log.Printf("save owner flag %s: %v", nid, err)
+		}
+	}
+	d.mu.Unlock()
+	if isOwner {
+		resp, err = api.NetworkInfo(nid, token)
 	}
 	return resp, wrapNetGone(err)
 }

@@ -1,0 +1,8 @@
+.gradle/
+build/
+local.properties
+app/build/
+app/libs/*.aar
+app/src/main/assets/app.js
+app/src/main/assets/index.html
+app/src/main/assets/styles.css
