@@ -34,7 +34,6 @@
         <activity
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
             android:screenOrientation="fullSensor"
-            android:theme="@style/Theme.Snet"
             tools:replace="android:screenOrientation" />
 
         <service
