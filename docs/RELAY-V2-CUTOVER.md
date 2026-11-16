@@ -57,9 +57,11 @@ Mac / Windows / Android 在客户端“设置 → 关于”中确认版本不低
 本次预检已准备但未激活：
 
 - `.env` 中新增单数变量 `SNET_RELAY_V2_ENDPOINT=66.187.6.46:8092`（compose 当前不引用它）。
-- 新的候选 secret 写入 `/opt/snet-deploy/.relay-v2-secret.candidate`，权限 `0600`。
-- 当前运行的 compose 仍使用原来的 `SNET_RELAY_V2_ENDPOINTS=snet.uizhi.eu.org:8092`。
-- 当前运行的 secret 未替换。
+- 候选 secret 曾写入 `/opt/snet-deploy/.relay-v2-secret.candidate`，权限 `0600`。
+- 2026-11-16 已完成 Secret 轮换：候选 secret 成为新的 `SNET_RELAY_SECRET`，旧 secret 暂存为 `SNET_RELAY_SECRET_OLD`。
+- 当前 compose 已同时向 relay/server 注入 `SNET_RELAY_SECRET` 与 `SNET_RELAY_SECRET_OLD`。
+- 候选 secret 文件在成功写入 `.env` 后已删除。
+- 当前广告 endpoint 仍为 `snet.uizhi.eu.org:8092`；固定 IP endpoint 尚未切换。
 
 切换前先备份：
 
@@ -106,14 +108,12 @@ ss -lunp | grep ':8092'
 
 ### 4.1 选择 secret 策略
 
-**推荐：不轮换 secret，只切换 endpoint。** 现有 `SNET_RELAY_SECRET` 已被 server 与 relay 共用，风险最小。
+**推荐：使用双 secret 滚动轮换。** 直接把新 secret 写入 relay 会让旧 ticket 全部失效；实测会造成 60 秒以上无 session。正确做法是让 relay/server 同时接受新旧 secret。
 
-如果要轮换 secret：
-
-- 从 `.relay-v2-secret.candidate` 读取新值，不要打印到终端历史。
-- 保留旧 secret 为 `SNET_RELAY_SECRET_OLD`，让旧 ticket 在短时间内仍可验证。
-- `snet-relay` 与 `snet-server` 必须同时拿到 `SNET_RELAY_SECRET` 和 `SNET_RELAY_SECRET_OLD`。
-- 当前 compose 只注入了 `SNET_RELAY_SECRET`，轮换时需在 `relay` 和 `server` 两个 service 的 `environment` 中临时加入：
+- 新 secret 作为 `SNET_RELAY_SECRET`（用于签发新 ticket）。
+- 旧 secret 作为 `SNET_RELAY_SECRET_OLD`（只用于验证旧 ticket）。
+- `snet-relay` 与 `snet-server` 必须同时拿到两个值。
+- 当前 compose 已在 `relay` 和 `server` 两个 service 中注入：
 
 ```yaml
       SNET_RELAY_SECRET_OLD: ${SNET_RELAY_SECRET_OLD:-}
@@ -135,6 +135,12 @@ SNET_RELAY_SECRET_OLD=<old-secret>
 ```
 
 不要使用 `echo` 打印 secret。可以从候选文件读取到临时变量后写入。
+
+轮换完成后保留旧 secret 至少 `TicketTTL`（1 小时），让旧 ticket 自然过期。之后执行清理：
+
+1. 从 `.env` 删除 `SNET_RELAY_SECRET_OLD`。
+2. 从 `compose.yaml` 两个 service 的 `environment` 中删除 `SNET_RELAY_SECRET_OLD` 行。
+3. 依次重启 `snet-relay` 和 `snet-server`。
 
 ### 4.3 重启 Relay 与 Server
 
