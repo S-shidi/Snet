@@ -59,7 +59,7 @@ class SnetVpnService : VpnService() {
         if (err.isNotEmpty()) {
             Log.e(TAG, "SnetCore.start: $err")
             toast("启动失败: $err")
-            SnetCore.stop()
+            SnetCore.clearTun()
             pfd.close()
             tun = null
             stopSelf()
@@ -172,7 +172,7 @@ class SnetVpnService : VpnService() {
     }
 
     private fun stopVpn() {
-        val err = SnetCore.stop()
+        val err = SnetCore.clearTun()
         if (err.isNotEmpty()) {
             Log.w(TAG, "SnetCore.stop: $err")
         }

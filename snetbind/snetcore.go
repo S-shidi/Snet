@@ -47,7 +47,7 @@ func Start(configDir string, tunFD int32, ctlPort int32) string {
 	if configDir == "" {
 		return "配置目录不能为空"
 	}
-	if tunFD <= 0 {
+	if tunFD < 0 {
 		return fmt.Sprintf("无效的 TUN 文件描述符: %d", tunFD)
 	}
 	if ctlPort <= 0 || ctlPort > 65535 {
@@ -149,6 +149,18 @@ func Start(configDir string, tunFD int32, ctlPort int32) string {
 	ctlToken = token
 	proxySrv = srv
 	proxyAddr = ln
+	return ""
+}
+
+// ClearAndroidTun detaches the current Android TUN while keeping snetd and the
+// WebView ctl proxy alive. Used when the last network is switched off so the
+// VPN status-bar key disappears but joining/creating networks still works.
+func ClearAndroidTun() string {
+	mu.Lock()
+	defer mu.Unlock()
+	if daemon != nil {
+		daemon.SetAndroidTunFD(0)
+	}
 	return ""
 }
 

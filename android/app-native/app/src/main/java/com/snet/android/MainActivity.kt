@@ -67,8 +67,19 @@ class MainActivity : AppCompatActivity() {
 
         webView = findViewById(R.id.webview)
         configureWebView()
-        // Cold start must not create a TUN or request VPN permission. The
-        // service starts only after an explicit network toggle/create/join.
+        // Cold start must not create a TUN or request VPN permission. It does
+        // start the local control plane so create/join works before any VPN
+        // exists; the status-bar key appears only after an explicit network
+        // toggle/create/join.
+        Thread {
+            val err = SnetCore.start(filesDir.absolutePath, 0, 8081)
+            runOnUiThread {
+                if (err.isNotEmpty()) {
+                    Toast.makeText(this, "本地服务启动失败: $err", Toast.LENGTH_LONG).show()
+                }
+                webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+            }
+        }.start()
     }
 
     private fun setVpnActive(active: Boolean) {
@@ -155,8 +166,6 @@ class MainActivity : AppCompatActivity() {
             ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
         }
 
-        // android-bridge.js is injected before app.js by scripts/build-android-web.sh.
-        webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
     }
 
     private fun sendScanResult(text: String) {

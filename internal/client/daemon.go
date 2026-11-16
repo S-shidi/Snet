@@ -428,9 +428,9 @@ func (d *Daemon) SetAndroidTunFD(fd int) {
 	// duplicates of the old fd, so rebuild them on the new one. The daemon
 	// itself keeps running: the ctl proxy and WebView requests must not be
 	// interrupted by a route update.
-	if fd != 0 && fd != oldFD {
+	if fd != oldFD {
 		d.stopAllNetworksLocked()
-		if d.started {
+		if fd != 0 && d.started {
 			d.bringUpAllLocked()
 		}
 	}

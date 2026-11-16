@@ -14,5 +14,7 @@ object SnetCore {
 
     fun stop(): String = Snetbind.stop()
 
+    fun clearTun(): String = Snetbind.clearAndroidTun()
+
     fun getStatus(): String = Snetbind.getStatus()
 }
