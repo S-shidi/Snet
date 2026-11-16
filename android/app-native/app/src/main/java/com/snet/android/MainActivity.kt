@@ -67,12 +67,17 @@ class MainActivity : AppCompatActivity() {
 
         webView = findViewById(R.id.webview)
         configureWebView()
+        // Cold start must not create a TUN or request VPN permission. The
+        // service starts only after an explicit network toggle/create/join.
+    }
+
+    private fun setVpnActive(active: Boolean) {
+        if (!active) {
+            SnetVpnService.stop(this)
+            return
+        }
         requestNotificationPermissionIfNeeded()
         maybeRequestIgnoreBatteryOptimizations()
-
-        // The native VPN permission is the only entry point. Once granted, the
-        // service starts automatically; the WebView and notification provide
-        // the controls from then on.
         requestVpnPermission()
     }
 
@@ -164,8 +169,16 @@ class MainActivity : AppCompatActivity() {
 
     inner class NetworkBridge {
         @JavascriptInterface
+        fun setVpnActive(active: Boolean) {
+            runOnUiThread { this@MainActivity.setVpnActive(active) }
+        }
+
+        @JavascriptInterface
         fun onNetworksChanged() {
             runOnUiThread {
+                // Route refresh only. If the user has not started the VPN,
+                // this must not create a TUN or show the status-bar key.
+                if (!SnetVpnService.isRunning) return@runOnUiThread
                 // Give the create/join HTTP response a moment to reach the
                 // WebView before rebuilding the TUN; the daemon itself keeps
                 // running, so this is only a route/address refresh.

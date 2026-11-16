@@ -51,6 +51,17 @@ let lastAndroidNetSig = "";
 // Android needs a new VpnService.Builder when the set of joined networks (or
 // their assigned IP/subnet) changes. The native shell exposes this callback;
 // other platforms simply have no SnetAndroid object.
+function syncAndroidVpnState() {
+  const bridge = (globalThis as any).SnetAndroid;
+  if (!bridge || typeof bridge.setVpnActive !== "function") return;
+  const active = (status?.networks ?? []).some((n) => n.active && n.serverState !== "gone");
+  try {
+    bridge.setVpnActive(active);
+  } catch {
+    // Ignore a stale WebView bridge; the next explicit toggle retries.
+  }
+}
+
 function notifyAndroidNetworkConfig() {
   const bridge = (globalThis as any).SnetAndroid;
   if (!bridge || typeof bridge.onNetworksChanged !== "function") return;
@@ -1297,6 +1308,7 @@ function openCreateModal() {
           });
           mFoot.querySelector<HTMLButtonElement>("#m-close")!.addEventListener("click", closeModal);
           await refresh();
+          syncAndroidVpnState();
         } catch (e) {
           result.className = "msg";
           result.textContent = `创建失败: ${e}`;
@@ -1414,6 +1426,7 @@ function openJoinModal() {
             toast("加入请求已提交，等待网络创建者批准");
           }
           await refresh();
+          syncAndroidVpnState();
           closeModal();
         } catch (e) {
           result.className = "msg";
@@ -2290,6 +2303,7 @@ async function leaveNetworkFromDetail(nid: string) {
     toast("已退出网络");
     closeNetworkDetail();
     await refresh();
+    syncAndroidVpnState();
   } catch (e) {
     toast(String(e), "err");
   }
@@ -2323,6 +2337,7 @@ async function deleteNetworkFromDetail(nid: string, btn: HTMLButtonElement) {
     toast("网络已删除");
     closeNetworkDetail();
     await refresh();
+    syncAndroidVpnState();
   } catch (e) {
     toast(String(e), "err");
     btn.disabled = false;
@@ -2769,6 +2784,7 @@ function bindNetworkDetailEvents() {
       if (r === null) return;
       toast(input.checked ? "已连接" : "已断开");
       await refresh();
+      syncAndroidVpnState();
     } catch (err) {
       toast(String(err), "err");
       input.checked = !input.checked;
@@ -2889,6 +2905,7 @@ function bindEvents() {
       toast(String(e), "err");
     }
     await refresh();
+    syncAndroidVpnState();
   });
 
   // Mobile header dropdown

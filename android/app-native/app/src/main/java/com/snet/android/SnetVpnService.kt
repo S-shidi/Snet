@@ -66,6 +66,7 @@ class SnetVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
+        isRunning = true
         Log.i(TAG, "snetd started with TUN fd ${pfd.fd}")
         return START_STICKY
     }
@@ -96,6 +97,7 @@ class SnetVpnService : VpnService() {
         }
 
         old.close()
+        isRunning = true
         Log.i(TAG, "TUN rebuilt with fd ${pfd.fd}")
         return START_STICKY
     }
@@ -176,6 +178,7 @@ class SnetVpnService : VpnService() {
         }
         tun?.close()
         tun = null
+        isRunning = false
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
@@ -226,6 +229,10 @@ class SnetVpnService : VpnService() {
         private const val ACTION_DISCONNECT = "com.snet.android.action.DISCONNECT"
         private const val ACTION_RESTART = "com.snet.android.action.RESTART"
 
+        @Volatile
+        var isRunning: Boolean = false
+            private set
+
         fun start(context: Context) {
             ContextCompat.startForegroundService(
                 context,
@@ -238,6 +245,10 @@ class SnetVpnService : VpnService() {
                 context,
                 Intent(context, SnetVpnService::class.java).setAction(ACTION_RESTART)
             )
+        }
+
+        fun stop(context: Context) {
+            context.stopService(Intent(context, SnetVpnService::class.java))
         }
     }
 }
