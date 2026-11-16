@@ -421,14 +421,18 @@ func (d *Daemon) SetDeviceIDFile(path string) {
 // waiting for the next retry tick.
 func (d *Daemon) SetAndroidTunFD(fd int) {
 	d.mu.Lock()
-	hadFD := d.androidTunFD != 0
-	gotFD := fd != 0
+	oldFD := d.androidTunFD
 	d.androidTunFD = fd
-	// When the fd transitions from unavailable to available, bring up any
-	// active networks that were waiting (their previous bringUp failed with a
-	// clean "VPN TUN 未就绪" error and the fd is now ready).
-	if gotFD && !hadFD {
-		d.bringUpAllLocked()
+	// Android replaces the TUN fd whenever VpnService is rebuilt to add new
+	// network addresses/routes. The existing wireguard-go devices still hold
+	// duplicates of the old fd, so rebuild them on the new one. The daemon
+	// itself keeps running: the ctl proxy and WebView requests must not be
+	// interrupted by a route update.
+	if fd != 0 && fd != oldFD {
+		d.stopAllNetworksLocked()
+		if d.started {
+			d.bringUpAllLocked()
+		}
 	}
 	d.mu.Unlock()
 }

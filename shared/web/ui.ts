@@ -2492,7 +2492,7 @@ function networkDetailHTML(n: NetInfo): string {
   const iconInvite = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M16 11h6"/></svg>';
   const iconMore = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
   const more = `<div class="detail-more">
-    <button type="button" class="btn ghost sm" id="detail-more-btn">${iconMore}更多</button>
+    <button type="button" class="btn ghost sm detail-action-icon" id="detail-more-btn" title="更多" aria-label="更多">${iconMore}</button>
     <div class="detail-more-menu" id="detail-more-menu" hidden>
       <button type="button" data-detail-act="detail">网络详情</button>
       ${canManage ? '<button type="button" data-detail-act="wg-export">生成 WireGuard 配置</button>' : ""}
@@ -2512,7 +2512,7 @@ function networkDetailHTML(n: NetInfo): string {
             <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
             <span class="slider"></span>
           </label>
-          ${canManage ? `<button type="button" class="btn ghost sm" id="detail-invite" data-detail-act="invite">${iconInvite}邀请</button>` : ""}
+          ${canManage ? `<button type="button" class="btn ghost sm detail-action-icon" id="detail-invite" data-detail-act="invite" title="邀请" aria-label="邀请">${iconInvite}</button>` : ""}
           ${more}
         </div>
       </div>

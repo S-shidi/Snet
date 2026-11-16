@@ -35,8 +35,7 @@ class SnetVpnService : VpnService() {
                 return START_NOT_STICKY
             }
             ACTION_RESTART -> {
-                stopVpn()
-                return startVpn()
+                return rebuildVpn()
             }
         }
         if (tun != null) {
@@ -48,21 +47,7 @@ class SnetVpnService : VpnService() {
     private fun startVpn(): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
 
-        val builder = Builder()
-            .setSession("Snet")
-            .setMtu(1320)
-            .setBlocking(false)
-            .addDnsServer("1.1.1.1")
-            .addDnsServer("8.8.8.8")
-
-        addConfiguredNetworks(builder)
-
-        val pfd = try {
-            builder.establish()
-        } catch (e: Exception) {
-            Log.e(TAG, "establish TUN failed", e)
-            null
-        }
+        val pfd = establishTunnel()
         if (pfd == null) {
             toast("创建 TUN 失败")
             stopSelf()
@@ -83,6 +68,53 @@ class SnetVpnService : VpnService() {
 
         Log.i(TAG, "snetd started with TUN fd ${pfd.fd}")
         return START_STICKY
+    }
+
+    /**
+     * Rebuild the TUN after network membership/routes changed, without
+     * stopping snetd or its ctl proxy. The daemon swaps its duplicated fd and
+     * rebuilds tunnels; an in-flight /ctl/create or /ctl/join request is not
+     * interrupted.
+     */
+    private fun rebuildVpn(): Int {
+        val old = tun ?: return startVpn()
+        startForeground(NOTIFICATION_ID, buildNotification())
+
+        val pfd = establishTunnel()
+        if (pfd == null) {
+            Log.e(TAG, "rebuild TUN failed; keeping previous interface")
+            return START_STICKY
+        }
+        tun = pfd
+
+        val err = SnetCore.start(filesDir.absolutePath, pfd.fd, CTL_PORT)
+        if (err.isNotEmpty()) {
+            Log.e(TAG, "rebuild SnetCore.start: $err")
+            pfd.close()
+            tun = old
+            return START_STICKY
+        }
+
+        old.close()
+        Log.i(TAG, "TUN rebuilt with fd ${pfd.fd}")
+        return START_STICKY
+    }
+
+    private fun establishTunnel(): ParcelFileDescriptor? {
+        val builder = Builder()
+            .setSession("Snet")
+            .setMtu(1320)
+            .setBlocking(false)
+            .addDnsServer("1.1.1.1")
+            .addDnsServer("8.8.8.8")
+
+        addConfiguredNetworks(builder)
+        return try {
+            builder.establish()
+        } catch (e: Exception) {
+            Log.e(TAG, "establish TUN failed", e)
+            null
+        }
     }
 
     private fun addConfiguredNetworks(builder: Builder) {

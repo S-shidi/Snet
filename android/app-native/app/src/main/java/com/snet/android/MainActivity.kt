@@ -9,6 +9,8 @@ import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.webkit.JavascriptInterface
@@ -26,6 +28,12 @@ import androidx.webkit.WebViewClientCompat
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val restartVpnRunnable = Runnable {
+        if (VpnService.prepare(this) == null) {
+            SnetVpnService.restart(this)
+        }
+    }
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -138,14 +146,17 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onNetworksChanged() {
             runOnUiThread {
-                if (VpnService.prepare(this@MainActivity) == null) {
-                    SnetVpnService.restart(this@MainActivity)
-                }
+                // Give the create/join HTTP response a moment to reach the
+                // WebView before rebuilding the TUN; the daemon itself keeps
+                // running, so this is only a route/address refresh.
+                mainHandler.removeCallbacks(restartVpnRunnable)
+                mainHandler.postDelayed(restartVpnRunnable, 600)
             }
         }
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(restartVpnRunnable)
         webView.destroy()
         super.onDestroy()
     }

@@ -276,7 +276,11 @@ body.empty-mode { overflow: hidden; }
 .empty-state-icon svg { width: 58px; height: 58px; }
 .empty-state h2 { font-size: 28px; margin-bottom: 10px; }
 .empty-state p { color: var(--dim); font-size: 15px; line-height: 1.7; margin-bottom: 28px; }
-.empty-state-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+.empty-state-actions {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;
+  width: 100%; max-width: 430px; margin: 0 auto;
+}
+.empty-state-actions .btn { width: 100%; }
 .btn.big { padding: 14px 24px; font-size: 15px; border-radius: 12px; }
 .btn.big .big-icon { font-size: 20px; margin-right: 4px; }
 .network-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -425,6 +429,9 @@ body.empty-mode { overflow: hidden; }
 .detail-head-actions .btn {
   height: 24px; padding: 0 11px; border-radius: 999px;
   font-size: 12px; line-height: 1;
+}
+.detail-head-actions .detail-action-icon {
+  width: 24px; padding: 0; flex: none;
 }
 .detail-more { position: relative; flex: none; display: flex; align-items: center; }
 .detail-more-menu {
@@ -1478,8 +1485,8 @@ pre.code { user-select: all; }
 @media (max-width: 640px) {
   .member-grid { grid-template-columns: 1fr; }
   .net-detail-head { gap: 10px; }
+  .empty-state-actions { grid-template-columns: 1fr; max-width: 360px; }
   .detail-title-row { flex-wrap: nowrap; gap: 6px; }
   .detail-title-row > .detail-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .detail-head-actions { width: auto; justify-content: flex-end; gap: 6px; }
-  .detail-head-actions .btn { padding: 0 9px; }
 }
