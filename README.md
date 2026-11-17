@@ -1,10 +1,10 @@
 <div align="center">
 
-# SNET
+# Snet
 
 **无需公网 IP，扫码即连的私有 WireGuard 网络。**
 
-WireGuard 加密数据面 · P2P 直连 + 按需中继 · 全平台客户端 · 标准 WireGuard 移动端接入
+WireGuard 加密数据面 · P2P 直连 + 按需中继 · macOS / Windows / Android / NAS · 标准 WireGuard 接入
 
 [![License](https://img.shields.io/badge/License-BSD--3--Clause%20%2F%20AGPL--3.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/S-shidi/Snet?display_name=tag)](https://github.com/S-shidi/Snet/releases/latest)
@@ -14,20 +14,23 @@ WireGuard 加密数据面 · P2P 直连 + 按需中继 · 全平台客户端 · 
 
 [![Download macOS](https://img.shields.io/badge/Download-macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/S-shidi/Snet/releases/latest)
 [![Download Windows](https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/S-shidi/Snet/releases/latest)
+[![Download Android](https://img.shields.io/badge/Download-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/S-shidi/Snet/releases/latest)
 [![Docker](https://img.shields.io/badge/Docker-NAS%20%2F%20Linux-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://github.com/S-shidi/Snet/blob/master/deploy-prod/docker-client/README.md)
 
 </div>
 
 <div align="center">
-  <img src="docs/assets/web-console.png" alt="SNET Web Console" width="100%" />
+  <img src="docs/assets/web-console.png" alt="Snet 控制台" width="100%" />
+  <p><sub>Snet 控制台：网络状态、设备在线情况、直连 / 中继路径、公网地址与子网路由</sub></p>
 </div>
 
-## ✨ 为什么是 SNET
+## ✨ 为什么是 Snet
 
-SNET 把 WireGuard 的加密数据面、HTTPS 协调服务、NAT 打洞和按需中继组合成一个开箱即用的私有网络。设备之间优先直连；无法直连时自动切到 Relay；需要让手机或软路由接入时，官方 Hub 会生成标准 WireGuard 配置，扫码即可连入。
+Snet 把 WireGuard 的加密数据面、HTTPS 协调服务、NAT 打洞和按需中继组合成一个开箱即用的私有网络。设备之间优先直连；无法直连时自动切到 Relay v2；需要让手机或软路由接入时，官方 Hub 会生成标准 WireGuard 配置，扫码即可连入。
 
-- **全平台**：macOS、Windows、Linux / Docker / 群晖 NAS，同一套 Web 控制台体验。
-- **P2P 优先，按需中继**：LAN、IPv6、NAT 打洞优先；失败自动 Relay v2，不需要公网 IP。
+- **全平台**：macOS、Windows、Android、Linux / Docker / 群晖 NAS；桌面端支持多网络并行，Android 采用稳定的单网络模式。
+- **P2P 优先，按需中继**：LAN、IPv6、NAT 打洞优先；同 LAN 直连失败时自动尝试公网 hairpin，最后回退 Relay v2，不需要公网 IP。
+- **路径与地址可见**：成员卡片展示真实公网地址、直连 / 中继状态、NAT 类型和子网路由，便于排障。
 - **标准 WireGuard 接入**：一键生成 `.conf` 和二维码，手机、软路由、任何标准 WireGuard 客户端都能直接导入。
 - **官方 Hub / 原生网关**：无需改造现有 LAN，通过 Hub 或委派路由访问 `10.7.86.0/24` 等内网网段。
 - **适合自托管**：单个 Go 二进制、Docker Compose、SQLite/bbolt 持久化，没有外部数据库依赖。
