@@ -92,6 +92,7 @@ class MainActivity : AppCompatActivity() {
     private fun setVpnActive(active: Boolean) {
         if (!active) {
             vpnPermissionDenied = false
+            mainHandler.removeCallbacks(restartVpnRunnable)
             SnetVpnService.stop(this)
             return
         }
