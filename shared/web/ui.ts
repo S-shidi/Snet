@@ -1853,6 +1853,12 @@ function isPrivateIPv4(ip: string): boolean {
   return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(s);
 }
 
+function isPublicEndpoint4(ep?: string): boolean {
+  const s = String(ep || "").trim();
+  if (!s) return false;
+  return !isPrivateIPv4(s) && !/^(127\.|169\.254\.|0\.)/.test(s);
+}
+
 function hasCGNAT(): boolean {
   return (status?.natMapping?.mappings ?? []).some((m) => isPrivateIPv4(m.externalIp));
 }
@@ -2010,9 +2016,11 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const hubName = nd.isHub
       ? '<span class="hub-name"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6.5 6.5 0 0 0 5.2 12.2 3.5 3.5 0 0 0 6.5 19h11Z"/></svg> 官方中继</span>'
       : deviceLabel(nd);
+    const selfPublic = n.relayPath?.publicIP || nd.publicIPv4 || (isPublicEndpoint4(nd.endpoint) ? nd.endpoint : "");
+    const peerPublic = [nd.publicIPv4, pd?.public, pd?.addr, pd?.lan, nd.endpoint].find(isPublicEndpoint4) || "";
     const public4 = isSelf
-      ? (nd.publicIPv4 || nd.endpoint || "-")
-      : (pd?.public || pd?.addr || pd?.lan || nd.endpoint || "-");
+      ? (selfPublic || "未检测到公网地址")
+      : (peerPublic || "未检测到公网地址");
     const selfV6 = nd.publicIPv6 || nd.endpointV6 || "";
     const public6 = isSelf ? (selfV6 || "未检测到IPv6信息") : (pd?.ipv6 || nd.endpointV6 || "-");
     const showPublic6 = isSelf ? true : public6 !== "-" && public6 !== public4;
