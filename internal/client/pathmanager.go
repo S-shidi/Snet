@@ -97,6 +97,7 @@ type directPeer struct {
 	hintIP       net.IP
 	kind         string
 	lanAddr      *net.UDPAddr
+	directAddr   *net.UDPAddr
 	v6Addr       *net.UDPAddr
 	relayAddr    *net.UDPAddr
 	ready        bool
@@ -196,6 +197,7 @@ func (pm *PathManager) UpdatePeersWithContext(peers []protocol.Node, localSubnet
 		} else if dp.pathSince.IsZero() {
 			dp.pathSince = time.Now()
 		}
+		dp.directAddr = peerPrivateAddr(p.DirectEndpoint)
 		dp.lanAddr = peerLANAddr(p.DirectEndpoint, nets)
 		dp.v6Addr = peerV6Addr(p.DirectEndpointV6)
 		if dp.ready && dp.addr != nil {
@@ -241,6 +243,17 @@ func parseLocalNets(cidrs []string) []*net.IPNet {
 		}
 	}
 	return out
+}
+
+func peerPrivateAddr(raw string) *net.UDPAddr {
+	if raw == "" {
+		return nil
+	}
+	addr, err := net.ResolveUDPAddr("udp", raw)
+	if err != nil || addr.Port == 0 || addr.IP == nil || addr.IP.To4() == nil || !privateIPv4(addr.IP.To4()) {
+		return nil
+	}
+	return addr
 }
 
 func peerLANAddr(raw string, nets []*net.IPNet) *net.UDPAddr {
@@ -1003,11 +1016,23 @@ func (pm *PathManager) candidatesLocked(dp *directPeer) []directCandidate {
 		seen[k] = struct{}{}
 		out = append(out, directCandidate{kind: kind, addr: addr})
 	}
-	add("lan", dp.lanAddr)
+	lanAddr := dp.lanAddr
+	// If local-subnet enumeration missed the Wi-Fi prefix but both peers sit
+	// behind the same public address, the peer's private direct endpoint is
+	// still a valid LAN candidate. Keep the fallback behind the same public
+	// egress check so unrelated private networks are never probed.
+	if lanAddr == nil && dp.directAddr != nil && dp.relayAddr != nil &&
+		pm.selfPublicIP != nil && dp.relayAddr.IP.Equal(pm.selfPublicIP) {
+		lanAddr = dp.directAddr
+	}
+	add("lan", lanAddr)
 	add("ipv6", dp.v6Addr)
 	if dp.relayAddr != nil {
 		hairpin := pm.selfPublicIP != nil && dp.relayAddr.IP.Equal(pm.selfPublicIP)
-		if !hairpin {
+		// Same-LAN peers share the public egress. Keep the public mapping as
+		// a last-resort probe: some routers permit hairpin forwarding even
+		// when direct LAN UDP is filtered by the host firewall.
+		if !hairpin || lanAddr != nil || dp.directAddr != nil {
 			add("public", dp.relayAddr)
 		}
 	}
