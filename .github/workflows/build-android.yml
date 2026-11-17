@@ -5,6 +5,10 @@ on:
   push:
     tags:
       - 'v*'
+    paths:
+      - 'android/**'
+      - 'snetbind/**'
+      - '.github/workflows/build-android.yml'
 
 permissions:
   contents: write
@@ -77,15 +81,35 @@ jobs:
         shell: bash
         run: echo "VERSION=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
-      - name: Build APKs
+      - name: Decode Keystore
         shell: bash
-        working-directory: android/app-native
         run: |
           set -euo pipefail
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app-native/snet-release.keystore
+
+      - name: Build Release APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PATH: "snet-release.keystore"
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd android/app-native
           chmod +x gradlew
-          ./gradlew assembleDebug assembleRelease --no-daemon
-          cp app/build/outputs/apk/release/app-release.apk              "../Snet-v${{ steps.vars.outputs.VERSION }}-android-release.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk              "../Snet-v${{ steps.vars.outputs.VERSION }}-android-debug.apk"
+          ./gradlew assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk "../Snet-v${{ steps.vars.outputs.VERSION }}-android-release.apk"
+
+      - name: Verify Signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_PATH=$(find android/app-native -path "*/outputs/apk/release/*.apk" | head -n 1)
+          echo "Verifying $APK_PATH"
+          CERT_OUT=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK_PATH")
+          echo "$CERT_OUT"
+          echo "::notice title=APK Signature::$(echo "$CERT_OUT" | tr '\n' ' ')"
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
@@ -93,7 +117,6 @@ jobs:
           name: Snet-Android-v${{ steps.vars.outputs.VERSION }}
           path: |
             android/Snet-v${{ steps.vars.outputs.VERSION }}-android-release.apk
-            android/Snet-v${{ steps.vars.outputs.VERSION }}-android-debug.apk
           retention-days: 14
 
       - name: Publish Android release asset
@@ -102,5 +125,4 @@ jobs:
         with:
           files: |
             android/Snet-v${{ steps.vars.outputs.VERSION }}-android-release.apk
-            android/Snet-v${{ steps.vars.outputs.VERSION }}-android-debug.apk
           fail_on_unmatched_files: true

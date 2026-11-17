@@ -15,13 +15,24 @@ android {
         versionName '1.1.11'
     }
 
+    signingConfigs {
+        release {
+            def ksPath = System.getenv("ANDROID_KEYSTORE_PATH") ?: "../../snet-release.keystore"
+            def ksFile = file(ksPath)
+            if (!ksFile.exists() && rootProject.file(ksPath).exists()) {
+                ksFile = rootProject.file(ksPath)
+            }
+            storeFile ksFile
+            storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            keyAlias System.getenv("ANDROID_KEY_ALIAS")
+            keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
-            minifyEnabled false
-            // CI has no production keystore. Sign with the debug key so the
-            // release APK is installable; replace with a real signing config
-            // for store distribution.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
+            minifyEnabled false // 暂不混淆，防止 gomobile/反射类被误删
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }

@@ -74,3 +74,6 @@ dist-deploy/
 *.kdbx
 *.ovpn
 *.ppk
+*.keystore
+*.jks
+snet-release.keystore
