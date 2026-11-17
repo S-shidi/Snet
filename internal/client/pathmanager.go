@@ -199,6 +199,12 @@ func (pm *PathManager) UpdatePeersWithContext(peers []protocol.Node, localSubnet
 		}
 		dp.directAddr = peerPrivateAddr(p.DirectEndpoint)
 		dp.lanAddr = peerLANAddr(p.DirectEndpoint, nets)
+		if dp.lanAddr == nil && dp.directAddr != nil && dp.relayAddr != nil &&
+			selfIP != nil && dp.relayAddr.IP.Equal(selfIP) {
+			// Persist the same-egress fallback so the ready LAN path is not
+			// cleared on the next peer refresh.
+			dp.lanAddr = cloneUDPAddr(dp.directAddr)
+		}
 		dp.v6Addr = peerV6Addr(p.DirectEndpointV6)
 		if dp.ready && dp.addr != nil {
 			switch dp.kind {
@@ -1220,6 +1226,9 @@ func (pm *PathManager) noteDirectPeer(key uint64, addr *net.UDPAddr, now time.Ti
 			dp.pathSince = now
 			log.Printf("path %s: DIRECT_PROBE established peer=%s addr=%s kind=%s", pm.nid, pm.peerKeys[key], addr, kind)
 		}
+		if kind == "lan" && dp.lanAddr == nil {
+			dp.lanAddr = cloneUDPAddr(addr)
+		}
 		return true
 	}
 	if !markReady {
@@ -1237,6 +1246,9 @@ func (pm *PathManager) noteDirectPeer(key uint64, addr *net.UDPAddr, now time.Ti
 	dp.lastRecv = now
 	dp.lastPing = now
 	dp.pathSince = now
+	if kind == "lan" && dp.lanAddr == nil {
+		dp.lanAddr = cloneUDPAddr(addr)
+	}
 	log.Printf("path %s: DIRECT_PROBE established peer=%s addr=%s kind=%s", pm.nid, pm.peerKeys[key], addr, kind)
 	return true
 }

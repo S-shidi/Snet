@@ -1414,3 +1414,28 @@ func TestPathManagerUsesPrivateDirectEndpointOnSamePublicIP(t *testing.T) {
 		t.Fatalf("same-public hairpin was not offered as a fallback: %+v", cands)
 	}
 }
+
+func TestPathManagerKeepsSameEgressLanPathAcrossPeerRefresh(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPathManager(ctx, "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
+	defer pm.Close()
+	peer := protocol.Node{ID: "node-b", PublicKey: "pub-b", DirectEndpoint: "10.7.86.111:35990"}
+	pm.UpdatePeersWithContext([]protocol.Node{peer}, nil, "39.180.139.217")
+	key := protocol.RelayNodeKey("node-b")
+	pm.mu.Lock()
+	pm.directPeers[key].relayAddr = mustPathAddr(t, "39.180.139.217:3240")
+	pm.mu.Unlock()
+	addr := mustPathAddr(t, "10.7.86.111:35990")
+	if !pm.noteDirectPeer(key, addr, time.Now(), true) {
+		t.Fatal("same-egress LAN probe was not accepted")
+	}
+	pm.UpdatePeersWithContext([]protocol.Node{peer}, nil, "39.180.139.217")
+	pm.mu.RLock()
+	dp := pm.directPeers[key]
+	ready, lan := dp.ready, dp.lanAddr
+	pm.mu.RUnlock()
+	if !ready || lan == nil || !sameUDPAddr(lan, addr) {
+		t.Fatalf("LAN path was cleared on refresh: ready=%v lan=%v", ready, lan)
+	}
+}
