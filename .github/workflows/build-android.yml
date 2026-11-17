@@ -10,6 +10,9 @@ on:
     paths:
       - 'android/**'
       - 'snetbind/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/build-android.yml'
 
 permissions:
