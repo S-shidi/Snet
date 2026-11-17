@@ -9,9 +9,9 @@
 |---|---|---|---|---|
 | 协调服务端 + Relay v2 | VPS `66.187.6.46` | `snet.uizhi.eu.org:8090` / `:8092` | `v1.1.12` | 正常，Relay 会话稳定 |
 | VPS Hub 容器 | VPS `/opt/snet-hub` | `snet-hub` | `v1.1.12` | 容器在线；当前未加入业务网络 |
-| sdserver | Docker 主机 | `10.10.11.11`，`10.10.11.0/24` 网关 | `v1.1.12` | 在线，owner，与 SDNAS/MacBook 直连 |
+| sdserver | Docker 主机 | `10.10.11.11`，`10.10.11.0/24` 网关 | `v1.1.12` | 在线，member，与 SDNAS/MacBook 直连 |
 | SDNAS | 群晖 NAS | `10.7.86.111`，`10.7.86.0/24` 网关 | `v1.1.12` | 在线，`natType=cone`，与 sdserver 直连 |
-| MacBook | 家庭 LAN | `10.88.0.75` | `v1.1.12` | 在线，`natType=cone`，已直连 |
+| MacBook | 家庭 LAN | `10.88.0.75` | `v1.1.12` 发布包 | 在线，owner；升级后自动同步待审批请求 |
 | SHIDI-PC | Windows | `10.88.0.77` | `v1.1.12` 发布包 | 当前离线 |
 | Android | 移动网络 | `10.88.0.93` | `v1.1.12` 发布包 | 当前离线 |
 
