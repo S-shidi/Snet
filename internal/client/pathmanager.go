@@ -372,6 +372,12 @@ func (pm *PathManager) Status() map[string]any {
 	directPeers := len(pm.directPeers)
 	directReady := 0
 	natType := pm.natType
+	publicIP := ""
+	if pm.mappedAddr != nil {
+		if v4 := pm.mappedAddr.IP.To4(); v4 != nil {
+			publicIP = v4.String()
+		}
+	}
 	relayCount := len(pm.relayLinks)
 	now := time.Now()
 	peerDirect := make(map[string]any, len(pm.directPeers))
@@ -424,6 +430,7 @@ func (pm *PathManager) Status() map[string]any {
 		"relayIndex":       relayIndex,
 		"ready":            ready,
 		"natType":          natType,
+		"publicIP":         publicIP,
 		"shims":            shims,
 		"sendFrames":       pm.sendFrames.Load(),
 		"recvFrames":       pm.recvFrames.Load(),

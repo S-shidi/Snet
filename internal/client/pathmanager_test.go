@@ -1381,3 +1381,12 @@ func TestPathManagerStaleSelfPublicIPRecoversCone(t *testing.T) {
 		t.Fatalf("MappedPublicIP = %q, want 39.180.139.217", got)
 	}
 }
+
+func TestPathManagerStatusReportsMappedPublicIP(t *testing.T) {
+	pm := NewPathManager(context.Background(), "net-1", &NetworkCfg{NodeID: "node-a", Token: "tok-a", Port: 1}, "127.0.0.1:9")
+	defer pm.Close()
+	pm.noteDirectMapping("39.180.139.217:4405")
+	if got := pm.Status()["publicIP"]; got != "39.180.139.217" {
+		t.Fatalf("publicIP = %v, want 39.180.139.217", got)
+	}
+}

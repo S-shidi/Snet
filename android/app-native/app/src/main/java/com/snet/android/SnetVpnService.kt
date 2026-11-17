@@ -8,6 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.widget.Toast
@@ -26,6 +28,26 @@ import java.io.File
 class SnetVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
+    private val watchdog = Handler(Looper.getMainLooper())
+    private var inactiveChecks = 0
+    private val watchdogRunnable = object : Runnable {
+        override fun run() {
+            if (!isRunning) return
+            if (hasActiveNetwork(this@SnetVpnService)) {
+                inactiveChecks = 0
+            } else {
+                inactiveChecks++
+                // Two consecutive misses tolerate a config write in progress.
+                if (inactiveChecks >= 2) {
+                    Log.i(TAG, "no active network; stopping VPN")
+                    stopVpn()
+                    stopSelf()
+                    return
+                }
+            }
+            watchdog.postDelayed(this, 2000)
+        }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -77,6 +99,9 @@ class SnetVpnService : VpnService() {
         }
 
         isRunning = true
+        inactiveChecks = 0
+        watchdog.removeCallbacks(watchdogRunnable)
+        watchdog.postDelayed(watchdogRunnable, 2000)
         Log.i(TAG, "snetd started with TUN fd ${pfd.fd}")
         return START_STICKY
     }
@@ -108,6 +133,9 @@ class SnetVpnService : VpnService() {
 
         old.close()
         isRunning = true
+        inactiveChecks = 0
+        watchdog.removeCallbacks(watchdogRunnable)
+        watchdog.postDelayed(watchdogRunnable, 2000)
         Log.i(TAG, "TUN rebuilt with fd ${pfd.fd}")
         return START_STICKY
     }
@@ -176,6 +204,8 @@ class SnetVpnService : VpnService() {
     }
 
     private fun stopVpn() {
+        watchdog.removeCallbacks(watchdogRunnable)
+        inactiveChecks = 0
         val err = SnetCore.clearTun()
         if (err.isNotEmpty()) {
             Log.w(TAG, "SnetCore.stop: $err")
