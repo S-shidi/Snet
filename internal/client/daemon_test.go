@@ -2040,3 +2040,23 @@ func TestSyncNetworksReconcilesExistingOwnerFlag(t *testing.T) {
 		t.Fatal("existing network owner flag was not refreshed from server")
 	}
 }
+
+func TestEnforceSingleActiveNetwork(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	d.singleActiveNetwork = true
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"old": {NodeID: "n-old", Token: "t-old", Subnet: "10.88.0.0/24", Active: true, JoinedAt: "2026-01-01T00:00:00Z"},
+		"new": {NodeID: "n-new", Token: "t-new", Subnet: "10.89.0.0/24", Active: true, JoinedAt: "2026-02-01T00:00:00Z"},
+	}
+	d.enforceSingleActiveLocked("")
+	if d.cfg.Networks["old"].Active || !d.cfg.Networks["new"].Active {
+		t.Fatalf("single-network mode did not keep the newest network: old=%v new=%v",
+			d.cfg.Networks["old"].Active, d.cfg.Networks["new"].Active)
+	}
+	d.cfg.Networks["old"].Active = true
+	d.enforceSingleActiveLocked("old")
+	if !d.cfg.Networks["old"].Active || d.cfg.Networks["new"].Active {
+		t.Fatalf("explicit network was not kept: old=%v new=%v",
+			d.cfg.Networks["old"].Active, d.cfg.Networks["new"].Active)
+	}
+}

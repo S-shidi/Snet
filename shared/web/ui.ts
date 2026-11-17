@@ -64,6 +64,23 @@ function syncAndroidVpnState() {
   }
 }
 
+function isAndroidClient(): boolean {
+  return !!(globalThis as any).SnetAndroid;
+}
+
+async function confirmAndroidSingleNetwork(action: string, nextNid = ""): Promise<boolean> {
+  if (!isAndroidClient() || !status) return true;
+  const current = (status.networks ?? []).find(
+    (n) => n.active && n.serverState !== "gone" && n.networkId !== nextNid,
+  );
+  if (!current) return true;
+  return confirmDialog(
+    "切换网络",
+    `Android 当前仅支持一个网络同时在线。${action}会断开「${current.name || current.networkId}」，是否继续？`,
+    true,
+  );
+}
+
 function notifyAndroidNetworkConfig() {
   const bridge = (globalThis as any).SnetAndroid;
   if (!bridge || typeof bridge.onNetworksChanged !== "function") return;
@@ -303,7 +320,7 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
       <div class="net-side">
         <span class="pill ${cls}">${state}</span>
         <label class="switch" title="${gone ? "该网络已删除" : linked ? "断开该网络" : "连接该网络"}">
-          <input type="checkbox" data-act="toggle" ${linked ? "checked" : ""} ${gone ? "disabled" : ""} />
+          <input type="checkbox" data-act="toggle" ${n.active ? "checked" : ""} ${gone ? "disabled" : ""} />
           <span class="slider"></span>
         </label>
         <div class="net-menu-wrap">
@@ -404,7 +421,7 @@ function renderNetworkTabs(nets: NetInfo[]) {
   const pending = status?.pendingJoins ?? [];
   const html = nets.filter((n) => n.serverState !== "gone").map((n) => {
     const active = n.networkId === detailNid ? " active" : "";
-    const dot = n.interface ? "ok" : "off";
+    const dot = n.state === "error" ? "warn" : n.interface ? "ok" : n.active ? "warn" : "off";
     const owner = n.owner ? " owner" : "";
     const crown = n.owner
       ? `<span class="network-owner-mark" title="我创建的网络" aria-label="我创建的网络">${ICON_CROWN}</span>`
@@ -587,6 +604,13 @@ async function onToggle(card: HTMLElement, checked: boolean) {
     input.checked = false;
     toast("该网络已从服务端删除");
     return;
+  }
+  if (checked) {
+    const label = status?.networks?.find((n) => n.networkId === nid)?.name || nid;
+    if (!(await confirmAndroidSingleNetwork(`连接「${label}」`, nid))) {
+      input.checked = false;
+      return;
+    }
   }
   input.disabled = true;
   card.classList.add("busy");
@@ -1287,6 +1311,11 @@ function openCreateModal() {
           const subnet = chk.value;
           const server = currentServer();
           if (!name) throw new Error("请输入网络名称");
+          if (!(await confirmAndroidSingleNetwork("创建新网络"))) {
+            submit.disabled = false;
+            submit.innerHTML = "创建";
+            return;
+          }
           const approvalRequired = (body.querySelector("#m-approval") as HTMLInputElement)?.checked ?? false;
           const r: CreateResp = await backend.create({ server, port: s.wgport, name, subnet, approvalRequired });
           const modalEl = body;
@@ -1418,6 +1447,11 @@ function openJoinModal() {
             throw new Error("已向该网络发起申请，请勿重复请求！");
           }
           const server = linkServerOf(link) || currentServer();
+          if (!(await confirmAndroidSingleNetwork("加入新网络"))) {
+            submit.disabled = false;
+            submit.innerHTML = "加入";
+            return;
+          }
           const r: JoinResp = await backend.join({ server, port: s.wgport, link });
           result.className = "msg ok";
           if (r.status === "pending") {
@@ -2791,6 +2825,13 @@ function bindNetworkDetailEvents() {
   detail.addEventListener("change", async (e) => {
     const input = e.target as HTMLInputElement;
     if (input.id !== "detail-net-toggle" || !detailNid) return;
+    if (input.checked) {
+      const label = status?.networks?.find((n) => n.networkId === detailNid)?.name || detailNid;
+      if (!(await confirmAndroidSingleNetwork(`连接「${label}」`, detailNid))) {
+        input.checked = false;
+        return;
+      }
+    }
     input.disabled = true;
     try {
       const r = await ctlOrClean(detailNid, input.checked ? "连接网络" : "断开网络",
