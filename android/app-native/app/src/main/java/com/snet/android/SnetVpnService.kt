@@ -35,8 +35,18 @@ class SnetVpnService : VpnService() {
                 return START_NOT_STICKY
             }
             ACTION_RESTART -> {
+                if (!hasActiveNetwork(this)) {
+                    stopVpn()
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 return rebuildVpn()
             }
+        }
+        if (!hasActiveNetwork(this)) {
+            stopVpn()
+            stopSelf()
+            return START_NOT_STICKY
         }
         if (tun != null) {
             return START_STICKY
@@ -151,12 +161,6 @@ class SnetVpnService : VpnService() {
             }
         }
 
-        // First run / no joined network: establish a harmless placeholder so
-        // the WebView can join a network. The bridge restarts the service when
-        // the config gains its real addresses and routes.
-        if (addresses.isEmpty()) addresses.add("10.88.0.2")
-        if (routes.isEmpty()) routes.add("10.80.0.0" to 12)
-
         addresses.forEach { builder.addAddress(it, 32) }
         routes.forEach { (network, prefix) -> builder.addRoute(network, prefix) }
     }
@@ -234,13 +238,36 @@ class SnetVpnService : VpnService() {
             private set
 
         fun start(context: Context) {
+            // Never create a placeholder TUN on cold start or after the last
+            // network was switched off. The status refresh starts the service
+            // only when the daemon has an active network with a real address.
+            if (isRunning || !hasActiveNetwork(context)) return
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, SnetVpnService::class.java)
             )
         }
 
+        private fun hasActiveNetwork(context: Context): Boolean {
+            val config = File(context.filesDir, "config.json")
+            if (!config.exists()) return false
+            return try {
+                val networks = JSONObject(config.readText()).optJSONObject("networks") ?: return false
+                val keys = networks.keys()
+                while (keys.hasNext()) {
+                    val network = networks.optJSONObject(keys.next()) ?: continue
+                    if (network.optBoolean("active", true) && network.optString("ip", "").isNotBlank()) {
+                        return true
+                    }
+                }
+                false
+            } catch (_: Exception) {
+                false
+            }
+        }
+
         fun restart(context: Context) {
+            if (!isRunning) return
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, SnetVpnService::class.java).setAction(ACTION_RESTART)
