@@ -97,12 +97,13 @@ jobs:
           RAW=${RAW#\"}; RAW=${RAW%\"}
           RAW=${RAW#\'}; RAW=${RAW%\'}
           RAW=${RAW#data:application/octet-stream;base64,}
+          RAW=$(printf '%s' "$RAW" | sed '1s/^\xEF\xBB\xBF//')
           RAW=$(printf '%s' "$RAW" | tr '_-' '/+')
           case $((${#RAW} % 4)) in
             2) RAW="${RAW}==" ;;
             3) RAW="${RAW}=" ;;
           esac
-          if ! printf '%s' "$RAW" | base64 --decode > android/app-native/snet-release.keystore; then
+          if ! printf '%s' "$RAW" | base64 --decode --ignore-garbage > android/app-native/snet-release.keystore; then
             echo "::error title=Bad keystore secret::ANDROID_KEYSTORE_BASE64 is not valid base64 (len=${#ANDROID_KEYSTORE_BASE64})"
             exit 1
           fi
@@ -110,7 +111,26 @@ jobs:
             echo "::error title=Empty keystore::decoded keystore is empty"
             exit 1
           fi
-          echo "Keystore decoded: $(wc -c < android/app-native/snet-release.keystore) bytes, magic $(od -An -tx1 -N4 android/app-native/snet-release.keystore | tr -d ' \n')"
+          MAGIC=$(od -An -tx1 -N4 android/app-native/snet-release.keystore | tr -d ' \n')
+          echo "Keystore decoded: $(wc -c < android/app-native/snet-release.keystore) bytes, magic $MAGIC"
+          case "$MAGIC" in
+            feedfeed|3082*|3081*|cececece) ;;
+            *) echo "::error title=Bad keystore contents::decoded data magic is $MAGIC, not JKS/PKCS12"; exit 1 ;;
+          esac
+
+      - name: Validate Keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if ! keytool -list -keystore android/app-native/snet-release.keystore \
+              -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null 2>&1; then
+            echo "::error title=Invalid keystore::cannot open keystore with the configured password/alias"
+            exit 1
+          fi
+          echo "Keystore password and alias verified"
 
       - name: Build Release APK
         shell: bash
