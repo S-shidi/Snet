@@ -61,7 +61,7 @@ http://<VPS_IP>:8090/admin
 
 - **macOS（Apple Silicon）**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `.dmg`
 - **Windows**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `Snet-v*-win-Setup.zip`，解压后运行安装程序（ZIP 可避免浏览器拦截未签名 `.exe` 下载）
-- **Android**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `Snet-v1.1.13-android.apk`（[直接下载](https://github.com/S-shidi/Snet/releases/download/v1.1.13/Snet-v1.1.13-android.apk)）。安装时需在系统设置中允许浏览器或文件管理器“安装未知应用”。该 APK 使用正式 Release keystore 签名；如果设备上装过旧版 debug 签名包，需要先卸载旧版再安装，之后即可同签名覆盖升级。
+- **Android**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `Snet-v1.1.13-android.apk`（[直接下载](https://github.com/S-shidi/Snet/releases/download/v1.1.13/Snet-v1.1.13-android.apk)）。安装时需在系统设置中允许浏览器或文件管理器“安装未知应用”。该 APK 使用正式 Release keystore 签名；如果设备上装过旧版 debug 签名包，需要先卸载旧版再安装，之后即可同签名覆盖升级。Android 当前为单网络模式：连接或创建另一个网络时会提示并断开当前网络。
 - **NAS / Linux**：[Docker 客户端部署](deploy-prod/docker-client/README.md)
 
 客户端首次启动后打开 Web 控制台，设置管理密码。
