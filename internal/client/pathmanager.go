@@ -392,6 +392,10 @@ func (pm *PathManager) Status() map[string]any {
 		}
 	}
 	relayCount := len(pm.relayLinks)
+	localSubnets := make([]string, 0, len(pm.localNets))
+	for _, n := range pm.localNets {
+		localSubnets = append(localSubnets, n.String())
+	}
 	now := time.Now()
 	peerDirect := make(map[string]any, len(pm.directPeers))
 	for key, dp := range pm.directPeers {
@@ -444,6 +448,7 @@ func (pm *PathManager) Status() map[string]any {
 		"ready":            ready,
 		"natType":          natType,
 		"publicIP":         publicIP,
+		"localSubnets":     localSubnets,
 		"shims":            shims,
 		"sendFrames":       pm.sendFrames.Load(),
 		"recvFrames":       pm.recvFrames.Load(),
