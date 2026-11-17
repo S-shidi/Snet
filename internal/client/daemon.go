@@ -3686,6 +3686,28 @@ func (d *Daemon) DetectLocalSubnets() []string {
 			result = append(result, cidr)
 		}
 	}
+	// Android's Wi-Fi interface is not always visible through net.Interfaces
+	// once VpnService owns the default route. Derive the physical LAN prefix
+	// from the source address used to reach the coordination server so LAN
+	// peers are still classified correctly.
+	if d.singleActiveNetwork {
+		if ip, err := LocalIPForServer(d.serverAddrLocked()); err == nil {
+			if parsed := net.ParseIP(ip); parsed != nil {
+				if v4 := parsed.To4(); v4 != nil && privateIPv4(v4) {
+					covered := false
+					for _, cidr := range result {
+						if _, n, err := net.ParseCIDR(cidr); err == nil && n.Contains(v4) {
+							covered = true
+							break
+						}
+					}
+					if !covered {
+						result = append(result, fmt.Sprintf("%d.%d.%d.0/24", v4[0], v4[1], v4[2]))
+					}
+				}
+			}
+		}
+	}
 	return result
 }
 

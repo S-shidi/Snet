@@ -22,6 +22,7 @@ export type RelayPath = {
   ready?: boolean;
   natType?: string;
   publicIP?: string;
+  localSubnets?: string[];
   directReady?: number;
   directPeers?: number;
   relayReady?: number;
