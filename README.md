@@ -70,10 +70,10 @@ http://<VPS_IP>:8090/admin
 当前发布包为 Apple Silicon（arm64）。在“终端”中执行：
 
 ```bash
-curl -fL -o /tmp/Snet-v1.1.10-mac.dmg \
-  https://github.com/S-shidi/Snet/releases/download/v1.1.10/Snet-v1.1.10-mac.dmg
+curl -fL -o /tmp/Snet-v1.1.11-mac.dmg \
+  https://github.com/S-shidi/Snet/releases/download/v1.1.11/Snet-v1.1.11-mac.dmg
 
-hdiutil attach /tmp/Snet-v1.1.10-mac.dmg -nobrowse
+hdiutil attach /tmp/Snet-v1.1.11-mac.dmg -nobrowse
 sudo cp -R "/Volumes/Snet Installer/Snet.app" /Applications/
 sudo xattr -cr /Applications/Snet.app
 hdiutil detach "/Volumes/Snet Installer"
@@ -144,7 +144,7 @@ sudo docker run -d \
   --cap-add NET_ADMIN \
   --device /dev/net/tun \
   -v /opt/snet-gateway:/etc/snet \
-  crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.10
+  crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.11
 ```
 
 如果 Registry 提示未授权，请先登录对应镜像仓库，或使用自己构建的 `snet-client` 镜像。查看运行日志：
@@ -210,9 +210,9 @@ flowchart LR
 服务端、Relay 和客户端镜像：
 
 ```text
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.1.10
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.1.10
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.10
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.1.11
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.1.11
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.11
 ```
 
 ## 🔐 安全
