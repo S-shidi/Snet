@@ -1963,3 +1963,80 @@ func TestSyncNetworksOnlyRemovesOnConfirmed404(t *testing.T) {
 		t.Fatal("local network was not removed after confirmed 404 Not Found")
 	}
 }
+
+func TestReconcileOwnerRoleUpdatesCachedOwner(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	d.mu.Lock()
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"n1": {NodeID: "node-1", Token: "tok", Subnet: "10.88.0.0/24", Owner: false},
+	}
+	d.mu.Unlock()
+
+	d.reconcileOwnerRole("n1", "owner")
+	d.mu.RLock()
+	owner := d.cfg.Networks["n1"].Owner
+	d.mu.RUnlock()
+	if !owner {
+		t.Fatal("owner role was not applied to the cached network")
+	}
+
+	d.reconcileOwnerRole("n1", "member")
+	d.mu.RLock()
+	owner = d.cfg.Networks["n1"].Owner
+	d.mu.RUnlock()
+	if owner {
+		t.Fatal("member role did not clear the cached owner flag")
+	}
+
+	d.reconcileOwnerRole("n1", "")
+	d.mu.RLock()
+	owner = d.cfg.Networks["n1"].Owner
+	d.mu.RUnlock()
+	if owner {
+		t.Fatal("empty role must not change the cached owner flag")
+	}
+}
+
+func TestSyncNetworksReconcilesExistingOwnerFlag(t *testing.T) {
+	const (
+		deviceID = "device-owner-sync"
+		nid      = "net-owner-sync"
+	)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/devices":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/devices/"+deviceID+"/networks":
+			_ = json.NewEncoder(w).Encode(protocol.DeviceNetworksResp{Networks: []protocol.DeviceNetworkDetail{{
+				Network: protocol.Network{ID: nid, Name: "HomeNET", Subnet: "10.88.0.0/24"},
+				NodeID:  "node-1", IP: "10.88.0.75", Token: "tok-1", Owner: true,
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	d, _ := newTestDaemon(t)
+	if err := d.ensureKeys(ts.URL, 0); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	d.cfg.ServerAddr = ts.URL
+	d.cfg.DeviceID = deviceID
+	d.cfg.RecoveryToken = "rec-tok"
+	d.cfg.Networks = map[string]*NetworkCfg{
+		nid: {Name: "HomeNET", NodeID: "node-1", Token: "tok-1", Subnet: "10.88.0.0/24", Active: false, Owner: false},
+	}
+	d.mu.Unlock()
+
+	if err := d.SyncNetworks(); err != nil {
+		t.Fatalf("SyncNetworks: %v", err)
+	}
+	d.mu.RLock()
+	owner := d.cfg.Networks[nid].Owner
+	d.mu.RUnlock()
+	if !owner {
+		t.Fatal("existing network owner flag was not refreshed from server")
+	}
+}

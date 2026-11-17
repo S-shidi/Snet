@@ -1400,6 +1400,13 @@ func (d *Daemon) SyncNetworks() error {
 					rt.path.SetToken(existing.Token)
 				}
 			}
+			if existing.Owner != detail.Owner {
+				existing.Owner = detail.Owner
+				updated = true
+				if d.serverState != nil {
+					delete(d.serverState, nid)
+				}
+			}
 			if detail.PublicKey != "" && detail.PublicKey != pub {
 				if err := api.UpdateNodePublicKeyByToken(nid, detail.NodeID, detail.Token, pub); err != nil {
 					log.Printf("sync networks: update public key %s: %v", nid, err)
@@ -2252,6 +2259,15 @@ func (d *Daemon) pollLoop(nid string) {
 			}
 			log.Printf("poll peers %s: %v", nid, err)
 			continue
+		}
+
+		// The member-safe peer response carries this node's authoritative
+		// role. Reconcile the cached owner flag so an ownership transfer made
+		// in the admin console is visible without opening network details.
+		// Otherwise the owner UI may never request the owner-only network info
+		// that contains pending join requests.
+		if st.Self != nil {
+			d.reconcileOwnerRole(nid, st.Self.Role)
 		}
 
 		// Legacy path selection is only needed when Relay v2 is not active.
@@ -3831,6 +3847,28 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 		resp, err = api.NetworkInfo(nid, token)
 	}
 	return resp, wrapNetGone(err)
+}
+
+// reconcileOwnerRole updates the cached owner flag from the server-reported
+// self role. Returning it to the UI keeps owner-only features (notably pending
+// join approval) available after an ownership transfer, even when the local
+// config predates the transfer and the user has not opened network details.
+func (d *Daemon) reconcileOwnerRole(nid, role string) {
+	if role != "owner" && role != "member" {
+		return
+	}
+	isOwner := role == "owner"
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil || nc.Owner == isOwner {
+		return
+	}
+	nc.Owner = isOwner
+	log.Printf("network %s: owner flag reconciled to %v from server role", nid, isOwner)
+	if err := d.save(); err != nil {
+		log.Printf("save reconciled owner %s: %v", nid, err)
+	}
 }
 
 // Peers returns the live peer list for a network. Unlike Info it works for
