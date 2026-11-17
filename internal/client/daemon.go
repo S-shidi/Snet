@@ -354,6 +354,9 @@ type Daemon struct {
 	// androidTunFD holds the TUN file descriptor from VpnService on Android.
 	// When non-zero, bringUp uses NewTunnelFromFD instead of NewTunnel.
 	androidTunFD int
+	// singleActiveNetwork is true on Android: one VpnService TUN cannot host
+	// multiple independent WireGuard devices safely.
+	singleActiveNetwork bool
 	// hostnameCache caches the machine hostname for device registration.
 	hostnameCache string
 	// keyRotationStop signals the periodic key-rotation goroutine to exit.
@@ -423,6 +426,14 @@ func (d *Daemon) SetAndroidTunFD(fd int) {
 	d.mu.Lock()
 	oldFD := d.androidTunFD
 	d.androidTunFD = fd
+	d.singleActiveNetwork = true
+	if fd != oldFD {
+		if changed := d.enforceSingleActiveLocked(""); changed {
+			if err := d.save(); err != nil {
+				log.Printf("save single active network: %v", err)
+			}
+		}
+	}
 	// Android replaces the TUN fd whenever VpnService is rebuilt to add new
 	// network addresses/routes. The existing wireguard-go devices still hold
 	// duplicates of the old fd, so rebuild them on the new one. The daemon
@@ -435,6 +446,35 @@ func (d *Daemon) SetAndroidTunFD(fd int) {
 		}
 	}
 	d.mu.Unlock()
+}
+
+// enforceSingleActiveLocked deactivates every active network except keep.
+// An empty keep chooses the most recently joined active network. Android's
+// single VpnService TUN cannot safely back multiple WireGuard devices.
+// Caller must hold d.mu.
+func (d *Daemon) enforceSingleActiveLocked(keep string) bool {
+	if !d.singleActiveNetwork {
+		return false
+	}
+	if keep == "" {
+		for nid, nc := range d.cfg.Networks {
+			if nc == nil || !nc.Active {
+				continue
+			}
+			if keep == "" || nc.JoinedAt > d.cfg.Networks[keep].JoinedAt {
+				keep = nid
+			}
+		}
+	}
+	changed := false
+	for nid, nc := range d.cfg.Networks {
+		if nid == keep || nc == nil || !nc.Active {
+			continue
+		}
+		d.leaveLocked(nid)
+		changed = true
+	}
+	return changed
 }
 
 // bringUpAllLocked brings up tunnels for all active networks that do not yet
@@ -1147,6 +1187,9 @@ func (d *Daemon) attach(nid, name, nodeID, ip, token, pairingCode, subnet string
 		nc.Name = existing.Name
 	}
 	d.cfg.Networks[nid] = nc
+	if d.singleActiveNetwork {
+		d.enforceSingleActiveLocked(nid)
+	}
 	if err := d.save(); err != nil {
 		return err
 	}
@@ -3165,6 +3208,13 @@ func (d *Daemon) Rejoin(nid string) error {
 	// If already active but tunnel is missing (e.g. VPN service restarted),
 	// re-bring-up instead of refusing.
 	if nc.Active {
+		if d.singleActiveNetwork {
+			if d.enforceSingleActiveLocked(nid) {
+				if err := d.save(); err != nil {
+					log.Printf("save single active network: %v", err)
+				}
+			}
+		}
 		if rt := d.nets[nid]; rt != nil && rt.tun != nil {
 			return fmt.Errorf("网络 %s 已激活", nid)
 		}
@@ -3175,6 +3225,9 @@ func (d *Daemon) Rejoin(nid string) error {
 		return nil
 	}
 	nc.Active = true
+	if d.singleActiveNetwork {
+		d.enforceSingleActiveLocked(nid)
+	}
 	if err := d.save(); err != nil {
 		return err
 	}
