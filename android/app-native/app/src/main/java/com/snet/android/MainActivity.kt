@@ -32,7 +32,12 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var vpnPermissionDenied = false
+    private var notificationPermissionRequested = false
     private val restartVpnRunnable = Runnable {
+        // A network switch-off may have stopped the service after this rebuild
+        // was queued. Do not resurrect a placeholder TUN in that case.
+        if (!SnetVpnService.isRunning) return@Runnable
         if (VpnService.prepare(this) == null) {
             SnetVpnService.restart(this)
         }
@@ -42,8 +47,10 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
+            vpnPermissionDenied = false
             startVpnService()
         } else {
+            vpnPermissionDenied = true
             Toast.makeText(this, "未授予 VPN 权限", Toast.LENGTH_SHORT).show()
         }
     }
@@ -84,9 +91,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun setVpnActive(active: Boolean) {
         if (!active) {
+            vpnPermissionDenied = false
+            mainHandler.removeCallbacks(restartVpnRunnable)
             SnetVpnService.stop(this)
             return
         }
+        // The WebView may call this on every status refresh. Once the service
+        // is up, onNetworksChanged() owns route rebuilds; do not re-prompt for
+        // VPN/notification permission or start the service again. After a
+        // denial, wait for the user to toggle the network off/on instead of
+        // re-opening the system VPN prompt on every poll.
+        if (SnetVpnService.isRunning || vpnPermissionDenied) return
         requestNotificationPermissionIfNeeded()
         maybeRequestIgnoreBatteryOptimizations()
         requestVpnPermission()
@@ -109,6 +124,8 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
+            if (notificationPermissionRequested) return
+            notificationPermissionRequested = true
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
@@ -206,6 +223,15 @@ class MainActivity : AppCompatActivity() {
                     .setOrientationLocked(false)
                 scanLauncher.launch(options)
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The user may have granted VPN access from system settings after the
+        // permission dialog was dismissed. Let the next status refresh retry.
+        if (vpnPermissionDenied && VpnService.prepare(this) == null) {
+            vpnPermissionDenied = false
         }
     }
 
