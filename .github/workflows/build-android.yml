@@ -144,7 +144,7 @@ jobs:
           cd android/app-native
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
-          cp app/build/outputs/apk/release/app-release.apk "../Snet-v${{ steps.vars.outputs.VERSION }}-android-release.apk"
+          cp app/build/outputs/apk/release/app-release.apk "../Snet-v${{ steps.vars.outputs.VERSION }}-android.apk"
 
       - name: Verify Signature
         shell: bash
@@ -161,7 +161,7 @@ jobs:
         with:
           name: Snet-Android-v${{ steps.vars.outputs.VERSION }}
           path: |
-            android/Snet-v${{ steps.vars.outputs.VERSION }}-android-release.apk
+            android/Snet-v${{ steps.vars.outputs.VERSION }}-android.apk
           retention-days: 14
 
       - name: Publish Android release asset
@@ -169,5 +169,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            android/Snet-v${{ steps.vars.outputs.VERSION }}-android-release.apk
+            android/Snet-v${{ steps.vars.outputs.VERSION }}-android.apk
           fail_on_unmatched_files: true
