@@ -77,3 +77,6 @@ dist-deploy/
 *.keystore
 *.jks
 snet-release.keystore
+
+# Hardware firmware build work directory
+scripts/hardware/.work/
