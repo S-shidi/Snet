@@ -2,9 +2,9 @@
 
 # Snet
 
-**无需公网 IP，扫码即连的私有 WireGuard 网络。**
+**建立一个独属于你的私人或办公网络，无论你在何处，你的网络始终都在线**
 
-WireGuard 加密数据面 · P2P 直连 + 按需中继 · macOS / Windows / Android / NAS · 标准 WireGuard 接入
+ P2P 直连 + 按需中继 · macOS / Windows / Android / NAS / IOS
 
 [![License](https://img.shields.io/badge/License-BSD--3--Clause%20%2F%20AGPL--3.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/S-shidi/Snet?display_name=tag)](https://github.com/S-shidi/Snet/releases/latest)
@@ -26,7 +26,7 @@ WireGuard 加密数据面 · P2P 直连 + 按需中继 · macOS / Windows / Andr
 
 ## ✨ 为什么是 Snet
 
-Snet 把 WireGuard 的加密数据面、HTTPS 协调服务、NAT 打洞和按需中继组合成一个开箱即用的私有网络。设备之间优先直连；无法直连时自动切到 Relay v2；需要让手机或软路由接入时，官方 Hub 会生成标准 WireGuard 配置，扫码即可连入。
+Snet 是一个开箱即用的私有网络。试想当离开公司或家你该如何访问公司与家的网络或服务，有了它Snet这将不是问题，Snet帮你组件一个独有的虚拟网络，将你多地的设备全部加入到这个网络，你将体验到如同本地据网络访问体验。
 
 - **全平台**：macOS、Windows、Android、Linux / Docker / 群晖 NAS；桌面端支持多网络并行，Android 采用稳定的单网络模式。
 - **P2P 优先，按需中继**：LAN、IPv6、NAT 打洞优先；同 LAN 直连失败时自动尝试公网 hairpin，最后回退 Relay v2，不需要公网 IP。
