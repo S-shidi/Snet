@@ -51,11 +51,11 @@ yaml_rows() {
   local selected="${1:-}"
   if command -v yq >/dev/null 2>&1; then
     SNET_DEVICE="${selected:-__ALL__}" yq -r '
-      "GLOBAL\t" + (.openwrt_version // "23.05.5") + "\t" + (.imagebuilder_base // "https://downloads.openwrt.org"),
+      "GLOBAL|" + (.openwrt_version // "23.05.5") + "|" + (.imagebuilder_base // "https://downloads.openwrt.org"),
       (.devices[] | select(env(SNET_DEVICE) == "__ALL__" or .name == env(SNET_DEVICE)) |
         ["DEVICE", .name, .target, .profile, .arch,
          (.post_script // ""), (.packages // ""), (.imagebuilder_url // ""),
-         (.imagebuilder_version // ""), (.extra_packages // ""), (.image_name // "")] | @tsv)
+         (.imagebuilder_version // ""), (.extra_packages // ""), (.image_name // "")] | join("|"))
     ' "$YAML"
     return
   fi
@@ -69,8 +69,8 @@ except Exception as exc:
 path, selected = sys.argv[1], sys.argv[2]
 with open(path, encoding="utf-8") as f:
     data = yaml.safe_load(f) or {}
-print("GLOBAL\t{}\t{}".format(data.get("openwrt_version", "23.05.5"),
-                                 data.get("imagebuilder_base", "https://downloads.openwrt.org")))
+print("GLOBAL|{}|{}".format(data.get("openwrt_version", "23.05.5"),
+                             data.get("imagebuilder_base", "https://downloads.openwrt.org")))
 for d in data.get("devices", []):
     if selected and d.get("name") != selected:
         continue
@@ -81,14 +81,14 @@ for d in data.get("devices", []):
         d.get("imagebuilder_url", ""), d.get("imagebuilder_version", ""),
         d.get("extra_packages", ""), d.get("image_name", ""),
     ]
-    print("\t".join(str(x) for x in fields))
+    print("|".join(str(x) for x in fields))
 PY
 }
 
 load_globals() {
   local rows
   rows="$(yaml_rows "")"
-  IFS=$'\t' read -r _ GLOBAL_VERSION GLOBAL_BASE <<< "$(printf '%s\n' "$rows" | head -n1)"
+  IFS='|' read -r _ GLOBAL_VERSION GLOBAL_BASE <<< "$(printf '%s\n' "$rows" | head -n1)"
   [[ -n "${GLOBAL_VERSION:-}" ]] || die "devices.yaml: openwrt_version is empty"
   [[ -n "${GLOBAL_BASE:-}" ]] || die "devices.yaml: imagebuilder_base is empty"
 }
@@ -101,7 +101,7 @@ list_devices() {
   local rows
   rows="$(device_rows "")"
   printf '%-20s %-24s %-28s %s\n' "NAME" "TARGET" "PROFILE" "ARCH"
-  printf '%s\n' "$rows" | awk -F '\t' '$1 == "DEVICE" { printf "%-20s %-24s %-28s %s\n", $2, $3, $4, $5 }'
+  printf '%s\n' "$rows" | awk -F '|' '$1 == "DEVICE" { printf "%-20s %-24s %-28s %s\n", $2, $3, $4, $5 }'
 }
 
 parse_args() {
@@ -347,7 +347,7 @@ main() {
   local rows
   rows="$(device_rows "$DEVICE")"
   local count=0
-  while IFS=$'\t' read -r kind name target profile arch post_script packages override device_version extra_packages image_name; do
+  while IFS='|' read -r kind name target profile arch post_script packages override device_version extra_packages image_name; do
     [[ "$kind" == "DEVICE" ]] || continue
     count=$((count + 1))
     build_device "$name" "$target" "$profile" "$arch" "$post_script" "$packages" "$override" "$device_version" "$extra_packages" "$image_name"

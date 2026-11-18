@@ -12,6 +12,8 @@
 #   AML_BOOTLOADER   bootloader/u-boot blob accepted by the board
 #   AML_DTB          board device tree
 #   AML_AMLIMG       path to the AmlImg tool
+#   AML_KERNEL       optional kernel partition image from the OpenWrt build
+#   AML_ROOTFS       optional rootfs partition image from the OpenWrt build
 #
 # Typical AmlImg workflow:
 #   1. Unpack the vendor burn image or start from the vendor package template.
@@ -26,18 +28,33 @@ set -euo pipefail
 IMAGE="${1:?usage: amlogic-pack.sh <openwrt-output.img> [output-dir]}"
 OUT_DIR="${2:-$(dirname "$IMAGE")}"
 AML_IMG="${AML_AMLIMG:-}"
+AML_BOOT="${AML_BOOTLOADER:-}"
+AML_DTB="${AML_DTB:-}"
 
 if [[ ! -f "$IMAGE" ]]; then
   echo "amlogic-pack: input image not found: $IMAGE" >&2
   exit 2
 fi
 
-if [[ -z "$AML_IMG" || ! -x "$AML_IMG" ]]; then
+missing=0
+for var in AML_AMLIMG AML_BOOTLOADER AML_DTB; do
+  if [[ -z "${!var:-}" ]]; then
+    echo "amlogic-pack: missing required environment variable: $var" >&2
+    missing=1
+  fi
+done
+if (( missing )); then
   cat >&2 <<EOF
-amlogic-pack: vendor AmlImg tool is not configured.
+amlogic-pack: WankeCloud burn-image inputs are incomplete.
 
-Set AML_AMLIMG to the AmlImg executable and provide the board bootloader/DTB,
-then adapt the pack command in this script for the exact WankeCloud layout.
+Required:
+  AML_AMLIMG       path to the AmlImg executable
+  AML_BOOTLOADER   board u-boot/bootloader blob (e.g. u-boot.bin)
+  AML_DTB          board device tree (e.g. wankecloud.dtb)
+
+Optional partition images (recommended for a reproducible package):
+  AML_KERNEL       kernel partition image
+  AML_ROOTFS       rootfs partition image
 
 OpenWrt output kept at: $IMAGE
 Output directory:       $OUT_DIR
@@ -45,17 +62,59 @@ EOF
   exit 3
 fi
 
+for file in "$AML_BOOT" "$AML_DTB"; do
+  if [[ ! -f "$file" ]]; then
+    echo "amlogic-pack: required board file not found: $file" >&2
+    exit 3
+  fi
+done
+if [[ ! -x "$AML_IMG" ]]; then
+  echo "amlogic-pack: AmlImg is not executable: $AML_IMG" >&2
+  exit 3
+fi
+
+for file in "${AML_KERNEL:-}" "${AML_ROOTFS:-}"; do
+  if [[ -n "$file" && ! -f "$file" ]]; then
+    echo "amlogic-pack: optional partition image not found: $file" >&2
+    exit 3
+  fi
+done
+
 mkdir -p "$OUT_DIR"
 
-# TODO(board): Replace this placeholder with the board-specific pack command.
-# Example shape (verify against the vendor AmlImg version in use):
+PKG_DIR="$OUT_DIR/aml-package"
+rm -rf "$PKG_DIR"
+mkdir -p "$PKG_DIR"
+cp -a "$AML_BOOT" "$PKG_DIR/u-boot.bin"
+cp -a "$AML_DTB" "$PKG_DIR/board.dtb"
+if [[ -n "${AML_KERNEL:-}" ]]; then cp -a "$AML_KERNEL" "$PKG_DIR/kernel.img"; fi
+if [[ -n "${AML_ROOTFS:-}" ]]; then cp -a "$AML_ROOTFS" "$PKG_DIR/rootfs.img"; fi
+cp -a "$IMAGE" "$PKG_DIR/openwrt-image.img"
+
+cat > "$PKG_DIR/README.txt" <<EOF
+WankeCloud AmlImg package staging area
+=====================================
+bootloader: $AML_BOOT
+dtb:        $AML_DTB
+AmlImg:     $AML_IMG
+openwrt:    $IMAGE
+
+This directory is intentionally staged, not flashed automatically. Use the
+AmlImg version and partition template that match the exact WankeCloud board
+revision. Replace the pack command below with the vendor command for that
+revision; do not reuse a bootloader/DTB from another S805 board.
+EOF
+
+# TODO(board): Replace this placeholder with the board-specific AmlImg pack
+# command. The exact flags depend on the AmlImg version and partition layout.
+# Typical shape (verify against the vendor tool):
 #
 #   "$AML_IMG" pack \
-#     --input  "$(dirname "$IMAGE")/aml-package" \
+#     --input  "$PKG_DIR" \
 #     --output "$OUT_DIR/${IMAGE##*/%.*}.burn.img"
 #
-# The package directory must contain the board bootloader, DTB and the
-# OpenWrt kernel/rootfs artifacts.
-echo "amlogic-pack: AmlImg is configured, but the WankeCloud partition/pack command is not implemented yet." >&2
-echo "amlogic-pack: adapt post-scripts/amlogic-pack.sh for the board before flashing." >&2
+# The package must contain a board-specific bootloader, DTB, kernel/rootfs
+# partitions and the matching Amlogic partition template.
+echo "amlogic-pack: inputs staged in $PKG_DIR" >&2
+echo "amlogic-pack: AmlImg partition template is board-specific; fill in the pack command before flashing." >&2
 exit 4
