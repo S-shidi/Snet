@@ -310,7 +310,7 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
   <div class="net" data-nid="${esc(n.networkId)}" data-owner="${n.owner ? "1" : "0"}" ${gone ? 'data-gone="1"' : ""}>
     <div class="net-row">
       <div class="net-main">
-        <div class="net-name">${esc(n.name || n.networkId)} ${n.owner ? `<span class="pill created">我创建的</span>` : ""} ${sharePill} ${pendingPill}</div>
+        <div class="net-name">${esc(n.name || n.networkId)} ${sharePill} ${pendingPill}</div>
         <div class="net-meta">
           <span>IP <code>${esc(n.ip ?? "-")}</code></span>
           <span>网段 <code>${esc(n.subnet ?? "-")}</code></span>
@@ -2046,10 +2046,12 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
         ? `<span class="pill warn" title="${esc(nd.relayError)}">网关不可用</span>`
         : "";
     const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
-    const roleText = nd.isHub ? "中继" : roleLabel(role);
+    const crown = role === "owner" && !nd.isHub
+      ? `<span class="network-owner-mark" title="我创建的网络" aria-label="我创建的网络">${ICON_CROWN}</span>`
+      : "";
     const hubName = nd.isHub
       ? '<span class="hub-name"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6.5 6.5 0 0 0 5.2 12.2 3.5 3.5 0 0 0 6.5 19h11Z"/></svg> 官方中继</span>'
-      : deviceLabel(nd);
+      : `${crown}${deviceLabel(nd)}`;
     const selfPublic = n.relayPath?.publicIP || nd.publicIPv4 || (isPublicEndpoint4(nd.endpoint) ? nd.endpoint : "");
     const peerPublic = [nd.publicIPv4, pd?.public, pd?.addr, pd?.lan, nd.endpoint].find(isPublicEndpoint4) || "";
     const public4 = isSelf
@@ -2061,12 +2063,6 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const last = isSelf
       ? (connected ? "当前设备" : "已断开")
       : (connected ? lastActiveLabel(pd, online) : "未连接");
-    const poke = isSelf
-      ? ""
-      : `<button type="button" class="btn ghost sm member-poke" data-detail-poke="${esc(nd.id)}" data-poke-target="${esc(nd.ip || "")}" title="发送探测包唤醒节点"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>唤醒</button>`;
-    const diag = isSelf
-      ? ""
-      : `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button>`;
     const wgExport = nd.deviceId?.startsWith("wg-") ? wgExports[n.networkId]?.[nd.id] : undefined;
     const wgConfig = canManage && wgExport
       ? `<button type="button" class="btn ghost sm" data-wg-config="${esc(nd.id)}" data-wg-name="${esc(nd.deviceName || "WireGuard 客户端")}">配置</button>`
@@ -2085,7 +2081,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       : "";
     const foot = `<div class="member-card-foot">
       <span class="member-card-last">${esc(last)}</span>
-      <span class="member-card-actions">${wgConfig}${poke}${diag}${kick}</span>
+      <span class="member-card-actions">${wgConfig}${kick}</span>
     </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
@@ -2094,7 +2090,6 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       </div>
       <div class="member-card-body">
         <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${editIP}</div>
-        <div class="member-card-line"><span class="member-card-label">身份</span><span class="member-card-value">${roleText}</span></div>
         <div class="member-card-line member-card-public"><span class="member-card-label">公网 IP</span><span class="member-card-value"><code class="member-endpoint">${esc(public4)}</code>${showPublic6 ? `<code class="member-endpoint member-endpoint-v6">${esc(public6)}</code>` : ""}</span></div>
         <div class="member-card-line"><span class="member-card-label">子网路由</span><span class="member-card-value">${routeCell}${relay}</span></div>
       </div>
@@ -2265,65 +2260,6 @@ function openEditIPModal(nid: string, nodeId: string, current: string) {
       if (first) setTimeout(() => first.focus(), 30);
     },
   });
-}
-
-function showPingModal(text: string, cls: string) {
-  openModal({
-    title: "诊断结果",
-    body: `<div class="ping-modal ${esc(cls)}"><span class="ping-modal-icon">${cls === "ok" ? "✓" : "!"}</span><div><div class="ping-modal-title">${cls === "ok" ? "连接正常" : "诊断失败"}</div><div class="ping-modal-text">${esc(text)}</div></div></div>`,
-    footer: `<button data-close class="btn ghost">关闭</button>`,
-  });
-}
-
-async function runPeerPing(btn: HTMLButtonElement) {
-  const target = btn.dataset.pingTarget || "";
-  if (!target) {
-    showPingModal("诊断失败：无 IP", "err");
-    return;
-  }
-  const original = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = `${SPIN} 诊断中…`;
-  try {
-    const r = await backend.ping(target);
-    const loss = Math.max(0, Number(r.loss) || 0);
-    const avg = Math.max(0, Number(r.avgRtt) || 0);
-    if (loss >= 100) throw new Error("目标不可达");
-    const cls = loss >= 50 || avg >= 200 ? "err" : loss > 0 || avg >= 80 ? "warn" : "ok";
-    showPingModal(`延迟: ${avg > 0 ? `${avg.toFixed(0)}ms` : "-"} / 丢包: ${loss.toFixed(0)}%`, cls);
-  } catch (e) {
-    // Report the real reason: a missing ping binary, an unreachable target
-    // and an auth failure all need different fixes.
-    const msg = String(e).replace(/^Error:\s*/, "") || "未知错误";
-    showPingModal(`诊断失败：${msg}`, "err");
-    toast(`诊断失败：${msg}`, "err");
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = original;
-  }
-}
-
-async function runPoke(btn: HTMLButtonElement) {
-  const target = btn.dataset.pokeTarget || "";
-  if (!target) {
-    toast("唤醒失败：目标 IP 为空", "err");
-    return;
-  }
-  const original = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = `${SPIN} 唤醒中…`;
-  toast("正在尝试唤醒该节点…");
-  try {
-    await backend.poke(target);
-    await new Promise((resolve) => window.setTimeout(resolve, 1200));
-    await refresh();
-    toast("已发送唤醒探测包");
-  } catch (e) {
-    toast(`唤醒失败：${e}`, "err");
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = original;
-  }
 }
 
 /* ── Invite link helpers ───────────────────────────────────────── */
@@ -2547,11 +2483,6 @@ function networkDetailHTML(n: NetInfo): string {
   const selfIp = n.ip || self?.ip || "-";
   const nat = n.relayPath?.natType || self?.natType || "unknown";
   const routes = ownerInfo[n.networkId]?.routes ?? r?.routes ?? [];
-  const activeRoutes = routes.filter((rt) => rt.status === "active").length;
-  const memberCount = r ? (r.peers ?? []).length + 1 : 0;
-  const rolePill = role === "owner"
-    ? '<span class="pill created">我创建的</span>'
-    : '<span class="pill off">已加入</span>';
   const iconInvite = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M16 11h6"/></svg>';
   const iconMore = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
   const more = `<div class="detail-more">
@@ -2569,7 +2500,6 @@ function networkDetailHTML(n: NetInfo): string {
     <div class="detail-heading">
       <div class="detail-title-row">
         <div class="detail-title">${esc(n.name || n.networkId)}</div>
-        ${rolePill}
         <div class="detail-head-actions">
           <label class="switch detail-conn-switch" title="连接 / 断开">
             <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
@@ -2583,8 +2513,6 @@ function networkDetailHTML(n: NetInfo): string {
         <span class="detail-net-id"><code>${esc(n.networkId)}</code></span>
         <span>↑ ${fmtSpeed(status?.txSpeed)} · ↓ ${fmtSpeed(status?.rxSpeed)}</span>
         <span>NAT ${esc(nat)}</span>
-        <span>${activeRoutes} 条生效路由</span>
-        ${memberCount ? `<span>${memberCount} 位成员</span>` : ""}
       </div>
     </div>
   </div>
@@ -2754,16 +2682,6 @@ function bindNetworkDetailEvents() {
     const editIPEl = target.closest<HTMLButtonElement>("[data-detail-edit-ip]");
     if (editIPEl) {
       openEditIPModal(editIPEl.dataset.editIpNid || detailNid || "", editIPEl.dataset.detailEditIp || "", editIPEl.dataset.currentIp || "");
-      return;
-    }
-    const pokeEl = target.closest<HTMLButtonElement>("[data-detail-poke]");
-    if (pokeEl && detailNid) {
-      await runPoke(pokeEl);
-      return;
-    }
-    const pingEl = target.closest<HTMLButtonElement>("[data-detail-ping]");
-    if (pingEl && detailNid) {
-      await runPeerPing(pingEl);
       return;
     }
     const wgBtn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-wg-config]");
