@@ -2079,7 +2079,7 @@ function subnetRouteSummaryHTML(n: NetInfo, r: PeersResp | undefined, routes: Re
   </section>`;
 }
 
-function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string, routes: RelayRoute[] | undefined): string {
+function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string): string {
   if (!r) return `<p class="hint member-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
   const list: NetNode[] = (self ? [self, ...(r.peers ?? [])] : (r.peers ?? []))
@@ -2103,12 +2103,6 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const path = isSelf
       ? '<span class="path-badge self">本机</span>'
       : online ? pathBadge(pd, relayReady) : "";
-    const routeCell = nodeRouteCell(routes, nd.id);
-    const relay = nd.allowRelay
-      ? '<span class="pill ok">中继网关</span>'
-      : nd.relayError
-        ? `<span class="pill warn" title="${esc(nd.relayError)}">网关不可用</span>`
-        : "";
     const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
     const crown = role === "owner" && !nd.isHub
       ? `<span class="network-owner-mark" title="我创建的网络" aria-label="我创建的网络">${ICON_CROWN}</span>`
@@ -2127,6 +2121,9 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const last = isSelf
       ? (connected ? "当前设备" : "已断开")
       : (connected ? lastActiveLabel(pd, online) : "未连接");
+    const publicLine = canManage
+      ? `<div class="member-card-line member-card-public"><span class="member-card-label">公网 IP</span><span class="member-card-value"><code class="member-endpoint">${esc(public4)}</code>${showPublic6 ? `<code class="member-endpoint member-endpoint-v6">${esc(public6)}</code>` : ""}</span></div>`
+      : "";
     const wgExport = nd.deviceId?.startsWith("wg-") ? wgExports[n.networkId]?.[nd.id] : undefined;
     const wgConfig = canManage && wgExport
       ? `<button type="button" class="btn ghost sm" data-wg-config="${esc(nd.id)}" data-wg-name="${esc(nd.deviceName || "WireGuard 客户端")}">配置</button>`
@@ -2154,8 +2151,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       </div>
       <div class="member-card-body">
         <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${editIP}</div>
-        <div class="member-card-line member-card-public"><span class="member-card-label">公网 IP</span><span class="member-card-value"><code class="member-endpoint">${esc(public4)}</code>${showPublic6 ? `<code class="member-endpoint member-endpoint-v6">${esc(public6)}</code>` : ""}</span></div>
-        <div class="member-card-line"><span class="member-card-label">子网路由</span><span class="member-card-value">${routeCell}${relay}</span></div>
+        ${publicLine}
       </div>
       ${foot}
     </article>`;
@@ -2583,7 +2579,7 @@ function networkDetailHTML(n: NetInfo): string {
   ${canManage ? pendingBannersHTML(n.networkId, ownerInfo[n.networkId]?.pending) : ""}
   ${cgnatCompactHTML()}
   ${subnetRouteSummaryHTML(n, r, routes)}
-  ${memberCardsHTML(n, r, canManage, role, routes)}`;
+  ${memberCardsHTML(n, r, canManage, role)}`;
 }
 
 function pendingDetailHTML(p: NonNullable<DaemonStatus["pendingJoins"]>[number]): string {
