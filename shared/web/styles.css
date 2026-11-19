@@ -752,12 +752,12 @@ body.empty-mode { overflow: hidden; }
 }
 
 /* ── invite modal ───────────────────────── */
-.invite-layout { display: flex; gap: 22px; align-items: flex-start; }
-.invite-qr-side { flex: 0 0 210px; text-align: center; }
+.invite-layout { display: flex; flex-direction: column; align-items: stretch; gap: 16px; }
+.invite-qr-side { flex: none; width: 100%; text-align: center; }
 .invite-qr { width: 200px; margin: 0 auto 8px; padding: 10px; background: #fff; border-radius: 10px; }
 .invite-qr svg { display: block; width: 100%; height: auto; }
 .invite-qr-side .hint { margin: 0; }
-.invite-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.invite-info { flex: none; width: 100%; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .invite-lede { margin: 0; line-height: 1.55; }
 /* The invite link is the single artifact a member needs: it gets the same
    surface treatment as a .card so it reads as one solid, tappable block. */
@@ -1522,8 +1522,12 @@ pre.code { user-select: all; }
   margin: 0; color: var(--text); font-size: 13px; font-weight: 700;
 }
 .subnet-route-summary-head .hint { font-size: 11px; }
-.subnet-route-config { width: 24px; height: 24px; padding: 0; margin-left: auto; }
-.subnet-route-config svg { width: 15px; height: 15px; display: block; }
+.subnet-route-config {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; margin-left: auto;
+  border-radius: 999px;
+}
+.subnet-route-config svg { width: 16px; height: 16px; display: block; }
 .subnet-route-empty { padding: 4px 0 2px; color: var(--faint); font-size: 12px; }
 .subnet-route-list { display: flex; flex-direction: column; }
 .subnet-route-row {
