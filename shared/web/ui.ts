@@ -2015,6 +2015,70 @@ function pendingBannersHTML(nid: string, pending: NetInfoDetail["pending"]): str
   }).join("");
 }
 
+
+function subnetRouteSummaryHTML(n: NetInfo, r: PeersResp | undefined, routes: RelayRoute[] | undefined): string {
+  const active = (routes ?? []).filter((rt) => rt.status === "active");
+  if (!active.length) return "";
+
+  const nodes = new Map<string, NetNode>();
+  if (r?.self) nodes.set(r.self.id, r.self);
+  for (const nd of r?.peers ?? []) nodes.set(nd.id, nd);
+  for (const nd of ownerInfo[n.networkId]?.nodes ?? []) {
+    if (!nodes.has(nd.id)) nodes.set(nd.id, nd as NetNode);
+  }
+
+  const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
+  const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
+  const connected = n.active === true && n.serverState !== "gone";
+  const arrow = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h15"/><path d="m13 6 6 6-6 6"/></svg>';
+  const cross = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+
+  const rows = active.map((rt) => {
+    const nd = nodes.get(rt.targetNodeId);
+    const isSelf = !!r?.self?.id && rt.targetNodeId === r.self.id;
+    const online = connected && (isSelf || !!nd?.online);
+    let state: "direct" | "relay" | "no-relay" | "offline";
+    let label: string;
+
+    if (!online) {
+      state = "offline";
+      label = connected ? "节点离线" : "当前网络未连接";
+    } else if (!nd) {
+      state = "offline";
+      label = "节点信息不可用";
+    } else if (!nd.allowRelay || nd.relayError) {
+      state = "no-relay";
+      label = nd.relayError ? `中继网关不可用：${nd.relayError}` : "节点未允许成为中继网关";
+    } else {
+      const path = effectivePath(directMap[rt.targetNodeId], relayReady);
+      if (path === "direct") {
+        state = "direct";
+        label = "与节点直连路由";
+      } else if (path === "relay") {
+        state = "relay";
+        label = "与节点中继路由";
+      } else {
+        state = "relay";
+        label = "正在尝试直连，当前使用中继";
+      }
+    }
+
+    const nodeName = nd?.deviceName?.trim() || (nd?.id || rt.targetNodeId).slice(0, 8);
+    const nodeTitle = nd?.deviceName?.trim() || nd?.id || rt.targetNodeId;
+    const icon = state === "direct" || state === "relay" ? arrow : cross;
+    return `<div class="subnet-route-row">
+      <code class="subnet-route-cidr" title="${esc(rt.cidr)}">${esc(rt.cidr)}</code>
+      <span class="subnet-route-state ${state}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${icon}</span>
+      <span class="subnet-route-node" title="${esc(nodeTitle)}">${esc(nodeName)}</span>
+    </div>`;
+  }).join("");
+
+  return `<section class="subnet-route-summary" aria-label="子网路由">
+    <div class="subnet-route-summary-head"><h3>子网路由</h3><span class="hint">已生效</span></div>
+    <div class="subnet-route-list">${rows}</div>
+  </section>`;
+}
+
 function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string, routes: RelayRoute[] | undefined): string {
   if (!r) return `<p class="hint member-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
@@ -2518,6 +2582,7 @@ function networkDetailHTML(n: NetInfo): string {
   </div>
   ${canManage ? pendingBannersHTML(n.networkId, ownerInfo[n.networkId]?.pending) : ""}
   ${cgnatCompactHTML()}
+  ${subnetRouteSummaryHTML(n, r, routes)}
   ${memberCardsHTML(n, r, canManage, role, routes)}`;
 }
 
