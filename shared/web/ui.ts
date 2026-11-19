@@ -2097,7 +2097,6 @@ function memberSummaryHTML(n: NetInfo, r: PeersResp | undefined, selfRole: strin
   const connected = n.active === true && n.serverState !== "gone";
   const arrow = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h15"/><path d="m13 6 6 6-6 6"/></svg>';
   const cross = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
-  const dot = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="5"/></svg>';
 
   const rows = list.map((nd) => {
     const isSelf = !!self && nd.id === self.id;
@@ -2131,12 +2130,18 @@ function memberSummaryHTML(n: NetInfo, r: PeersResp | undefined, selfRole: strin
     const crown = role === "owner" && !nd.isHub
       ? `<span class="network-owner-mark" title="我创建的网络" aria-label="我创建的网络">${ICON_CROWN}</span>`
       : "";
-    const name = nd.isHub ? "官方中继" : deviceLabelText(nd);
-    const icon = state === "self" ? dot : state === "offline" ? cross : arrow;
-    return `<div class="member-summary-row">
+    const name = nd.isHub ? "官方中继" : (nd.deviceName?.trim() || (nd.id || "").slice(0, 8));
+    const icon = state === "offline" ? cross : arrow;
+    const selfEdit = isSelf
+      ? `<button type="button" class="member-summary-edit" data-member-rename-self="${esc(nd.deviceName || "")}" title="编辑设备名称" aria-label="编辑设备名称"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>`
+      : "";
+    const stateHTML = isSelf
+      ? `<span class="member-summary-self" role="status" title="当前设备">本设备</span>`
+      : `<span class="member-summary-state ${state}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${icon}</span>`;
+    return `<div class="member-summary-row${isSelf ? " self" : ""}">
       <code class="member-summary-ip" title="${esc(nd.ip || "-")}">${esc(nd.ip || "-")}</code>
-      <span class="member-summary-state ${state}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${icon}</span>
-      <span class="member-summary-name" title="${esc(name)}">${crown}${esc(name)}</span>
+      ${stateHTML}
+      <span class="member-summary-name" title="${esc(name)}"><span class="member-summary-name-text">${crown}${esc(name)}</span>${selfEdit}</span>
     </div>`;
   }).join("");
 
@@ -2792,6 +2797,11 @@ function bindNetworkDetailEvents() {
         pendingAction.disabled = false;
         pendingAction.innerHTML = original;
       }
+      return;
+    }
+    const selfRenameEl = target.closest<HTMLButtonElement>("[data-member-rename-self]");
+    if (selfRenameEl) {
+      openRenameDeviceModal(selfRenameEl.dataset.memberRenameSelf || "");
       return;
     }
     const renameEl = target.closest<HTMLButtonElement>("[data-detail-rename]");
