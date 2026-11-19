@@ -2088,7 +2088,7 @@ function subnetRouteSummaryHTML(n: NetInfo, r: PeersResp | undefined, routes: Re
   }).join("");
 
   const config = canManage
-    ? `<button type="button" class="btn ghost sm subnet-route-config" data-subnet-route-config title="管理子网路由" aria-label="管理子网路由"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>`
+    ? `<button type="button" class="btn ghost subnet-route-config" style="width:24px;height:24px;padding:0;border-radius:50%" data-subnet-route-config title="管理子网路由" aria-label="管理子网路由"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>`
     : "";
   const emptyText = canManage ? "暂未配置任何路由信息，请点击右上角按钮配置" : "暂无已生效路由";
   return `<section class="subnet-route-summary" aria-label="子网路由">
