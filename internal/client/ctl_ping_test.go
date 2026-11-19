@@ -22,6 +22,12 @@ func TestParsePingOutput(t *testing.T) {
 			avg:  9.5,
 		},
 		{
+			name: "windows",
+			out:  "\nPinging 10.88.0.2 with 32 bytes of data:\nReply from 10.88.0.2: bytes=32 time=12ms TTL=64\n\nPing statistics for 10.88.0.2:\n    Packets: Sent = 3, Received = 3, Lost = 0 (0% loss),\nApproximate round trip times in milli-seconds:\n    Minimum = 8ms, Maximum = 15ms, Average = 12ms\n",
+			loss: 0,
+			avg:  12,
+		},
+		{
 			name: "unreachable",
 			out:  "3 packets transmitted, 0 packets received, 100% packet loss\n",
 			loss: 100,

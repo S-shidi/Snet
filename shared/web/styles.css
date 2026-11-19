@@ -1513,12 +1513,13 @@ pre.code { user-select: all; }
   margin: 0; color: var(--text); font-size: 13px; font-weight: 700;
 }
 .subnet-route-summary-head .hint { font-size: 11px; }
-.subnet-route-config { margin-left: auto; }
+.subnet-route-config { width: 24px; height: 24px; padding: 0; margin-left: auto; }
+.subnet-route-config svg { width: 15px; height: 15px; display: block; }
 .subnet-route-empty { padding: 4px 0 2px; color: var(--faint); font-size: 12px; }
 .subnet-route-list { display: flex; flex-direction: column; }
 .subnet-route-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   min-height: 32px;
@@ -1543,7 +1544,7 @@ pre.code { user-select: all; }
   color: var(--dim); font-size: 12px; text-align: right;
 }
 @media (max-width: 520px) {
-  .subnet-route-row { grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1.15fr); gap: 6px; }
+  .subnet-route-row { grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1fr); gap: 6px; }
 }
 /* ── Member summary (member view) ────────────────────────────── */
 .member-summary {
@@ -1562,13 +1563,21 @@ pre.code { user-select: all; }
 .member-summary-list { display: flex; flex-direction: column; }
 .member-summary-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.2fr);
+  grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   min-height: 32px;
   border-top: 1px solid rgba(148,163,184,.1);
 }
 .member-summary-row:first-child { border-top: 0; }
+.status-dot {
+  display: inline-block; width: 7px; height: 7px; flex: none;
+  margin-right: 5px; border-radius: 50%; vertical-align: 1px;
+  background: var(--faint);
+}
+.status-dot.ok { background: var(--ok); }
+.status-dot.off { background: var(--faint); }
+
 .member-summary-ip {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text); font-size: 12px;
@@ -1596,5 +1605,5 @@ pre.code { user-select: all; }
   white-space: nowrap;
 }
 @media (max-width: 520px) {
-  .member-summary-row { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.2fr); gap: 6px; }
+  .member-summary-row { grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1fr); gap: 6px; }
 }

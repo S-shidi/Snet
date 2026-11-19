@@ -2079,15 +2079,16 @@ function subnetRouteSummaryHTML(n: NetInfo, r: PeersResp | undefined, routes: Re
     const nodeName = nd?.deviceName?.trim() || (nd?.id || rt.targetNodeId).slice(0, 8);
     const nodeTitle = nd?.deviceName?.trim() || nd?.id || rt.targetNodeId;
     const icon = state === "direct" || state === "relay" ? arrow : cross;
+    const nodeDot = `<span class="status-dot ${online ? "ok" : "off"}" title="${online ? "在线" : "离线"}"></span>`;
     return `<div class="subnet-route-row">
       <code class="subnet-route-cidr" title="${esc(rt.cidr)}">${esc(rt.cidr)}</code>
       <span class="subnet-route-state ${state}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${icon}</span>
-      <span class="subnet-route-node" title="${esc(nodeTitle)}">${esc(nodeName)}</span>
+      <span class="subnet-route-node" title="${esc(nodeTitle)}">${nodeDot}${esc(nodeName)}</span>
     </div>`;
   }).join("");
 
   const config = canManage
-    ? `<button type="button" class="btn icon sm subnet-route-config" data-subnet-route-config title="管理子网路由" aria-label="管理子网路由"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>`
+    ? `<button type="button" class="btn ghost sm subnet-route-config" data-subnet-route-config title="管理子网路由" aria-label="管理子网路由"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>`
     : "";
   return `<section class="subnet-route-summary" aria-label="子网路由">
     <div class="subnet-route-summary-head"><h3>子网路由</h3><span class="hint">已生效</span>${config}</div>
@@ -2151,10 +2152,12 @@ function memberSummaryHTML(n: NetInfo, r: PeersResp | undefined, selfRole: strin
     const stateHTML = isSelf
       ? `<span class="member-summary-self" role="status" title="当前设备">本设备</span>`
       : `<span class="member-summary-state ${state}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${icon}</span>`;
+    const dotOnline = isSelf ? connected : online;
+    const nodeDot = `<span class="status-dot ${dotOnline ? "ok" : "off"}" title="${dotOnline ? "在线" : "离线"}"></span>`;
     return `<div class="member-summary-row${isSelf ? " self" : ""}">
       <code class="member-summary-ip" title="${esc(nd.ip || "-")}">${esc(nd.ip || "-")}</code>
       ${stateHTML}
-      <span class="member-summary-name" title="${esc(name)}"><span class="member-summary-name-text">${crown}${esc(name)}</span></span>
+      <span class="member-summary-name" title="${esc(name)}"><span class="member-summary-name-text">${nodeDot}${crown}${esc(name)}</span></span>
     </div>`;
   }).join("");
 
@@ -2192,9 +2195,11 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const crown = role === "owner" && !nd.isHub
       ? `<span class="network-owner-mark" title="我创建的网络" aria-label="我创建的网络">${ICON_CROWN}</span>`
       : "";
+    const dotOnline = isSelf ? connected : online;
+    const statusDot = `<span class="status-dot ${dotOnline ? "ok" : "off"}" title="${dotOnline ? "在线" : "离线"}"></span>`;
     const hubName = nd.isHub
-      ? '<span class="hub-name"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6.5 6.5 0 0 0 5.2 12.2 3.5 3.5 0 0 0 6.5 19h11Z"/></svg> 官方中继</span>'
-      : `${crown}${deviceLabel(nd)}`;
+      ? `<span class="hub-name">${statusDot}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6.5 6.5 0 0 0 5.2 12.2 3.5 3.5 0 0 0 6.5 19h11Z"/></svg> 官方中继</span>`
+      : `${statusDot}${crown}${deviceLabel(nd)}`;
     const selfPublic = n.relayPath?.publicIP || nd.publicIPv4 || (isPublicEndpoint4(nd.endpoint) ? nd.endpoint : "");
     const peerPublic = [nd.publicIPv4, pd?.public, pd?.addr, pd?.lan, nd.endpoint].find(isPublicEndpoint4) || "";
     const public4 = isSelf
@@ -2213,6 +2218,12 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const wgConfig = canManage && wgExport
       ? `<button type="button" class="btn ghost sm" data-wg-config="${esc(nd.id)}" data-wg-name="${esc(nd.deviceName || "WireGuard 客户端")}">配置</button>`
       : "";
+    const poke = !isSelf && canManage
+      ? `<button type="button" class="btn ghost sm member-poke" data-detail-poke="${esc(nd.id)}" data-poke-target="${esc(nd.ip || "")}" title="发送探测包唤醒节点"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>唤醒</button>`
+      : "";
+    const diag = !isSelf && canManage
+      ? `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button>`
+      : "";
     const kick = !isSelf && canManage
       ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}" ${nd.isHub ? 'data-hub="1"' : ""}>${nd.isHub ? "移除" : "踢出"}</button>`
       : "";
@@ -2227,7 +2238,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       : "";
     const foot = `<div class="member-card-foot">
       <span class="member-card-last">${esc(last)}</span>
-      <span class="member-card-actions">${wgConfig}${kick}</span>
+      <span class="member-card-actions">${wgConfig}${poke}${diag}${kick}</span>
     </div>`;
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
@@ -2405,6 +2416,64 @@ function openEditIPModal(nid: string, nodeId: string, current: string) {
       if (first) setTimeout(() => first.focus(), 30);
     },
   });
+}
+
+
+function showPingModal(text: string, cls: string) {
+  openModal({
+    title: "诊断结果",
+    body: `<div class="ping-modal ${esc(cls)}"><span class="ping-modal-icon">${cls === "ok" ? "✓" : "!"}</span><div><div class="ping-modal-title">${cls === "ok" ? "连接正常" : "诊断失败"}</div><div class="ping-modal-text">${esc(text)}</div></div></div>`,
+    footer: `<button data-close class="btn ghost">关闭</button>`,
+  });
+}
+
+async function runPeerPing(btn: HTMLButtonElement) {
+  const target = btn.dataset.pingTarget || "";
+  if (!target) {
+    showPingModal("诊断失败：无 IP", "err");
+    return;
+  }
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `${SPIN} 诊断中…`;
+  try {
+    const r = await backend.ping(target);
+    const loss = Math.max(0, Number(r.loss) || 0);
+    const avg = Math.max(0, Number(r.avgRtt) || 0);
+    if (loss >= 100) throw new Error("目标不可达");
+    const cls = loss >= 50 || avg >= 200 ? "err" : loss > 0 || avg >= 80 ? "warn" : "ok";
+    showPingModal(`延迟: ${avg > 0 ? `${avg.toFixed(0)}ms` : "-"} / 丢包: ${loss.toFixed(0)}%`, cls);
+  } catch (e) {
+    const msg = String(e).replace(/^Error:\s*/, "") || "未知错误";
+    showPingModal(`诊断失败：${msg}`, "err");
+    toast(`诊断失败：${msg}`, "err");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
+}
+
+async function runPoke(btn: HTMLButtonElement) {
+  const target = btn.dataset.pokeTarget || "";
+  if (!target) {
+    toast("唤醒失败：目标 IP 为空", "err");
+    return;
+  }
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `${SPIN} 唤醒中…`;
+  toast("正在尝试唤醒该节点…");
+  try {
+    await backend.poke(target);
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    await refresh();
+    toast("已发送唤醒探测包");
+  } catch (e) {
+    toast(`唤醒失败：${e}`, "err");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
 }
 
 /* ── Invite link helpers ───────────────────────────────────────── */
@@ -2815,6 +2884,16 @@ function bindNetworkDetailEvents() {
         pendingAction.disabled = false;
         pendingAction.innerHTML = original;
       }
+      return;
+    }
+    const pokeEl = target.closest<HTMLButtonElement>("[data-detail-poke]");
+    if (pokeEl) {
+      await runPoke(pokeEl);
+      return;
+    }
+    const pingEl = target.closest<HTMLButtonElement>("[data-detail-ping]");
+    if (pingEl) {
+      await runPeerPing(pingEl);
       return;
     }
     const renameEl = target.closest<HTMLButtonElement>("[data-detail-rename]");
