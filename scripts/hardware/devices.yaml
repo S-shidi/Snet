@@ -1,0 +1,28 @@
+# OpenWrt Image Builder matrix for SNET hardware.
+#
+# Each device maps to one Image Builder target/profile. Optional fields:
+#   imagebuilder_url: override the auto-generated download URL
+#   imagebuilder_version: override the global OpenWrt version for this device
+#   extra_packages: additional packages appended after packages
+#   image_name: optional output name prefix
+openwrt_version: "24.10.5"
+imagebuilder_base: "https://downloads.openwrt.org"
+
+devices:
+  - name: "WankeCloud"
+    target: "s805"
+    profile: "Thunder OneCloud"
+    arch: "armv7"
+    post_script: "amlogic-pack.sh"
+    packages: "-luci -luci-ssl"
+    # Community S805 builds usually provide a vendor-specific Image Builder.
+    # Set imagebuilder_url when using one instead of the official downloads tree.
+    imagebuilder_url: ""
+
+  - name: "NanoPi-R5C"
+    target: "rockchip/armv8"
+    profile: "friendlyarm_nanopi-r5c"
+    arch: "arm64"
+    post_script: ""
+    packages: "-luci -luci-ssl"
+    imagebuilder_url: ""

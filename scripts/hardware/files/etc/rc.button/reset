@@ -1,0 +1,33 @@
+#!/bin/sh
+# SNET hardware reset button.
+#
+# Replacement for the stock OpenWrt handler because the SNET images use an
+# ext4 rootfs without an /overlay mount, so factoryreset never triggers.
+#
+#   press < 3 s       reboot
+#   press >= 8 s      SNET factory reset
+#   3 s .. 8 s        ignored (prevents accidental resets)
+
+case "$ACTION" in
+pressed)
+	return 0
+	;;
+timeout)
+	logger -t snet-reset "button held ${SEEN:-0}s; release after 8s for factory reset"
+	return 0
+	;;
+released)
+	seen="${SEEN:-0}"
+	if [ "$seen" -lt 3 ]; then
+		logger -t snet-reset "short press ${seen}s: reboot"
+		sync
+		reboot
+	elif [ "$seen" -ge 8 ]; then
+		logger -t snet-reset "long press ${seen}s: factory reset"
+		/usr/sbin/snet-factory-reset.sh &
+	fi
+	return 0
+	;;
+esac
+
+return 0
