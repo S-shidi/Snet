@@ -136,3 +136,24 @@ export AML_AMLIMG=/path/to/AmlImg
 ```
 
 脚本会检查三个文件/工具是否存在，并给出错误提示。玩客云最终 `.burn.img` 还需要板级分区模板；不同批次的 WankeCloud 可能使用不同 DDR/分区布局，必须使用对应硬件的 bootloader 和 DTB，不能混用。
+
+## 物理复位键
+
+镜像使用自定义 `/etc/rc.button/reset`，不依赖 ext4 rootfs 上的 OpenWrt factoryreset：
+
+- 小于 3 秒：重启
+- 3 到 8 秒：忽略
+- 大于等于 8 秒：执行 `/usr/sbin/snet-factory-reset.sh`
+
+SNET 恢复出厂会：
+
+- 停止 `snetd`
+- 删除 `/etc/snet/config.json`
+- 删除 `/etc/snet/device.id`
+- 清除 Web 密码（密码哈希在 config 中）
+- 将 `network.lan` 恢复为 `eth0` DHCP
+- 保留已安装的 SNET 二进制、Web UI、nginx 代理和 ctl token
+- 重启设备
+
+这样既不会因为删除基础设施配置导致无法登录 Web，也会生成新的设备身份并清除网络成员关系。
+
