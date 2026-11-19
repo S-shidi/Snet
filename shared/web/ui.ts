@@ -1508,6 +1508,15 @@ function openSettingsModal() {
       <section class="settings-panel">
         <div class="settings-panel-head"><h3>设备</h3><span class="hint">本机身份</span></div>
         <div class="settings-list">
+          <div class="settings-row">
+            <div class="settings-row-main">
+              <div class="settings-row-title">设备名称</div>
+              <div class="settings-row-desc">当前名称：<span id="s-device-name">${esc(status?.deviceName || "未设置")}</span></div>
+            </div>
+            <div class="settings-row-actions">
+              <button type="button" id="s-rename-device" class="btn ghost sm">编辑</button>
+            </div>
+          </div>
           <div class="settings-row settings-row-device">
             <div class="settings-row-main">
               <div class="settings-row-title">设备 ID</div>
@@ -1701,6 +1710,9 @@ function openSettingsModal() {
       serverReset?.addEventListener("click", () => saveServer(""));
       body.querySelector("#s-copy-device")?.addEventListener("click", async (e) => {
         await copyText(status?.deviceId || "", e.currentTarget as HTMLButtonElement);
+      });
+      body.querySelector("#s-rename-device")?.addEventListener("click", () => {
+        openRenameDeviceModal(status?.deviceName || "");
       });
 
       const natInput = body.querySelector<HTMLInputElement>("#s-nat");
@@ -2017,8 +2029,9 @@ function pendingBannersHTML(nid: string, pending: NetInfoDetail["pending"]): str
 
 
 function subnetRouteSummaryHTML(n: NetInfo, r: PeersResp | undefined, routes: RelayRoute[] | undefined): string {
+  const canManage = canManageNetwork(n);
   const active = (routes ?? []).filter((rt) => rt.status === "active");
-  if (!active.length) return "";
+  if (!active.length && !canManage) return "";
 
   const nodes = new Map<string, NetNode>();
   if (r?.self) nodes.set(r.self.id, r.self);
@@ -2073,9 +2086,12 @@ function subnetRouteSummaryHTML(n: NetInfo, r: PeersResp | undefined, routes: Re
     </div>`;
   }).join("");
 
+  const config = canManage
+    ? `<button type="button" class="btn icon sm subnet-route-config" data-subnet-route-config title="管理子网路由" aria-label="管理子网路由"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>`
+    : "";
   return `<section class="subnet-route-summary" aria-label="子网路由">
-    <div class="subnet-route-summary-head"><h3>子网路由</h3><span class="hint">已生效</span></div>
-    <div class="subnet-route-list">${rows}</div>
+    <div class="subnet-route-summary-head"><h3>子网路由</h3><span class="hint">已生效</span>${config}</div>
+    <div class="subnet-route-list">${rows || '<div class="subnet-route-empty">暂无已生效路由</div>'}</div>
   </section>`;
 }
 
@@ -2132,16 +2148,13 @@ function memberSummaryHTML(n: NetInfo, r: PeersResp | undefined, selfRole: strin
       : "";
     const name = nd.isHub ? "官方中继" : (nd.deviceName?.trim() || (nd.id || "").slice(0, 8));
     const icon = state === "offline" ? cross : arrow;
-    const selfEdit = isSelf
-      ? `<button type="button" class="member-summary-edit" data-member-rename-self="${esc(nd.deviceName || "")}" title="编辑设备名称" aria-label="编辑设备名称"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>`
-      : "";
     const stateHTML = isSelf
       ? `<span class="member-summary-self" role="status" title="当前设备">本设备</span>`
       : `<span class="member-summary-state ${state}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${icon}</span>`;
     return `<div class="member-summary-row${isSelf ? " self" : ""}">
       <code class="member-summary-ip" title="${esc(nd.ip || "-")}">${esc(nd.ip || "-")}</code>
       ${stateHTML}
-      <span class="member-summary-name" title="${esc(name)}"><span class="member-summary-name-text">${crown}${esc(name)}</span>${selfEdit}</span>
+      <span class="member-summary-name" title="${esc(name)}"><span class="member-summary-name-text">${crown}${esc(name)}</span></span>
     </div>`;
   }).join("");
 
@@ -2750,6 +2763,11 @@ function bindNetworkDetailEvents() {
   if (!detail) return;
   detail.addEventListener("click", async (e) => {
     const target = e.target as HTMLElement;
+    const subnetConfig = target.closest<HTMLButtonElement>("[data-subnet-route-config]");
+    if (subnetConfig && detailNid) {
+      void openSubnetRouteModal(detailNid);
+      return;
+    }
     const moreBtn = target.closest<HTMLButtonElement>("#detail-more-btn");
     if (moreBtn) {
       e.stopPropagation();
@@ -2797,11 +2815,6 @@ function bindNetworkDetailEvents() {
         pendingAction.disabled = false;
         pendingAction.innerHTML = original;
       }
-      return;
-    }
-    const selfRenameEl = target.closest<HTMLButtonElement>("[data-member-rename-self]");
-    if (selfRenameEl) {
-      openRenameDeviceModal(selfRenameEl.dataset.memberRenameSelf || "");
       return;
     }
     const renameEl = target.closest<HTMLButtonElement>("[data-detail-rename]");

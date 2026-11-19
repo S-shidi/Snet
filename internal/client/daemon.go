@@ -4265,6 +4265,7 @@ func (d *Daemon) Status() (map[string]any, error) {
 		"commit":       buildinfo.Commit,
 		"buildDate":    buildinfo.BuildDate,
 		"deviceId":     d.cfg.DeviceID,
+		"deviceName":   d.cfg.DeviceName,
 		"serverAddr":   d.serverAddrLocked(),
 		"wgPort":       d.cfg.WireguardPort,
 		"rxSpeed":      rxSpeed,

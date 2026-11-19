@@ -78,6 +78,7 @@ export type RelayRoute = {
 
 export type DaemonStatus = {
   deviceId?: string;
+  deviceName?: string;
   serverAddr?: string;
   wgPort?: number;
   rxSpeed?: number;

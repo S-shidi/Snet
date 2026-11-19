@@ -56,7 +56,7 @@ header::after {
 }
 .header-inner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  width: 100%; max-width: 440px; margin: 0 auto;
+  width: 100%; max-width: 552px; margin: 0 auto;
   padding: 12px var(--content-padding-x) 12px var(--header-left-padding);
 }
 .brand { flex: none; }
@@ -85,7 +85,7 @@ header::after {
 .header-right { display: flex; align-items: center; gap: 10px; flex: none; }
 #header-svc-btn[hidden] { display: none !important; }
 .network-tabs {
-  display: flex; align-items: flex-end; gap: 2px; width: 100%; max-width: 440px; min-width: 0;
+  display: flex; align-items: flex-end; gap: 2px; width: 100%; max-width: 552px; min-width: 0;
   margin: 0 auto; padding: 0 var(--content-padding-x); overflow-x: auto; white-space: nowrap;
   scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
 }
@@ -260,7 +260,7 @@ header::after {
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
-#app-main { width: 100%; max-width: 440px; margin: 0 auto; padding: 20px var(--content-padding-x) 60px; }
+#app-main { width: 100%; max-width: 552px; margin: 0 auto; padding: 20px var(--content-padding-x) 60px; }
 #app-main[hidden], .empty-state[hidden] { display: none; }
 body.empty-mode { overflow: hidden; }
 .empty-state {
@@ -932,12 +932,12 @@ body.empty-mode { overflow: hidden; }
 }
 .modal {
   background: var(--card); border: 1px solid rgba(37,45,64,.9); border-radius: 14px;
-  width: 460px; max-width: 96vw; max-height: 88vh; display: flex; flex-direction: column;
+  width: 460px; max-width: min(96vw, 552px); max-height: 88vh; display: flex; flex-direction: column;
   /* Same surface treatment as a .card, so a modal reads as part of the app. */
   box-shadow: 0 1px 0 rgba(255,255,255,.025), 0 18px 48px rgba(0,0,0,.45);
   animation: pop .16s ease-out;
 }
-.modal.wide { width: 640px; }
+.modal.wide { width: 552px; max-width: min(96vw, 552px); }
 .modal-head {
   padding: 13px 18px; display: flex; align-items: center; justify-content: space-between;
   border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card);
@@ -1441,8 +1441,8 @@ pre.code { user-select: all; }
   position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,.86); padding: 24px;
 }
-.qr-zoom-panel { position: relative; background: #fff; padding: 18px; border-radius: 18px; }
-.qr-zoom-panel .qr { width: min(78vmin, 760px); max-width: none; aspect-ratio: 1; }
+.qr-zoom-panel { position: relative; width: min(552px, calc(100vw - 32px)); max-width: 552px; background: #fff; padding: 18px; border-radius: 18px; }
+.qr-zoom-panel .qr { width: min(78vmin, 516px); max-width: 100%; aspect-ratio: 1; margin: 0 auto; }
 .qr-zoom-panel .qr svg { width: 100%; height: 100%; display: block; }
 .qr-zoom-close {
   position: absolute; top: -16px; right: -16px; width: 38px; height: 38px; border-radius: 50%;
@@ -1513,6 +1513,8 @@ pre.code { user-select: all; }
   margin: 0; color: var(--text); font-size: 13px; font-weight: 700;
 }
 .subnet-route-summary-head .hint { font-size: 11px; }
+.subnet-route-config { margin-left: auto; }
+.subnet-route-empty { padding: 4px 0 2px; color: var(--faint); font-size: 12px; }
 .subnet-route-list { display: flex; flex-direction: column; }
 .subnet-route-row {
   display: grid;
@@ -1592,20 +1594,6 @@ pre.code { user-select: all; }
   padding: 1px 7px; border: 1px solid rgba(63,182,139,.32); border-radius: 999px;
   background: var(--ok-soft); color: var(--ok); font-size: 11px; line-height: 1.5;
   white-space: nowrap;
-}
-.member-summary-edit {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; flex: none; padding: 0;
-  border: 0; border-radius: 5px; background: transparent; color: var(--dim);
-  opacity: 0; pointer-events: none; cursor: pointer;
-  transition: opacity .12s, background .12s, color .12s;
-}
-.member-summary-edit svg { width: 13px; height: 13px; display: block; }
-.member-summary-row.self:hover .member-summary-edit,
-.member-summary-row.self:focus-within .member-summary-edit { opacity: 1; pointer-events: auto; }
-.member-summary-edit:hover { color: var(--accent2); background: var(--accent-soft); }
-@media (hover: none) {
-  .member-summary-row.self .member-summary-edit { opacity: 1; pointer-events: auto; }
 }
 @media (max-width: 520px) {
   .member-summary-row { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.2fr); gap: 6px; }
