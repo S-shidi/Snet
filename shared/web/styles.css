@@ -1604,6 +1604,9 @@ pre.code { user-select: all; }
 .member-summary-row.self:hover .member-summary-edit,
 .member-summary-row.self:focus-within .member-summary-edit { opacity: 1; pointer-events: auto; }
 .member-summary-edit:hover { color: var(--accent2); background: var(--accent-soft); }
+@media (hover: none) {
+  .member-summary-row.self .member-summary-edit { opacity: 1; pointer-events: auto; }
+}
 @media (max-width: 520px) {
   .member-summary-row { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.2fr); gap: 6px; }
 }
