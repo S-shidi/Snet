@@ -1543,3 +1543,48 @@ pre.code { user-select: all; }
 @media (max-width: 520px) {
   .subnet-route-row { grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1.15fr); gap: 6px; }
 }
+/* ── Member summary (member view) ────────────────────────────── */
+.member-summary {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(17,24,39,.42);
+}
+.member-summary-head {
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;
+}
+.member-summary-head h3 {
+  margin: 0; color: var(--text); font-size: 13px; font-weight: 700;
+}
+.member-summary-head .hint { font-size: 11px; }
+.member-summary-list { display: flex; flex-direction: column; }
+.member-summary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1.2fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  border-top: 1px solid rgba(148,163,184,.1);
+}
+.member-summary-row:first-child { border-top: 0; }
+.member-summary-ip {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text); font-size: 12px;
+}
+.member-summary-state {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;
+}
+.member-summary-state svg { width: 18px; height: 18px; display: block; }
+.member-summary-state.self { color: var(--ok); }
+.member-summary-state.direct { color: var(--ok); }
+.member-summary-state.relay { color: var(--warn); }
+.member-summary-state.offline { color: var(--faint); }
+.member-summary-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--dim); font-size: 12px; text-align: right;
+}
+.member-summary-name .network-owner-mark { vertical-align: -2px; }
+@media (max-width: 520px) {
+  .member-summary-row { grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1.2fr); gap: 6px; }
+}

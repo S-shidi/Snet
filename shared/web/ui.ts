@@ -2079,6 +2079,73 @@ function subnetRouteSummaryHTML(n: NetInfo, r: PeersResp | undefined, routes: Re
   </section>`;
 }
 
+
+function memberSummaryHTML(n: NetInfo, r: PeersResp | undefined, selfRole: string): string {
+  if (!r) return `<p class="hint member-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
+  const self = r.self;
+  const list: NetNode[] = (self ? [self, ...(r.peers ?? [])] : (r.peers ?? []))
+    .slice()
+    .sort((a, b) => {
+      const aSelf = !!self && a.id === self.id ? 0 : 1;
+      const bSelf = !!self && b.id === self.id ? 0 : 1;
+      return aSelf - bSelf || String(a.id).localeCompare(String(b.id));
+    });
+  if (!list.length) return `<section class="member-summary"><div class="member-summary-head"><h3>成员</h3></div><p class="hint member-empty">暂无其他成员</p></section>`;
+
+  const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
+  const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
+  const connected = n.active === true && n.serverState !== "gone";
+  const arrow = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h15"/><path d="m13 6 6 6-6 6"/></svg>';
+  const cross = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+  const dot = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="5"/></svg>';
+
+  const rows = list.map((nd) => {
+    const isSelf = !!self && nd.id === self.id;
+    const online = connected && !!nd.online;
+    const pd = directMap[nd.id];
+    let state: "self" | "direct" | "relay" | "offline";
+    let label: string;
+
+    if (isSelf) {
+      state = "self";
+      label = "当前设备";
+    } else if (!online) {
+      state = "offline";
+      label = connected ? "节点离线" : "当前网络未连接";
+    } else {
+      const path = effectivePath(pd, relayReady);
+      if (path === "direct") {
+        state = "direct";
+        const kind = directKindLabel(pd);
+        label = `在线 · 与节点直连${kind ? `（${kind}）` : ""}`;
+      } else if (path === "relay") {
+        state = "relay";
+        label = "在线 · 与节点中继";
+      } else {
+        state = "relay";
+        label = "在线 · 正在尝试直连，当前使用中继";
+      }
+    }
+
+    const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
+    const crown = role === "owner" && !nd.isHub
+      ? `<span class="network-owner-mark" title="我创建的网络" aria-label="我创建的网络">${ICON_CROWN}</span>`
+      : "";
+    const name = nd.isHub ? "官方中继" : deviceLabelText(nd);
+    const icon = state === "self" ? dot : state === "offline" ? cross : arrow;
+    return `<div class="member-summary-row">
+      <code class="member-summary-ip" title="${esc(nd.ip || "-")}">${esc(nd.ip || "-")}</code>
+      <span class="member-summary-state ${state}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${icon}</span>
+      <span class="member-summary-name" title="${esc(name)}">${crown}${esc(name)}</span>
+    </div>`;
+  }).join("");
+
+  return `<section class="member-summary" aria-label="成员">
+    <div class="member-summary-head"><h3>成员</h3><span class="hint">${list.length} 位</span></div>
+    <div class="member-summary-list">${rows}</div>
+  </section>`;
+}
+
 function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string): string {
   if (!r) return `<p class="hint member-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
@@ -2579,7 +2646,7 @@ function networkDetailHTML(n: NetInfo): string {
   ${canManage ? pendingBannersHTML(n.networkId, ownerInfo[n.networkId]?.pending) : ""}
   ${cgnatCompactHTML()}
   ${subnetRouteSummaryHTML(n, r, routes)}
-  ${memberCardsHTML(n, r, canManage, role)}`;
+  ${canManage ? memberCardsHTML(n, r, canManage, role) : memberSummaryHTML(n, r, role)}`;
 }
 
 function pendingDetailHTML(p: NonNullable<DaemonStatus["pendingJoins"]>[number]): string {
