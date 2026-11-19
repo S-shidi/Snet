@@ -43,10 +43,11 @@ type Tunnel struct {
 	idle         bool
 }
 
-// NewTunnel creates the utun interface, assigns the private /32 address and
-// brings up the WireGuard device. Requires root on macOS.
-func NewTunnel(privKeyHex, ip string, port int, mtu int) (*Tunnel, error) {
-	t, err := tun.CreateTUN(tunDeviceName(), mtu)
+// NewTunnel creates the platform TUN interface, assigns the private /32
+// address and brings up the WireGuard device. networkID selects the stable
+// per-network interface name where the platform supports one.
+func NewTunnel(privKeyHex, ip string, port int, mtu int, networkID string) (*Tunnel, error) {
+	t, err := tun.CreateTUN(tunDeviceName(networkID), mtu)
 	if err != nil {
 		return nil, fmt.Errorf("create tun: %w", err)
 	}

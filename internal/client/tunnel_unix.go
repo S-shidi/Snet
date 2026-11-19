@@ -13,7 +13,7 @@ import (
 // tunDeviceName returns the TUN adapter name used by tun.CreateTUN. macOS
 // treats "utun" as a template prefix and allocates a fresh interface; linux
 // creates the literal name.
-func tunDeviceName() string { return "utun" }
+func tunDeviceName(_ string) string { return "utun" }
 
 // configureInterface assigns the private /32 address, MTU and up state on a
 // freshly created TUN interface (BSD ifconfig / iproute2 syntax).

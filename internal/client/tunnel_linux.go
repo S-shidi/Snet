@@ -12,7 +12,7 @@ import (
 // tunDeviceName returns the TUN adapter name used by tun.CreateTUN on Linux.
 // An empty name lets the kernel auto-assign a unique tun%d interface so
 // multiple networks can coexist (a fixed "utun" would collide).
-func tunDeviceName() string { return "" }
+func tunDeviceName(_ string) string { return "" }
 
 // configureInterface assigns the private /32 address, MTU and up state on a
 // freshly created TUN interface using iproute2 commands.

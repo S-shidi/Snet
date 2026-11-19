@@ -1603,7 +1603,7 @@ func (d *Daemon) bringUp(nid string) error {
 		}
 		nc.Port = p
 	}
-	t, err := createTunnelForPlatform(d.androidTunFD, d.cfg.PrivateKey, nc.IP, nc.Port, protocol.DefaultMTU)
+	t, err := createTunnelForPlatform(d.androidTunFD, d.cfg.PrivateKey, nc.IP, nc.Port, protocol.DefaultMTU, nid)
 	if err != nil {
 		d.netErrs[nid] = err.Error()
 		d.scheduleRetryLocked(nid)

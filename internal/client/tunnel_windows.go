@@ -2,13 +2,32 @@
 
 package client
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
-// tunDeviceName returns the stable wintun adapter name. On Windows
-// tun.CreateTUN reuses an adapter with the same name instead of allocating a
-// fresh one, so a fixed name keeps daemon restarts on the same interface
-// (avoiding a pile-up of orphaned adapters).
-func tunDeviceName() string { return "snet" }
+// tunDeviceName returns a stable, per-network wintun adapter name. Keeping the
+// name deterministic lets a daemon restart reuse the same adapter, while the
+// network ID keeps independent networks on separate adapters and therefore on
+// separate WireGuard devices and routes.
+func tunDeviceName(networkID string) string {
+	id := strings.ToLower(strings.TrimSpace(networkID))
+	var b strings.Builder
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	id = b.String()
+	if id == "" {
+		id = "default"
+	}
+	if len(id) > 48 {
+		id = id[:48]
+	}
+	return "snet-" + id
+}
 
 // configureInterface assigns the private /32 address and brings the adapter up.
 // MTU is applied by wireguard-go when the wintun adapter is created; netsh only

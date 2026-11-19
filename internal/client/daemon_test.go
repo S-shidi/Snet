@@ -569,7 +569,7 @@ func TestSubnetChangeDetected(t *testing.T) {
 	// The poll loop only runs when the tunnel could be created; without a TUN
 	// device there is nothing to rebuild, so skip.
 	joiner.mu.Lock()
-	probe, tErr := NewTunnel(joiner.cfg.PrivateKey, "10.0.0.2", 51830, 1420)
+	probe, tErr := NewTunnel(joiner.cfg.PrivateKey, "10.0.0.2", 51830, 1420, "")
 	joiner.mu.Unlock()
 	if tErr == nil && probe != nil {
 		probe.Close()
@@ -627,7 +627,7 @@ func TestNetworkNameSyncedFromServer(t *testing.T) {
 	}
 	// The poll loop only runs when the tunnel could be created.
 	joiner.mu.Lock()
-	probe, tErr := NewTunnel(joiner.cfg.PrivateKey, "10.0.0.2", 51830, 1420)
+	probe, tErr := NewTunnel(joiner.cfg.PrivateKey, "10.0.0.2", 51830, 1420, "")
 	joiner.mu.Unlock()
 	if tErr == nil && probe != nil {
 		probe.Close()

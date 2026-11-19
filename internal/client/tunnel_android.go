@@ -14,7 +14,7 @@ import (
 )
 
 // tunDeviceName is unused on Android (TUN fd comes from VpnService).
-func tunDeviceName() string { return "" }
+func tunDeviceName(_ string) string { return "" }
 
 // configureInterface is a no-op on Android; VpnService.Builder handles it.
 func configureInterface(_, _ string, _ int) error { return nil }
