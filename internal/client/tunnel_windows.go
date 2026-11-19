@@ -8,9 +8,10 @@ import (
 )
 
 // tunDeviceName returns a stable, per-network wintun adapter name. Keeping the
-// name deterministic lets a daemon restart reuse the same adapter, while the
-// network ID keeps independent networks on separate adapters and therefore on
-// separate WireGuard devices and routes.
+// name deterministic lets a daemon reuse an adapter left behind by a crash,
+// while the network ID keeps independent networks on separate adapters and
+// therefore on separate WireGuard devices and routes. A normal Close removes
+// the adapter created by tun.CreateTUN.
 func tunDeviceName(networkID string) string {
 	id := strings.ToLower(strings.TrimSpace(networkID))
 	var b strings.Builder

@@ -90,3 +90,22 @@ func TestNoteApplyErrMarksNetworkError(t *testing.T) {
 		t.Fatalf("state should clear after success, got %v", nets[0]["state"])
 	}
 }
+
+func TestRemoveAllPeersRemovesSubnetRoute(t *testing.T) {
+	orig := removeSubnetRouteFn
+	var gotIface, gotSubnet string
+	removeSubnetRouteFn = func(iface, subnet string) error {
+		gotIface, gotSubnet = iface, subnet
+		return nil
+	}
+	t.Cleanup(func() { removeSubnetRouteFn = orig })
+
+	tn := &Tunnel{iface: "snet-net1", subnet: "10.88.0.0/24"}
+	tn.RemoveAllPeers()
+	if gotIface != "snet-net1" || gotSubnet != "10.88.0.0/24" {
+		t.Fatalf("removed route = %s %s, want snet-net1 10.88.0.0/24", gotIface, gotSubnet)
+	}
+	if tn.subnet != "" {
+		t.Fatalf("subnet not cleared: %q", tn.subnet)
+	}
+}

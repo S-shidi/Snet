@@ -224,7 +224,6 @@ func (rt *netRuntime) shutdown() {
 		rt.path = nil
 	}
 	if rt.tun != nil {
-		rt.tun.RemoveAllPeers()
 		rt.tun.Close()
 	}
 }

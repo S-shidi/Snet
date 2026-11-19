@@ -27,6 +27,7 @@ var ErrRouteConflict = errors.New("route conflict")
 // addSubnetRouteFn is the route installer used by ApplyPeers. Tests override
 // it to exercise the failure path without touching the host routing table.
 var addSubnetRouteFn = addSubnetRoute
+var removeSubnetRouteFn = removeSubnetRoute
 
 // Tunnel owns the utun interface and the WireGuard device.
 type Tunnel struct {
@@ -35,8 +36,9 @@ type Tunnel struct {
 	iface string
 	ip    string
 
-	mu    sync.Mutex
-	peers map[string]protocol.Node // nodeID -> node
+	mu     sync.Mutex
+	peers  map[string]protocol.Node // nodeID -> node
+	subnet string                   // tunnel subnet routed through iface
 
 	// Dynamic keepalive: track last activity to adjust interval
 	lastActivity time.Time
@@ -166,11 +168,18 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet, relayEP string) error
 		}
 	}
 	// Ensure the tunnel subnet is routed through the interface so that
-	// packets to any peer's tunnel IP reach the WireGuard device.
+	// packets to any peer's tunnel IP reach the WireGuard device. Drop the
+	// previous network subnet when the server changes it, otherwise a stale
+	// route would survive a network reconfiguration.
+	if t.subnet != "" && t.subnet != subnet {
+		removeSubnetRouteFn(t.iface, t.subnet)
+		t.subnet = ""
+	}
 	if subnet != "" {
 		if err := addSubnetRouteFn(t.iface, subnet); err != nil && routeErr == nil {
 			routeErr = err
 		}
+		t.subnet = subnet
 	}
 	t.peers = next
 	if routeErr != nil {
@@ -201,13 +210,18 @@ func (t *Tunnel) PeerSubnets() []string {
 	return out
 }
 
-// RemoveAllPeers removes all OS routes for every peer in the tunnel.
-// Used during tunnel teardown before closing the interface.
+// RemoveAllPeers removes all OS routes for every peer in the tunnel and the
+// network subnet route. Used during tunnel teardown before closing the
+// interface.
 func (t *Tunnel) RemoveAllPeers() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, p := range t.peers {
 		removePeerRoutes(t.iface, p)
+	}
+	if t.subnet != "" {
+		removeSubnetRouteFn(t.iface, t.subnet)
+		t.subnet = ""
 	}
 	t.peers = make(map[string]protocol.Node)
 }
@@ -311,6 +325,9 @@ type PeerStats struct {
 func (t *Tunnel) InterfaceName() string { return t.iface }
 
 func (t *Tunnel) Close() {
+	// Remove routes before closing the device. On Windows this also lets the
+	// Wintun adapter disappear cleanly when its final handle is closed.
+	t.RemoveAllPeers()
 	if t.dev != nil {
 		t.dev.Close()
 	}
