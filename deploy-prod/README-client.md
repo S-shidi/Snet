@@ -9,8 +9,8 @@ deploy-prod/docker-client/README.md
 ```
 
 - 标准 `compose.yaml`
-- 镜像 `snet-client:latest`，从 VPS 下载 tar 后 `docker load`
-- 不再需要 `-f compose.client.yaml`，也没有 build 段
+- 镜像从阿里云 ACR 拉取，例如 `crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:latest`
+- 不再需要 `-f compose.client.yaml`，也没有 build 段；VPS 私有 Registry 已废弃
 - 客户端 A：标准 Linux `/opt/snet-deploy/deploy-prod/docker-client`
 - 客户端 B：NAS `/volume1/docker/snet/deploy-prod/docker-client`
 

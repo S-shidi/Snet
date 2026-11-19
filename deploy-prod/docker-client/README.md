@@ -56,6 +56,46 @@ docker login crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com
 docker image inspect "$SNET_IMAGE" --format '{{.Id}}'
 ```
 
+### 维护者发布镜像到 ACR
+
+维护者只向阿里云 ACR 发布镜像，不再使用 VPS 私有 Registry。先从仓库根目录构建并推送 `linux/amd64` 镜像：
+
+```bash
+ACR=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet
+VERSION=$(tr -d '[:space:]' < VERSION)
+
+docker login crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com
+
+docker buildx build \
+  --platform linux/amd64 \
+  --provenance=false \
+  --sbom=false \
+  -f deploy-prod/docker-client/Dockerfile.client \
+  -t "$ACR/snet-client:v$VERSION" \
+  -t "$ACR/snet-client:latest" \
+  --push .
+
+docker buildx build \
+  --platform linux/amd64 \
+  --provenance=false \
+  --sbom=false \
+  -f deploy-prod/docker-server/Dockerfile.server \
+  -t "$ACR/snet-server:v$VERSION" \
+  -t "$ACR/snet-server:latest" \
+  --push .
+
+docker buildx build \
+  --platform linux/amd64 \
+  --provenance=false \
+  --sbom=false \
+  -f deploy-prod/docker-server/Dockerfile.relay \
+  -t "$ACR/snet-relay:v$VERSION" \
+  -t "$ACR/snet-relay:latest" \
+  --push .
+```
+
+`--provenance=false --sbom=false` 用于避免 BuildKit 生成 ACR 不接受的 attestation manifest。
+
 ## 3. 准备数据目录
 
 所有持久化数据都放在一个目录里，升级或重建容器不会丢失设备身份和网络配置。

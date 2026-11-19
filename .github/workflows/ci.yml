@@ -17,6 +17,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Reject private registry references
+        run: |
+          if git grep -nE '127\.0\.0\.1:5000|66\.187\.6\.46:5000|snet-registry' -- . ':(exclude).github/workflows/ci.yml'; then
+            echo "Private registries are forbidden; publish Docker images to Alibaba Cloud ACR only." >&2
+            exit 1
+          fi
+          echo "No private registry references found."
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
