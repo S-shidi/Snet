@@ -11,7 +11,7 @@
 - `snet-server` 已向客户端广告 `snet.uizhi.eu.org:8092`。
 - `snet-relay` 正在 `8092/udp` 监听，`/healthz` 返回 `status=ok`。
 - NAS 上的 `HomeNET` 当前 `relayPath.mode=relay-v2`。
-- VPS `snet-server` / `snet-relay` / Hub / NAS/sdserver 均为 `v1.1.16`。
+- VPS `snet-server` / `snet-relay` / Hub / NAS/sdserver 均为 `v1.2.0`。
 
 因此本手册的“切换”实际包含两件事：
 
@@ -22,7 +22,7 @@
 
 ## 1. 前置条件
 
-所有可能访问同一网络的设备必须升级到 **v1.1.16 或更高版本**：
+所有可能访问同一网络的设备必须升级到 **v1.2.0 或更高版本**：
 
 - VPS `snet-server`、`snet-relay`
 - 官方 Hub
@@ -30,7 +30,7 @@
 - sdserver
 - macOS 客户端
 - Windows 客户端
-- Android 客户端（`v1.1.16` release APK 或更高）
+- Android 客户端（`v1.2.0` release APK 或更高）
 
 检查示例：
 
@@ -46,7 +46,7 @@ docker exec snetd /usr/local/bin/snetd -version
 docker exec snet-hub /usr/local/bin/snetd -version
 ```
 
-Mac / Windows / Android 在客户端“设置 → 关于”中确认版本不低于 `v1.1.16`。
+Mac / Windows / Android 在客户端“设置 → 关于”中确认版本不低于 `v1.2.0`。
 
 未升级的旧客户端可能与新 Relay v2 协议不兼容。**只要还有旧客户端在线，不得执行正式切换。**
 
@@ -104,7 +104,7 @@ ss -lunp | grep ':8092'
 
 ## 4. 正式切换步骤
 
-> 以下步骤只在确认所有设备均为 `v1.1.16+` 后执行。
+> 以下步骤只在确认所有设备均为 `v1.2.0+` 后执行。
 
 ### 4.1 选择 secret 策略
 
