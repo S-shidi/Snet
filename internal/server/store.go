@@ -1033,6 +1033,19 @@ func (s *Store) SetSnetServURL(raw string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.snetServURL = strings.TrimRight(strings.TrimSpace(raw), "/")
+	if s.snetServURL == "" {
+		return
+	}
+	// Backfill legacy records so new clients and invites see the binding even
+	// when the network was created before SnetServURL existed.
+	for _, ns := range s.networks {
+		if ns != nil && ns.n.SnetServURL == "" {
+			ns.n.SnetServURL = s.snetServURL
+			if err := s.persistNetwork(ns); err != nil {
+				log.Printf("persist backfilled SnetServURL for %s: %v", ns.n.ID, err)
+			}
+		}
+	}
 }
 
 // SnetServURL returns the configured canonical public coordination URL.
