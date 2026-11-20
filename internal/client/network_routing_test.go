@@ -93,6 +93,22 @@ func TestNetworksRoutePeersAndPingsToBoundServer(t *testing.T) {
 	if got := countB.count("/api/v1/networks/" + createdB.NetworkID + "/exists"); got != 1 {
 		t.Fatalf("B exists calls = %d, want 1", got)
 	}
+	status, err := d.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range status["networks"].([]map[string]any) {
+		switch raw["networkId"] {
+		case createdA.NetworkID:
+			if raw["snetServUrl"] != normalizeServer(tsA.URL) {
+				t.Fatalf("status A snetServUrl = %v", raw["snetServUrl"])
+			}
+		case createdB.NetworkID:
+			if raw["snetServUrl"] != normalizeServer(tsB.URL) {
+				t.Fatalf("status B snetServUrl = %v", raw["snetServUrl"])
+			}
+		}
+	}
 
 	if err := d.SaveConfig(); err != nil {
 		t.Fatal(err)

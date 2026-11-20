@@ -109,6 +109,7 @@ const backend: Backend = {
 
   async create(params: { server: string; port: number; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp> {
     const r = await api("/create", jsonPost("/create", {
+      server: params.server,
       name: params.name, subnet: params.subnet, port: params.port,
       approvalRequired: params.approvalRequired,
     }));

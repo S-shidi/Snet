@@ -1728,7 +1728,7 @@ func (d *Daemon) bringUp(nid string) error {
 	go d.pollLoop(nid)
 	go d.probeLoop(nid)
 	go d.qualityLoop(nid)
-	d.nat.claim(nc.Port)
+	d.nat.claim(nc.Port, d.serverForConfigLocked(nc))
 	return nil
 }
 
@@ -4499,6 +4499,7 @@ func (d *Daemon) Status() (map[string]any, error) {
 			"interface":   "",
 			"peerStats":   map[string]PeerStats{},
 			"joinedAt":    nc.JoinedAt,
+			"snetServUrl": d.serverForConfigLocked(nc),
 		}
 		if rt := d.nets[nid]; rt != nil {
 			if rt.tun != nil {

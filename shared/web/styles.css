@@ -1818,3 +1818,16 @@ input[type=text]:focus, input[type=number]:focus, input[type=password]:focus, in
   .settings-profile-actions { width: 100%; justify-content: flex-end; }
   .settings-device-id { max-width: 180px; }
 }
+
+/* ── custom coordination server badge ───────────────────────── */
+.custom-snet-serv {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(110,146,255,.12);
+  color: #9db8ff;
+  border: 1px solid rgba(110,146,255,.24);
+  font-size: 10.5px;
+  font-weight: 600;
+}

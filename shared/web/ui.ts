@@ -1278,7 +1278,11 @@ function openCreateModal() {
   const hint = hasOwner
     ? `<div class="form-warning">你已创建网络，不支持再创建。请先删除当前网络。</div>`
     : "";
-  const serverHint = `<div class="form-context"><span>协调服务</span><code>${srv ? esc(srv) : "官方 SnetServ"}</code></div>`;
+  const serverHint = `<div class="form-field">
+    <label for="m-server">协调服务地址</label>
+    <input id="m-server" class="form-control" type="url" placeholder="${srv ? esc(srv) : "留空使用官方 SnetServ"}" autocomplete="off" />
+    <p class="hint">可选。留空使用当前默认 SnetServ；填写后该网络固定绑定到该地址。</p>
+  </div>`;
   openModal({
     title: "创建网络",
     body: `<div class="network-form">
@@ -1309,7 +1313,7 @@ function openCreateModal() {
           const chk = subnetWidget.check();
           if (!chk.ok) throw new Error(`网段无效：${chk.error}`);
           const subnet = chk.value;
-          const server = currentServer();
+          const server = (body.querySelector("#m-server") as HTMLInputElement)?.value.trim() || currentServer();
           if (!name) throw new Error("请输入网络名称");
           if (!(await confirmAndroidSingleNetwork("创建新网络"))) {
             submit.disabled = false;
@@ -2693,6 +2697,14 @@ function networkDetailHTML(n: NetInfo): string {
   const routes = ownerInfo[n.networkId]?.routes ?? r?.routes ?? [];
   const iconInvite = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M16 11h6"/></svg>';
   const iconMore = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
+  const snetServUrl = String(n.snetServUrl || "").trim();
+  const customSnetServ = !!snetServUrl && !isOfficialServer(snetServUrl);
+  const snetServLabel = (() => {
+    try { return new URL(snetServUrl).host; } catch { return snetServUrl; }
+  })();
+  const serverBadge = customSnetServ
+    ? `<span class="pill custom-snet-serv" title="协调服务：${esc(snetServUrl)}">${esc(snetServLabel)}</span>`
+    : "";
   const more = `<div class="detail-more">
     <button type="button" class="btn ghost sm detail-action-icon" id="detail-more-btn" title="更多" aria-label="更多">${iconMore}</button>
     <div class="detail-more-menu" id="detail-more-menu" hidden>
@@ -2708,6 +2720,7 @@ function networkDetailHTML(n: NetInfo): string {
     <div class="detail-heading">
       <div class="detail-title-row">
         <div class="detail-title">${esc(n.name || n.networkId)}</div>
+        ${serverBadge}
         <div class="detail-head-actions">
           <label class="switch detail-conn-switch" title="连接 / 断开">
             <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />

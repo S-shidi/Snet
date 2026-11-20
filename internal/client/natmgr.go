@@ -85,7 +85,7 @@ type natManager struct {
 	ctx     context.Context
 	on      atomic.Bool
 	mu      sync.Mutex
-	claimed map[int]struct{}
+	claimed map[int]string // port -> SnetServ URL used to select the local source IP
 	maps    map[int]natResult
 	errs    map[int]natErr
 	// pending serializes a port's teardown before a re-claim can map it again.
@@ -102,7 +102,7 @@ func newNatManager(cfg *Config, ctx context.Context) *natManager {
 	n := &natManager{
 		cfg:     cfg,
 		ctx:     ctx,
-		claimed: make(map[int]struct{}),
+		claimed: make(map[int]string),
 		maps:    make(map[int]natResult),
 		errs:    make(map[int]natErr),
 		pending: make(map[int]chan struct{}),
@@ -141,10 +141,15 @@ func (n *natManager) start() {
 }
 
 // claim requests an inbound mapping for a WireGuard port. Called whenever a
-// network tunnel comes up on that port.
-func (n *natManager) claim(port int) {
+// network tunnel comes up on that port. The optional server is the network's
+// SnetServ URL, used to choose the local source interface for this mapping.
+func (n *natManager) claim(port int, servers ...string) {
+	server := n.cfg.EffectiveServerAddr()
+	if len(servers) > 0 && strings.TrimSpace(servers[0]) != "" {
+		server = normalizeServer(servers[0])
+	}
 	n.mu.Lock()
-	n.claimed[port] = struct{}{}
+	n.claimed[port] = server
 	n.mu.Unlock()
 	n.wakeUp()
 }
@@ -246,7 +251,13 @@ func (n *natManager) syncPort(port int) {
 	if !n.enabled() || !n.claimedPort(port) {
 		return
 	}
-	lanIP, err := LocalIPForServer(n.cfg.EffectiveServerAddr())
+	n.mu.Lock()
+	server := n.claimed[port]
+	n.mu.Unlock()
+	if server == "" {
+		server = n.cfg.EffectiveServerAddr()
+	}
+	lanIP, err := LocalIPForServer(server)
 	if err != nil || lanIP == "" {
 		if err == nil {
 			err = fmt.Errorf("empty LAN IP")
