@@ -5,10 +5,13 @@ on:
   push:
     branches:
       - master
+      - feat/per-route-relay-toggle
     tags:
       - 'v*'
     paths:
       - 'android/**'
+      - 'shared/web/**'
+      - 'scripts/build-android-web.sh'
       - 'snetbind/**'
       - 'internal/**'
       - 'go.mod'

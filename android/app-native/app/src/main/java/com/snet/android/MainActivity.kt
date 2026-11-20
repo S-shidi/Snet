@@ -74,17 +74,21 @@ class MainActivity : AppCompatActivity() {
 
         webView = findViewById(R.id.webview)
         configureWebView()
+        // Load the local shell first. Starting the Go control plane can take a
+        // few seconds on a cold device; waiting for it here left the WebView
+        // black until SnetCore.start() returned. The shell retries its status
+        // request and fills in as soon as the daemon is ready.
+        webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
         // Cold start must not create a TUN or request VPN permission. It does
         // start the local control plane so create/join works before any VPN
         // exists; the status-bar key appears only after an explicit network
         // toggle/create/join.
         Thread {
             val err = SnetCore.start(filesDir.absolutePath, 0, 8081)
-            runOnUiThread {
-                if (err.isNotEmpty()) {
+            if (err.isNotEmpty()) {
+                runOnUiThread {
                     Toast.makeText(this, "本地服务启动失败: $err", Toast.LENGTH_LONG).show()
                 }
-                webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
             }
         }.start()
     }

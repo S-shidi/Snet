@@ -3172,7 +3172,18 @@ export async function init(b: Backend) {
     document.querySelectorAll<HTMLElement>("[data-action=\"logout\"]").forEach((el) => { el.style.display = "none"; });
   }
   startDesktopDaemonWatch();
-  refresh();
+  void refresh();
+  // Android starts the WebView before the Go daemon is ready. Probe briefly at
+  // a faster cadence instead of leaving the shell empty for a full poll cycle.
+  let bootPolls = 0;
+  const bootPoll = window.setInterval(() => {
+    if (document.hidden) return;
+    if (status || ++bootPolls >= 6) {
+      window.clearInterval(bootPoll);
+      return;
+    }
+    void refresh();
+  }, 1200);
   setInterval(() => {
     if (!document.hidden && !refreshing) refresh();
   }, 5000);

@@ -1779,12 +1779,8 @@ input[type=text]:focus, input[type=number]:focus, input[type=password]:focus, in
   display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 4px;
 }
 .settings-group-head h3 {
-  display: inline-flex; align-items: center; gap: 7px; margin: 0;
+  display: inline-flex; align-items: center; margin: 0;
   color: var(--dim); font-size: 12px; font-weight: 700;
-}
-.settings-group-head h3::before {
-  content: ""; width: 5px; height: 5px; flex: none; border-radius: 50%;
-  background: var(--accent); box-shadow: 0 0 9px rgba(110,146,255,.65);
 }
 .settings-group-head span { color: var(--faint); font-size: 10.5px; }
 .settings-card {
