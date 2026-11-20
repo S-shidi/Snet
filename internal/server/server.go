@@ -2,7 +2,6 @@ package server
 
 import (
 	"crypto/subtle"
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,13 +15,11 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"snet/internal/adminui"
 	"snet/internal/buildinfo"
 	"snet/internal/constants"
 	"snet/internal/protocol"
 )
-
-//go:embed admin.html
-var adminPage embed.FS
 
 const maxBodyBytes = 64 << 10
 
@@ -717,8 +714,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "+
 				"img-src data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-		data, _ := adminPage.ReadFile("admin.html")
-		_, _ = w.Write(data)
+		_, _ = w.Write(adminui.Page)
 	})
 	mux.HandleFunc("GET /admin/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusMovedPermanently)
