@@ -592,6 +592,7 @@ func (d *Daemon) apiForServerLocked(server string) *apiClient {
 }
 
 func (d *Daemon) apiLocked() *apiClient {
+	log.Printf("WARNING: apiLocked() called; this is a legacy fallback and may break multi-SnetServ routing")
 	server := d.serverAddrLocked()
 	if d.apiManager != nil {
 		d.api = d.apiManager.Get(server)
@@ -1728,7 +1729,9 @@ func (d *Daemon) bringUp(nid string) error {
 	go d.pollLoop(nid)
 	go d.probeLoop(nid)
 	go d.qualityLoop(nid)
-	d.nat.claim(nc.Port, d.serverForConfigLocked(nc))
+	if err := d.nat.claim(nc.Port, d.serverForConfigLocked(nc)); err != nil {
+		log.Printf("NAT claim %s: %v", nid, err)
+	}
 	return nil
 }
 

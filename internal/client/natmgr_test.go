@@ -223,7 +223,7 @@ func TestStoreMappingOnlyWhileClaimed(t *testing.T) {
 	if _, stored := n.storeMapping(51820, res); stored {
 		t.Fatal("unclaimed port must not store a mapping")
 	}
-	n.claim(51820)
+	n.claim(51820, "https://test.example:8090")
 	if unchanged, stored := n.storeMapping(51820, res); !stored || unchanged {
 		t.Fatalf("first store = unchanged %v, stored %v; want false, true", unchanged, stored)
 	}
@@ -239,8 +239,8 @@ func TestStoreMappingOnlyWhileClaimed(t *testing.T) {
 func TestNatManagerBookkeeping(t *testing.T) {
 	cfg := &Config{ServerAddr: "host.example.com:8090", WireguardPort: 51820}
 	n := newNatManager(cfg, context.Background())
-	n.claim(51820)
-	n.claim(51821)
+	n.claim(51820, "https://test.example:8090")
+	n.claim(51821, "https://test.example:8090")
 	if _, ok := n.mapping(51820); ok {
 		t.Fatal("no mapping should exist before a successful sync")
 	}
@@ -261,7 +261,7 @@ func TestNatManagerBookkeeping(t *testing.T) {
 func TestNatManagerStatusAndErrorThrottle(t *testing.T) {
 	cfg := &Config{ServerAddr: "host.example.com:8090", WireguardPort: 51820}
 	n := newNatManager(cfg, context.Background())
-	n.claim(51821)
+	n.claim(51821, "https://test.example:8090")
 	n.setPort(51820, natResult{
 		externalIP:   "203.0.113.1",
 		externalPort: 51820,
@@ -591,7 +591,7 @@ func TestUnclaimTearsDownUPnPMapping(t *testing.T) {
 	f := newFakeUPnPService(t, false)
 	n := newNatManager(&Config{}, context.Background())
 	const port = 51820
-	n.claim(port)
+	n.claim(port, "https://test.example:8090")
 	n.setPort(port, natResult{
 		externalIP:   "203.0.113.10",
 		externalPort: port,
@@ -616,7 +616,7 @@ func TestUnclaimSkipsTeardownForNatPMPAndPCP(t *testing.T) {
 	n := newNatManager(&Config{}, context.Background())
 	for _, via := range []string{"natpmp", "pcp"} {
 		const port = 51820
-		n.claim(port)
+		n.claim(port, "https://test.example:8090")
 		n.setPort(port, natResult{
 			externalIP:   "203.0.113.10",
 			externalPort: port,
@@ -636,7 +636,7 @@ func TestReclaimWaitsForPendingTeardown(t *testing.T) {
 	f := newFakeUPnPService(t, true)
 	n := newNatManager(&Config{}, context.Background())
 	const port = 51820
-	n.claim(port)
+	n.claim(port, "https://test.example:8090")
 	n.setPort(port, natResult{
 		externalIP:   "203.0.113.10",
 		externalPort: port,
@@ -652,7 +652,7 @@ func TestReclaimWaitsForPendingTeardown(t *testing.T) {
 		t.Fatal("DeletePortMapping did not start")
 	}
 
-	n.claim(port)
+	n.claim(port, "https://test.example:8090")
 	waitDone := make(chan struct{})
 	go func() {
 		n.waitPending(port)
@@ -728,7 +728,7 @@ func TestCtlSetNATMappingTearsDownOnDisable(t *testing.T) {
 	d, cfgPath := newTestDaemon(t)
 	f := newFakeUPnPService(t, false)
 	const port = 51820
-	d.nat.claim(port)
+	d.nat.claim(port, "https://test.example:8090")
 	d.nat.setPort(port, natResult{
 		externalIP:   "203.0.113.10",
 		externalPort: port,
@@ -782,7 +782,7 @@ func TestCtlSetNATMappingEnablePersistsWithoutTeardown(t *testing.T) {
 	d.cfg.NATMapping = &off
 	d.mu.Unlock()
 	d.nat.setEnabled(false)
-	d.nat.claim(port)
+	d.nat.claim(port, "https://test.example:8090")
 	d.nat.setPort(port, natResult{
 		externalIP:   "203.0.113.10",
 		externalPort: port,
@@ -918,4 +918,14 @@ func TestMapNATPortWith(t *testing.T) {
 			t.Fatalf("calls default=%d natpmp=%d pcp=%d, want 1/0/0", defaultCalls, natpmpCalls, pcpCalls)
 		}
 	})
+}
+
+func TestNATClaimRequiresServer(t *testing.T) {
+	n := newNatManager(&Config{}, context.Background())
+	if err := n.claim(51820); err == nil {
+		t.Fatal("claim without server must return an error")
+	}
+	if n.claimedPort(51820) {
+		t.Fatal("claim without server must not register the port")
+	}
 }

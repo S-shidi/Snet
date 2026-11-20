@@ -143,15 +143,21 @@ func (n *natManager) start() {
 // claim requests an inbound mapping for a WireGuard port. Called whenever a
 // network tunnel comes up on that port. The optional server is the network's
 // SnetServ URL, used to choose the local source interface for this mapping.
-func (n *natManager) claim(port int, servers ...string) {
-	server := n.cfg.EffectiveServerAddr()
-	if len(servers) > 0 && strings.TrimSpace(servers[0]) != "" {
-		server = normalizeServer(servers[0])
+func (n *natManager) claim(port int, servers ...string) error {
+	server := ""
+	if len(servers) > 0 {
+		server = normalizeServer(strings.TrimSpace(servers[0]))
+	}
+	if server == "" {
+		err := fmt.Errorf("NAT claim called without server URL")
+		log.Printf("ERROR: %v", err)
+		return err
 	}
 	n.mu.Lock()
 	n.claimed[port] = server
 	n.mu.Unlock()
 	n.wakeUp()
+	return nil
 }
 
 // unclaim drops the mapping for a port (e.g. a network was left/removed).
@@ -255,7 +261,11 @@ func (n *natManager) syncPort(port int) {
 	server := n.claimed[port]
 	n.mu.Unlock()
 	if server == "" {
-		server = n.cfg.EffectiveServerAddr()
+		err := fmt.Errorf("NAT claim for port %d has no server URL", port)
+		if n.noteError(port, err) {
+			log.Printf("ERROR: %v", err)
+		}
+		return
 	}
 	lanIP, err := LocalIPForServer(server)
 	if err != nil || lanIP == "" {
