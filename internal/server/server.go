@@ -17,6 +17,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"snet/internal/buildinfo"
+	"snet/internal/constants"
 	"snet/internal/protocol"
 )
 
@@ -752,6 +753,20 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, info)
 	}))
+	mux.HandleFunc("GET /admin/networks/{nid}/invite-link", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		info, err := s.AdminNetworkInfo(r.PathValue("nid"))
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		if info.PairingCode == "" {
+			writeErr(w, http.StatusConflict, errors.New("邀请链接已失效，请重置邀请链接"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"link": protocol.BuildLink(info.ID, info.PairingCode, adminPublicServer(r), info.Name),
+		})
+	}))
 	mux.HandleFunc("DELETE /admin/networks/{nid}/routes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		target := r.URL.Query().Get("target")
 		cidr := r.URL.Query().Get("cidr")
@@ -1196,6 +1211,31 @@ func (h *handler) gcSessionsLocked() {
 			delete(h.sessions, tok)
 		}
 	}
+}
+
+// adminPublicServer returns the coordination server address embedded in an
+// admin-generated invite. The official hostname is canonicalized so links
+// generated through the web console and the client daemon agree exactly.
+func adminPublicServer(r *http.Request) string {
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		return constants.DefaultServer
+	}
+	hostname := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		hostname = h
+	}
+	if strings.EqualFold(hostname, "snet.uizhi.eu.org") {
+		return constants.DefaultServer
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if p := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); p != "" {
+		scheme = p
+	}
+	return scheme + "://" + host
 }
 
 func (h *handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {

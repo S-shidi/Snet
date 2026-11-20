@@ -44,6 +44,8 @@
   .code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
 
   /* ── header ── */
+  body > header { display:none; }
+  html[data-authed] body > header { display:block; }
   header {
     border-bottom:1px solid var(--border);
     backdrop-filter:blur(8px);
@@ -4013,22 +4015,23 @@ function renderQR(container, text) {
   container.innerHTML = svg;
 }
 
-async function inviteNet(nid) {
-  let code = '';
-  try {
-    const info = await api('GET', '/admin/networks/' + nid);
-    code = info.pairingCode || '';
-  } catch (e) { handleErr(e, '获取邀请信息失败'); return; }
-  if (!code) {
-    try {
-      const r = await api('POST', `/admin/networks/${nid}/code`);
-      code = r.code;
-      toast('原配对码不可用，已生成新码（旧码作废）');
-    } catch (e) { handleErr(e, '生成配对码失败'); return; }
+async function adminInviteLink(nid) {
+  const info = await api('GET', '/admin/networks/' + nid);
+  if (!info.pairingCode) {
+    await api('POST', `/admin/networks/${nid}/code`);
+    toast('原配对码不可用，已生成新码（旧码作废）');
   }
-  code = normalizeCode(code);
-  const link = 'snet://join?nid=' + encodeURIComponent(nid) + '&code=' + encodeURIComponent(code) + '&server=' + encodeURIComponent(location.origin);
-  const name = (netData.find(n => n.network && n.network.id === nid) || {}).network?.name || nid;
+  const r = await api('GET', `/admin/networks/${nid}/invite-link`);
+  return { link: r.link, name: info.name || '' };
+}
+
+async function inviteNet(nid) {
+  let invite;
+  try {
+    invite = await adminInviteLink(nid);
+  } catch (e) { handleErr(e, '获取邀请链接失败'); return; }
+  const link = invite.link;
+  const name = invite.name || (netData.find(n => n.network && n.network.id === nid) || {}).network?.name || nid;
   setModal('邀请加入 · ' + name, `
     <p class="hint mt0">被邀请设备扫描下方二维码，或在客户端选择「加入网络」粘贴邀请链接即可加入。</p>
     <div class="qr" id="invite-qr"></div>
@@ -4036,20 +4039,27 @@ async function inviteNet(nid) {
       <span class="code" id="invite-link" style="flex:1">${esc(link)}</span>
       <button type="button" class="btn sm" data-act="copy" data-copy="${esc(link)}">${icon('copy')} 复制</button>
     </div>
-    <div class="row"><label>网络 ID</label>
-      <div class="fresh-code"><span class="code">${esc(nid)}</span>
-        <button type="button" class="btn sm" data-act="copy" data-copy="${esc(nid)}">${icon('copy')} 复制</button></div>
-    </div>
-    <div class="row"><label>配对码</label>
-      <div class="fresh-code"><span class="code" style="letter-spacing:1.5px">${esc(code)}</span>
-        <button type="button" class="btn sm" data-act="copy" data-copy="${esc(code)}">${icon('copy')} 复制</button></div>
-    </div>
-    <p class="hint">配对码含有效次数与时限，可随时在卡片上「查看配对码」重置重发。</p>
+    <p class="hint">邀请链接中的协调服务信息已加密显示。重置后旧链接立即失效，已加入成员不受影响。</p>
     <div class="modal-foot">
       <button type="button" class="btn ghost" data-act="close-modal">关闭</button>
+      <button type="button" class="btn danger ghost" data-act="reset-invite-link" data-nid="${esc(nid)}">重置邀请链接</button>
       <button type="button" class="btn" data-act="copy" data-copy="${esc(link)}">${icon('copy')} 复制邀请链接</button>
     </div>`, true);
   renderQR($('invite-qr'), link);
+}
+
+async function resetInviteLink(nid) {
+  const ok = await confirmDlg({
+    title: '重置邀请链接',
+    message: '作废旧邀请链接并生成新链接？旧链接立即失效，已加入成员不受影响。',
+    confirmText: '重置', danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api('POST', `/admin/networks/${nid}/code`);
+    toast('邀请链接已重置');
+    await inviteNet(nid);
+  } catch (e) { handleErr(e, '重置邀请链接失败'); }
 }
 
 async function resetCode(nid) {
@@ -4409,6 +4419,9 @@ document.addEventListener('click', async e => {
       break;
     case 'reset-code':
       resetCode(el.dataset.nid);
+      break;
+    case 'reset-invite-link':
+      withBusy(el, () => resetInviteLink(el.dataset.nid));
       break;
     case 'del-net':
       withBusy(el, () => delNet(el.dataset.nid));

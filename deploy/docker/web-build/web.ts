@@ -112,11 +112,9 @@ const backend: Backend = {
       name: params.name, subnet: params.subnet, port: params.port,
       approvalRequired: params.approvalRequired,
     }));
-    const linkServer = String(params.server || "").replace(/\/+$/, "");
-    const showServer = linkServer && linkServer !== DEFAULT_SERVER.replace(/\/+$/, "");
-    const link = `snet://join?nid=${encodeURIComponent(r.networkId)}&code=${encodeURIComponent(r.pairingCode)}` +
-      (showServer ? `&server=${encodeURIComponent(linkServer)}` : "");
-    return { ...r, link };
+    // The daemon builds the link so the encrypted coordination-server
+    // reference is identical to the one used by invite/rotate flows.
+    return { ...r, link: r.link || "" };
   },
 
   async join(params: { server: string; port: number; link: string }): Promise<JoinResp> {

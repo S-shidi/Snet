@@ -196,6 +196,9 @@ type CreateNetworkResp struct {
 	Subnet           string `json:"subnet,omitempty"`
 	RelayPort        int    `json:"relayPort,omitempty"`
 	ApprovalRequired bool   `json:"approvalRequired,omitempty"`
+	// Link is populated by the client daemon after the network is created. It
+	// carries the encrypted coordination server reference used by the invite.
+	Link string `json:"link,omitempty"`
 }
 
 type JoinReq struct {
