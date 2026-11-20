@@ -815,22 +815,18 @@ func (s *Store) deleteNetworkRows(netID string) error {
 		if err := tx.Bucket(bktNetworks).Delete([]byte(netID)); err != nil {
 			return err
 		}
-		ndb := tx.Bucket(bktNodes)
-		if ndb != nil {
-			prefix := []byte(netID + "/")
-			c := ndb.Cursor()
-			for k, _ := c.Seek(prefix); k != nil && bytesHasPrefix(k, prefix); k, _ = c.Next() {
-				if err := ndb.Delete(k); err != nil {
-					return err
-				}
+		prefix := []byte(netID + "/")
+		for _, db := range []*bbolt.Bucket{tx.Bucket(bktNodes), tx.Bucket(bktRelayTopo)} {
+			if db == nil {
+				continue
 			}
-		}
-		rtb := tx.Bucket(bktRelayTopo)
-		if rtb != nil {
-			prefix := []byte(netID + "/")
-			c := rtb.Cursor()
+			var keys [][]byte
+			c := db.Cursor()
 			for k, _ := c.Seek(prefix); k != nil && bytesHasPrefix(k, prefix); k, _ = c.Next() {
-				if err := rtb.Delete(k); err != nil {
+				keys = append(keys, append([]byte(nil), k...))
+			}
+			for _, k := range keys {
+				if err := db.Delete(k); err != nil {
 					return err
 				}
 			}
