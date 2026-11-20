@@ -348,37 +348,39 @@ func TestCreateJoinRoundTrip(t *testing.T) {
 
 // TestEmptyServerDefaultsToBound verifies create/join with an empty server
 // address use the currently bound server instead of switching or failing.
-func TestSwitchServerClearsNetworks(t *testing.T) {
+func TestJoinSecondServerDoesNotClearExistingNetworks(t *testing.T) {
 	tsA := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
 	defer tsA.Close()
-	tsB := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	srvB := server.NewStore()
+	tsB := httptest.NewServer(server.NewHandler(srvB, server.Options{}))
 	defer tsB.Close()
+
 	d, _ := newTestDaemon(t)
 	createdA, err := d.Create(tsA.URL, 51820, "net-a", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(d.cfg.Networks) != 1 {
-		t.Fatalf("expected one network on A: %+v", d.cfg.Networks)
-	}
-	// switching to B is allowed and clears A's networks
-	resp, err := d.Create(tsB.URL, 0, "net-b", "", false)
+	createdB, err := srvB.CreateNetwork(testWGKey(t, 41), "device-b", "net-b", "10.99.0.0/24", false)
 	if err != nil {
-		t.Fatalf("create on B: %v", err)
+		t.Fatal(err)
 	}
-	if len(d.cfg.Networks) != 1 || d.cfg.Networks[resp.NetworkID] == nil {
-		t.Fatalf("expected only B's network after switch: %+v", d.cfg.Networks)
+	if _, err := d.Join(tsB.URL, 0, createdB.NetworkID, createdB.PairingCode); err != nil {
+		t.Fatalf("join on B: %v", err)
 	}
-	if _, ok := d.cfg.Networks[createdA.NetworkID]; ok {
-		t.Fatalf("A's network still present after switch: %+v", d.cfg.Networks)
+	if len(d.cfg.Networks) != 2 {
+		t.Fatalf("expected two networks after joining B: %+v", d.cfg.Networks)
 	}
-	if d.cfg.ServerAddr != normalizeServer(tsB.URL) {
-		t.Fatalf("server not switched: %+v", d.cfg)
+	if d.cfg.Networks[createdA.NetworkID] == nil {
+		t.Fatal("A's network was cleared by joining B")
 	}
-	// the owner limit applies per server: after switching, A's owned network
-	// is gone, so creating again on B is rejected for a different reason
-	if _, err := d.Create(tsB.URL, 0, "net-b2", "", false); err == nil || !strings.Contains(err.Error(), "已创建网络") {
-		t.Fatalf("second create on B err = %v, want owner limit", err)
+	if d.cfg.Networks[createdB.NetworkID] == nil {
+		t.Fatal("B's network was not attached")
+	}
+	if d.cfg.Networks[createdB.NetworkID].SnetServURL != normalizeServer(tsB.URL) {
+		t.Fatalf("B network server = %q", d.cfg.Networks[createdB.NetworkID].SnetServURL)
+	}
+	if d.cfg.Networks[createdA.NetworkID].SnetServURL != normalizeServer(tsA.URL) {
+		t.Fatalf("A network server = %q", d.cfg.Networks[createdA.NetworkID].SnetServURL)
 	}
 }
 

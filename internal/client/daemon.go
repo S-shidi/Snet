@@ -573,6 +573,17 @@ func (d *Daemon) apiForNetworkLocked(nid string) (*apiClient, string, error) {
 	return newAPIClient(server, d.ctx), server, nil
 }
 
+func (d *Daemon) apiForServerLocked(server string) *apiClient {
+	server = normalizeServer(strings.TrimSpace(server))
+	if server == "" {
+		server = d.defaultServerLocked()
+	}
+	if d.apiManager != nil {
+		return d.apiManager.Get(server)
+	}
+	return newAPIClient(server, d.ctx)
+}
+
 func (d *Daemon) apiLocked() *apiClient {
 	server := d.serverAddrLocked()
 	if d.apiManager != nil {
@@ -620,9 +631,8 @@ func (d *Daemon) CheckServer(serverAddr string) error {
 	return nil
 }
 
-// SetServer updates the SnetServ address and resets the API client so the
-// next request uses the new server. An empty address means the official
-// server.
+// SetServer updates the default SnetServ used by newly created/legacy
+// networks. It does not rewrite or remove existing per-network bindings.
 func (d *Daemon) SetServer(serverAddr string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -630,10 +640,12 @@ func (d *Daemon) SetServer(serverAddr string) error {
 	if serverAddr != "" {
 		serverAddr = normalizeServer(serverAddr)
 	}
+	d.cfg.DefaultSnetServURL = serverAddr
+	// Keep the legacy field aligned for old config readers and for networks
+	// that still have no explicit SnetServURL.
 	d.cfg.ServerAddr = serverAddr
 	d.api = nil
 	d.apiServer = ""
-	d.serverState = make(map[string]*string)
 	return d.save()
 }
 
@@ -663,15 +675,16 @@ func (d *Daemon) SetHostname(name string) {
 	d.hostnameCache = strings.TrimSpace(name)
 }
 
-// ensureKeys points the daemon at a server and guarantees a private key and
-// device ID exist. It no longer pins the device to one server: switching is
-// always allowed, and any networks held on the previous server are torn down
-// by commitSwitchLocked once the operation against the new server succeeds.
+// ensureKeys guarantees a private key and device ID exist. Server selection
+// belongs to the network being attached, not to the daemon as a whole.
 func (d *Daemon) ensureKeys(serverAddr string, port int) error {
-	if strings.TrimSpace(serverAddr) == "" {
-		serverAddr = constants.DefaultServer
+	serverAddr = normalizeServer(strings.TrimSpace(serverAddr))
+	if strings.TrimSpace(d.cfg.ServerAddr) == "" {
+		d.cfg.ServerAddr = serverAddr
 	}
-	d.cfg.ServerAddr = normalizeServer(serverAddr)
+	if strings.TrimSpace(d.cfg.DefaultSnetServURL) == "" {
+		d.cfg.DefaultSnetServURL = serverAddr
+	}
 	if port != 0 {
 		d.cfg.WireguardPort = port
 	}
@@ -887,57 +900,6 @@ func normalizeServer(s string) string {
 // binding layers to compare a caller-supplied address against the fixed one.
 func NormalizeServer(s string) string { return normalizeServer(s) }
 
-// serverSwitch tracks a pending effective-server change. The device belongs to
-// exactly one server at a time; switching servers clears every network and
-// pending join created on the previous server. The clear is committed only
-// after the operation against the new server succeeds so a failed switch never
-// destroys the previous server's networks.
-type serverSwitch struct {
-	changed  bool
-	prevAddr string
-}
-
-func (d *Daemon) beginSwitchLocked(target string) serverSwitch {
-	return serverSwitch{
-		prevAddr: d.cfg.ServerAddr,
-		changed:  normalizeServer(target) != d.serverAddrLocked(),
-	}
-}
-
-// commitSwitchLocked finalizes a server switch: tunnels, poll loops, networks
-// and pending joins tied to the previous server are torn down and forgotten.
-// The old server's networks stay alive for the other members.
-func (d *Daemon) commitSwitchLocked(sw serverSwitch) {
-	if !sw.changed {
-		return
-	}
-	for nid, rt := range d.nets {
-		rt.shutdown()
-		delete(d.nets, nid)
-	}
-	for pid, stop := range d.pendingRuns {
-		close(stop)
-		delete(d.pendingRuns, pid)
-	}
-	d.netErrs = make(map[string]string)
-	d.retryPending = make(map[string]struct{})
-	d.retryAttempts = make(map[string]int)
-	d.serverState = make(map[string]*string)
-	if d.retryStop != nil {
-		close(d.retryStop)
-		d.retryStop = nil
-	}
-	d.cfg.Networks = nil
-	d.cfg.PendingJoins = nil
-}
-
-// rollbackSwitchLocked restores the previous server after a failed operation.
-// Nothing was torn down, so the previous server's networks stay fully intact.
-func (d *Daemon) rollbackSwitchLocked(sw serverSwitch) {
-	d.cfg.ServerAddr = sw.prevAddr
-	_ = d.save()
-}
-
 // Create makes a new network on the server and joins this node as owner.
 // Optional share metadata (description, tags, visibility) may be passed via
 // the variadic shareOpt, keeping existing callers source-compatible.
@@ -962,27 +924,19 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	}
 
 	if strings.TrimSpace(serverAddr) == "" {
-		serverAddr = d.serverAddrLocked()
+		serverAddr = d.defaultServerLocked()
+	} else {
+		serverAddr = normalizeServer(serverAddr)
 	}
-	sw := d.beginSwitchLocked(serverAddr)
-	// The per-device owner limit applies to the networks that remain after the
-	// switch: changing servers clears the previous server's owned network, so
-	// creating a new one there is allowed.
-	remaining := d.cfg.Networks
-	if sw.changed {
-		remaining = nil
-	}
-	for _, nc := range remaining {
+	for _, nc := range d.cfg.Networks {
 		if nc.Owner {
 			return protocol.CreateNetworkResp{}, errors.New("本设备已创建网络（每客户端仅能创建一个）")
 		}
 	}
 	if err := d.ensureKeys(serverAddr, port); err != nil {
-		d.rollbackSwitchLocked(sw)
 		return protocol.CreateNetworkResp{}, err
 	}
-	if err := d.ensureDeviceIDUniqueLocked(d.apiLocked()); err != nil {
-		d.rollbackSwitchLocked(sw)
+	if err := d.ensureDeviceIDUniqueLocked(d.apiForServerLocked(serverAddr)); err != nil {
 		return protocol.CreateNetworkResp{}, err
 	}
 	// Reject an explicitly chosen subnet that collides with this machine's real
@@ -990,11 +944,10 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	// that attach would refuse to bring up).
 	if subnet != "" {
 		if err := checkLANConflict(subnet); err != nil {
-			d.rollbackSwitchLocked(sw)
 			return protocol.CreateNetworkResp{}, err
 		}
 	}
-	api := d.apiLocked()
+	api := d.apiForServerLocked(serverAddr)
 	desc, vis := "", ""
 	if so.description != nil {
 		desc = *so.description
@@ -1004,11 +957,9 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	}
 	resp, err := api.CreateNetwork(d.publicKeyLocked(), d.cfg.DeviceID, name, subnet, approvalRequired, desc, so.tags, vis, so.allowOverlap)
 	if err != nil {
-		d.rollbackSwitchLocked(sw)
 		return resp, err
 	}
-	d.commitSwitchLocked(sw)
-	if err := d.attach(resp.NetworkID, name, resp.NodeID, resp.IP, resp.Token, resp.PairingCode, resp.Subnet, true); err != nil {
+	if err := d.attach(resp.NetworkID, name, resp.NodeID, resp.IP, resp.Token, resp.PairingCode, resp.Subnet, true, serverAddr); err != nil {
 		return resp, err
 	}
 	resp.Link = d.inviteLinkLocked(resp.NetworkID, resp.PairingCode, name)
@@ -1040,34 +991,31 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 	defer d.mu.Unlock()
 
 	if strings.TrimSpace(serverAddr) == "" {
-		serverAddr = d.serverAddrLocked()
+		serverAddr = d.defaultServerLocked()
+	} else {
+		serverAddr = normalizeServer(serverAddr)
 	}
-	sw := d.beginSwitchLocked(serverAddr)
 	if err := d.ensureKeys(serverAddr, port); err != nil {
-		d.rollbackSwitchLocked(sw)
 		return protocol.JoinResp{}, err
 	}
-	if err := d.ensureDeviceIDUniqueLocked(d.apiLocked()); err != nil {
-		d.rollbackSwitchLocked(sw)
+	if err := d.ensureDeviceIDUniqueLocked(d.apiForServerLocked(serverAddr)); err != nil {
 		return protocol.JoinResp{}, err
 	}
-	api := d.apiLocked()
+	api := d.apiForServerLocked(serverAddr)
 	resp, err := api.Join(nid, code, d.publicKeyLocked(), d.cfg.DeviceID)
 	if err != nil {
-		d.rollbackSwitchLocked(sw)
 		return resp, err
 	}
-	d.commitSwitchLocked(sw)
 	if resp.Status == "pending" {
 		if _, ok := d.cfg.Networks[resp.NetworkID]; ok {
 			return resp, fmt.Errorf("本机已加入网络 %s", resp.NetworkID)
 		}
-		return resp, d.registerPendingLocked(resp)
+		return resp, d.registerPendingLocked(resp, serverAddr)
 	}
 	if _, ok := d.cfg.Networks[resp.NetworkID]; ok {
 		return resp, fmt.Errorf("本机已加入网络 %s", resp.NetworkID)
 	}
-	if err := d.attach(resp.NetworkID, resp.Name, resp.NodeID, resp.IP, resp.Token, "", resp.Subnet, false); err != nil {
+	if err := d.attach(resp.NetworkID, resp.Name, resp.NodeID, resp.IP, resp.Token, "", resp.Subnet, false, serverAddr); err != nil {
 		return resp, err
 	}
 	d.reconcileOwnership(resp.NetworkID)
@@ -1077,7 +1025,7 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 	return resp, nil
 }
 
-func (d *Daemon) registerPendingLocked(resp protocol.JoinResp) error {
+func (d *Daemon) registerPendingLocked(resp protocol.JoinResp, snetServURL ...string) error {
 	if d.cfg.PendingJoins == nil {
 		d.cfg.PendingJoins = map[string]*PendingJoin{}
 	}
@@ -1088,6 +1036,9 @@ func (d *Daemon) registerPendingLocked(resp protocol.JoinResp) error {
 		Code:      "",
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		Status:    "pending",
+	}
+	if len(snetServURL) > 0 {
+		pj.SnetServURL = normalizeServer(snetServURL[0])
 	}
 	d.cfg.PendingJoins[resp.PendingID] = pj
 	if err := d.save(); err != nil {
@@ -1144,7 +1095,7 @@ func (d *Daemon) pendingLoop(pendingID string, stop chan struct{}) {
 		}
 		switch status.Status {
 		case "approved":
-			err := d.attach(status.NetworkID, pj.Name, status.NodeID, status.IP, status.Token, pj.Code, status.Subnet, false)
+			err := d.attach(status.NetworkID, pj.Name, status.NodeID, status.IP, status.Token, pj.Code, status.Subnet, false, pj.SnetServURL)
 			if err != nil {
 				log.Printf("join approved %s: %v", pendingID, err)
 				d.mu.Unlock()
@@ -1204,7 +1155,7 @@ func (d *Daemon) CancelPending(pendingID string) error {
 }
 
 // attach stores a joined network and brings it up.
-func (d *Daemon) attach(nid, name, nodeID, ip, token, pairingCode, subnet string, owner bool) error {
+func (d *Daemon) attach(nid, name, nodeID, ip, token, pairingCode, subnet string, owner bool, snetServURL ...string) error {
 	if subnet == "" {
 		subnet = defaultSubnet
 	}
@@ -1230,6 +1181,9 @@ func (d *Daemon) attach(nid, name, nodeID, ip, token, pairingCode, subnet string
 		Active:      true,
 		Owner:       owner,
 		JoinedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+	if len(snetServURL) > 0 && strings.TrimSpace(snetServURL[0]) != "" {
+		nc.SnetServURL = normalizeServer(snetServURL[0])
 	}
 	if existing, ok := d.cfg.Networks[nid]; ok && existing.Name != "" && name == "" {
 		nc.Name = existing.Name
