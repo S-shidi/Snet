@@ -949,8 +949,8 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 		serverAddr = normalizeServer(serverAddr)
 	}
 	for _, nc := range d.cfg.Networks {
-		if nc.Owner {
-			return protocol.CreateNetworkResp{}, errors.New("本设备已创建网络（每客户端仅能创建一个）")
+		if nc.Owner && d.serverForConfigLocked(nc) == serverAddr {
+			return protocol.CreateNetworkResp{}, errors.New("该 SnetServ 上本设备已创建网络（每个服务器仅能创建一个）")
 		}
 	}
 	if err := d.ensureKeys(serverAddr, port); err != nil {
