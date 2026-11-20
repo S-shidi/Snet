@@ -592,11 +592,12 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
         <input id="dev-q" type="text" placeholder="搜索设备 ID / 名称" />
       </div>
+      <button type="button" class="btn danger ghost" id="dev-bulk-delete" disabled>批量删除</button>
     </div>
     <div class="tbl-wrap">
       <table>
-        <thead><tr><th>设备名称</th><th>设备 ID</th><th>所属网络</th><th>创建时间</th><th>最近活跃</th><th style="width:160px"></th></tr></thead>
-        <tbody id="dev-body"><tr><td colspan="5"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
+        <thead><tr><th style="width:34px"><input type="checkbox" id="dev-select-all" aria-label="选择当前页全部设备" /></th><th>设备名称</th><th>设备 ID</th><th>所属网络</th><th>创建时间</th><th>最近活跃</th><th style="width:160px"></th></tr></thead>
+        <tbody id="dev-body"><tr><td colspan="7"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
       </table>
     </div>
     <div class="pager" id="dev-pager"></div>
@@ -2927,6 +2928,7 @@ let pwAuth = sessionStorage.getItem('snet_admin_pw') === '1';
 let tab = 'overview';
 let netData = [];      // network summaries cache (current page)
 let deviceData = [];   // devices cache (current page)
+let devSelected = new Set();
 const PAGE_SIZE = 20;
 let netPage = 1, devPage = 1;
 let netSeq = 0, devSeq = 0; // per-list request sequence guards
@@ -4037,7 +4039,6 @@ async function inviteNet(nid) {
     <div class="qr" id="invite-qr"></div>
     <div class="fresh-code">
       <span class="code" id="invite-link" style="flex:1">${esc(link)}</span>
-      <button type="button" class="btn sm" data-act="copy" data-copy="${esc(link)}">${icon('copy')} 复制</button>
     </div>
     <p class="hint">邀请链接中的协调服务信息已加密显示。重置后旧链接立即失效，已加入成员不受影响。</p>
     <div class="modal-foot">
@@ -4250,7 +4251,9 @@ async function doChpass() {
 async function loadDevices(showLoading, page) {
   const my = ++devSeq;
   const body = $('dev-body');
-  if (showLoading) body.innerHTML = '<tr><td colspan="6"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr>';
+  devSelected.clear();
+  updateDevSelectionUI();
+  if (showLoading) body.innerHTML = '<tr><td colspan="7"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr>';
   if (page !== undefined) devPage = page;
   try {
     const q = ($('dev-q') ? $('dev-q').value.trim() : '');
@@ -4276,12 +4279,12 @@ function renderDevices() {
   const list = deviceData;
   const q = ($('dev-q') ? $('dev-q').value.trim() : '');
   if (!devTotal && !q) {
-    body.innerHTML = '<tr><td colspan="6"><div class="empty">' + icon('empty') +
+    body.innerHTML = '<tr><td colspan="7"><div class="empty">' + icon('empty') +
       '<div class="t">暂无设备</div><div class="s">客户端首次启动后会在此注册设备身份</div></div></td></tr>';
     return;
   }
   if (!list.length) {
-    body.innerHTML = '<tr><td colspan="5"><div class="empty">' + icon('empty') +
+    body.innerHTML = '<tr><td colspan="7"><div class="empty">' + icon('empty') +
       '<div class="t">没有匹配的设备</div><div class="s">调整搜索条件</div></div></td></tr>';
     return;
   }
@@ -4301,6 +4304,7 @@ function renderDevices() {
     
     rows += `
       <tr>
+        <td><input type="checkbox" data-dev-select="${esc(d.id)}" aria-label="选择设备 ${esc(displayName)}" ${devSelected.has(d.id) ? "checked" : ""} /></td>
         <td><span class="dev-name" data-dev="${esc(d.id)}" title="点击 ✎ 或双击名称编辑">${esc(displayName)}</span><button type="button" class="btn icon sm rename-dev" data-act="rename-dev" data-dev="${esc(d.id)}" title="修改设备名称" aria-label="修改设备名称">${icon('pencil')}</button></td>
         <td class="mono" title="${esc(d.id)}">${esc(d.id.length > 8 ? d.id.slice(0, 8) + '…' : d.id)}</td>
         <td>${networksCell}</td>
@@ -4312,6 +4316,46 @@ function renderDevices() {
       </tr>`;
   }
   body.innerHTML = rows;
+  updateDevSelectionUI();
+}
+
+function updateDevSelectionUI() {
+  const boxes = Array.from(document.querySelectorAll('[data-dev-select]'));
+  const checked = boxes.filter(b => b.checked).length;
+  const all = $('dev-select-all');
+  if (all) {
+    all.checked = boxes.length > 0 && checked === boxes.length;
+    all.indeterminate = checked > 0 && checked < boxes.length;
+    all.disabled = boxes.length === 0;
+  }
+  const bulk = $('dev-bulk-delete');
+  if (bulk) {
+    bulk.disabled = checked === 0;
+    bulk.textContent = checked ? `批量删除 (${checked})` : '批量删除';
+  }
+}
+
+async function bulkDeleteDevices() {
+  const ids = Array.from(devSelected);
+  if (!ids.length) return;
+  const ok = await confirmDlg({
+    title: '批量删除设备',
+    message: `确定删除选中的 <b>${ids.length}</b> 台设备？<br>这些设备将从所有网络中移除，此操作不可恢复。`,
+    confirmText: '永久删除', danger: true,
+  });
+  if (!ok) return;
+  let deleted = 0;
+  let failed = 0;
+  for (const id of ids) {
+    try {
+      await api('DELETE', '/admin/devices/' + id);
+      deleted++;
+    } catch (_) { failed++; }
+  }
+  devSelected.clear();
+  toast(failed ? `已删除 ${deleted} 台，${failed} 台删除失败` : `已删除 ${deleted} 台设备`);
+  loadDevices(false);
+  updateCounts();
 }
 
 async function devNets(btn, deviceID) {
@@ -4507,6 +4551,23 @@ $('dev-q').addEventListener('input', () => {
   clearTimeout(devQTimer);
   devQTimer = setTimeout(() => loadDevices(true, 1), 300);
 });
+$('dev-select-all').addEventListener('change', e => {
+  const checked = !!e.target.checked;
+  document.querySelectorAll('[data-dev-select]').forEach(box => {
+    box.checked = checked;
+    if (checked) devSelected.add(box.dataset.devSelect);
+    else devSelected.delete(box.dataset.devSelect);
+  });
+  updateDevSelectionUI();
+});
+$('dev-body').addEventListener('change', e => {
+  const box = e.target.closest('[data-dev-select]');
+  if (!box) return;
+  if (box.checked) devSelected.add(box.dataset.devSelect);
+  else devSelected.delete(box.dataset.devSelect);
+  updateDevSelectionUI();
+});
+$('dev-bulk-delete').addEventListener('click', bulkDeleteDevices);
 
 /* Enter to login */
 for (const id of ['user', 'pass']) {

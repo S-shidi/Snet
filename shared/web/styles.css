@@ -1617,8 +1617,8 @@ pre.code { user-select: all; }
 .member-summary-name .network-owner-mark { vertical-align: -2px; }
 .member-summary-self {
   display: inline-flex; align-items: center; justify-content: center;
-  padding: 1px 7px; border: 1px solid rgba(63,182,139,.32); border-radius: 999px;
-  background: var(--ok-soft); color: var(--ok); font-size: 11px; line-height: 1.5;
+  padding: 1px 7px; border: 1px solid rgba(110,146,255,.38); border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent2); font-size: 11px; line-height: 1.5;
   white-space: nowrap;
 }
 @media (max-width: 520px) {

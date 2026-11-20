@@ -2190,7 +2190,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const online = connected && !!nd.online;
     const pd = directMap[nd.id];
     const path = isSelf
-      ? '<span class="path-badge self">本机</span>'
+      ? '<span class="member-summary-self" role="status">本设备</span>'
       : online ? pathBadge(pd, relayReady) : "";
     const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
     const crown = role === "owner" && !nd.isHub
