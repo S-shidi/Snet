@@ -1496,42 +1496,37 @@ function openSettingsModal() {
     `UDP ${m.port} → ${m.externalIp}:${m.externalPort} · ${natViaLabel(m.via)}`
   );
   const natErr = nat?.errors?.[0];
-  // Relay switches: whether this device may act as a gateway, and whether it
-  // honours the network's delegated routes (enabled by default).
+  // Whether this device may act as a relay gateway. Delegated routes are
+  // controlled per CIDR from the network detail view.
   const relayGatewaySupported = status?.relayGatewaySupported !== false;
   const allowRelay = relayGatewaySupported && status?.allowRelay === true;
-  const useRelay = status?.useRelay !== false;
   const relayErr = status?.relayError || "";
   openModal({
     title: "设置",
     body: `<div class="settings-shell">
-      <section class="settings-panel">
-        <div class="settings-panel-head"><h3>设备</h3><span class="hint">本机身份</span></div>
-        <div class="settings-list">
-          <div class="settings-row">
-            <div class="settings-row-main">
-              <div class="settings-row-title">设备名称</div>
-              <div class="settings-row-desc">当前名称：<span id="s-device-name">${esc(status?.deviceName || "未设置")}</span></div>
-            </div>
-            <div class="settings-row-actions">
-              <button type="button" id="s-rename-device" class="btn ghost sm">编辑</button>
-            </div>
+      <section class="settings-profile">
+        <div class="settings-profile-main">
+          <div class="settings-avatar" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 7v5c0 5 3.4 8 8 9 4.6-1 8-4 8-9V7l-8-4Z"/><path d="m9 12 2 2 4-4"/></svg>
           </div>
-          <div class="settings-row settings-row-device">
-            <div class="settings-row-main">
-              <div class="settings-row-title">设备 ID</div>
-              <div class="settings-row-desc">用于在服务端和成员列表中识别这台设备</div>
-            </div>
-            <div class="settings-row-actions">
+          <div class="settings-profile-copy">
+            <span class="settings-eyebrow">本机设备</span>
+            <h2 class="settings-device-name" id="s-device-name">${esc(status?.deviceName || "未设置")}</h2>
+            <div class="settings-device-id-row">
+              <span>设备 ID</span>
               <code class="settings-device-id" id="s-device-id">${esc(status?.deviceId || "-")}</code>
-              <button type="button" id="s-copy-device" class="btn icon sm" title="复制设备 ID" aria-label="复制设备 ID"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="14" height="14"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
             </div>
           </div>
         </div>
+        <div class="settings-profile-actions">
+          <button type="button" id="s-rename-device" class="btn ghost sm">重命名</button>
+          <button type="button" id="s-copy-device" class="btn ghost sm">复制 ID</button>
+        </div>
       </section>
-      <section class="settings-panel">
-        <div class="settings-panel-head"><h3>连接</h3><span class="hint">连接与端口</span></div>
-        <div class="settings-list">
+
+      <section class="settings-group">
+        <div class="settings-group-head"><h3>连接</h3><span>协调服务与网络发现</span></div>
+        <div class="settings-card">
           <div class="settings-row">
             <div class="settings-row-main">
               <div class="settings-row-title">协调服务</div>
@@ -1561,12 +1556,13 @@ function openSettingsModal() {
             </label>
           </div>
           <p class="settings-note" id="s-nat-state">${!status ? "后台服务未运行" : !natEnabled ? "已关闭" : natLines.length ? `已映射 ${natLines.length} 个端口` : "正在等待路由器分配映射…"}</p>
-          <div class="settings-note muted" id="s-nat-list">${natLines.map(esc).join("<br>")}${natErr ? `<div class="err">端口 ${natErr.port}: ${esc(natErr.error)}</div>` : ""}</div>
+          <div class="settings-note muted settings-nat-list" id="s-nat-list">${natLines.map(esc).join("<br>")}${natErr ? `<div class="err">端口 ${natErr.port}: ${esc(natErr.error)}</div>` : ""}</div>
         </div>
       </section>
-      <section class="settings-panel">
-        <div class="settings-panel-head"><h3>中继路由</h3><span class="hint">本机网关与远程子网</span></div>
-        <div class="settings-list">
+
+      <section class="settings-group">
+        <div class="settings-group-head"><h3>中继</h3><span>本机网关</span></div>
+        <div class="settings-card">
           ${relayGatewaySupported
             ? `<div class="settings-row">
             <div class="settings-row-main">
@@ -1580,22 +1576,12 @@ function openSettingsModal() {
           </div>
           <p class="settings-note ${relayErr ? "err" : allowRelay ? "ok" : ""}" id="s-allow-relay-state">${relayErr ? esc(relayErr) : allowRelay ? "已开启，等待目标节点确认路由" : "已关闭"}</p>`
             : '<p class="settings-note muted">当前系统不支持作为中继网关；仍可使用网络内其他节点提供的中继路由。</p>'}
-          <div class="settings-row">
-            <div class="settings-row-main">
-              <div class="settings-row-title">使用网络内的中继网关</div>
-              <div class="settings-row-desc">按网络创建者委派的路由访问其他子网，默认开启</div>
-            </div>
-            <label class="switch">
-              <input id="s-use-relay" type="checkbox" ${useRelay ? "checked" : ""} ${!status ? "disabled" : ""} />
-              <span class="slider"></span>
-            </label>
-          </div>
-          <p class="settings-note ${useRelay ? "ok" : ""}" id="s-use-relay-state">${useRelay ? "已开启" : "已关闭：忽略网络中所有已生效的中继路由"}</p>
         </div>
       </section>
-      <section class="settings-panel">
-        <div class="settings-panel-head"><h3>诊断</h3><span class="hint">日志与运行状态</span></div>
-        <div class="settings-list">
+
+      <section class="settings-group">
+        <div class="settings-group-head"><h3>系统</h3><span>运行状态与诊断</span></div>
+        <div class="settings-card">
           <div class="settings-row">
             <div class="settings-row-main">
               <div class="settings-row-title">诊断日志</div>
@@ -1612,10 +1598,11 @@ function openSettingsModal() {
           </div>
         </div>
       </section>
-      <section class="settings-panel">
-        <div class="settings-panel-head"><h3>关于</h3><span class="hint">Snet</span></div>
-        <div class="settings-about">
-          <p class="about-intro">Snet 是一个无需公网 IP、扫码即连的私有 WireGuard 网络，让设备之间优先直连，无法直连时自动中继。</p>
+
+      <section class="settings-group">
+        <div class="settings-group-head"><h3>关于</h3><span>Snet</span></div>
+        <div class="settings-card settings-about">
+          <p class="about-intro">无需公网 IP 的私有 WireGuard 网络，优先直连，必要时自动中继。</p>
           <div class="about-meta">
             <span>作者 <b>S.shidi</b></span>
             <span>邮箱 <a href="mailto:s.shidi@gmail.com">s.shidi@gmail.com</a></span>
@@ -1628,6 +1615,7 @@ function openSettingsModal() {
           </div>
         </div>
       </section>
+
       <details class="settings-advanced">
         <summary>高级：原始状态 JSON</summary>
         <pre class="settings-json">${esc(JSON.stringify(status ?? {}, null, 2))}</pre>
@@ -1738,48 +1726,37 @@ function openSettingsModal() {
         }
       });
 
-      // The two relay switches are saved together: the daemon keeps them in
-      // one device-wide configuration and reports the gateway status back.
+      // Per-route switches replace the old device-wide "use relay gateways"
+      // switch. This control remains only for acting as a relay gateway.
       const allowRelayInput = body.querySelector<HTMLInputElement>("#s-allow-relay");
       const allowRelayState = body.querySelector<HTMLElement>("#s-allow-relay-state");
-      const useRelayInput = body.querySelector<HTMLInputElement>("#s-use-relay");
-      const useRelayState = body.querySelector<HTMLElement>("#s-use-relay-state");
 
-      const saveRelayOptions = async () => {
+      const saveAllowRelay = async () => {
         const wantAllow = allowRelayInput?.checked ?? false;
-        const wantUse = useRelayInput?.checked ?? true;
         if (allowRelayState) {
           allowRelayState.className = "settings-note";
           allowRelayState.textContent = wantAllow ? "正在开启中继网关…" : "正在关闭中继网关…";
         }
         if (allowRelayInput) allowRelayInput.disabled = true;
-        if (useRelayInput) useRelayInput.disabled = true;
         try {
-          await backend.setRelayOptions({ allowRelay: wantAllow, useRelay: wantUse });
+          await backend.setRelayOptions({ allowRelay: wantAllow });
           await refresh();
           if (allowRelayState) {
             allowRelayState.className = "settings-note ok";
             allowRelayState.textContent = wantAllow ? "已开启中继网关" : "已关闭中继网关";
           }
-          if (useRelayState) {
-            useRelayState.className = "settings-note ok";
-            useRelayState.textContent = wantUse ? "已开启" : "已关闭：忽略网络中所有已生效的中继路由";
-          }
-          toast("中继设置已保存");
+          toast("中继网关设置已保存");
         } catch (e) {
           if (allowRelayInput) allowRelayInput.checked = !wantAllow;
-          if (useRelayInput) useRelayInput.checked = !wantUse;
           if (allowRelayState) {
             allowRelayState.className = "settings-note";
             allowRelayState.textContent = `保存失败: ${e}`;
           }
         } finally {
           if (allowRelayInput) allowRelayInput.disabled = false;
-          if (useRelayInput) useRelayInput.disabled = false;
         }
       };
-      allowRelayInput?.addEventListener("change", () => { void saveRelayOptions(); });
-      useRelayInput?.addEventListener("change", () => { void saveRelayOptions(); });
+      allowRelayInput?.addEventListener("change", () => { void saveAllowRelay(); });
 
       body.querySelector("#s-logs")?.addEventListener("click", async (e) => {        const btn = e.currentTarget as HTMLButtonElement;
         btn.disabled = true;
@@ -2050,10 +2027,13 @@ function subnetRouteSummaryHTML(n: NetInfo, r: PeersResp | undefined, routes: Re
     const nd = nodes.get(rt.targetNodeId);
     const isSelf = !!r?.self?.id && rt.targetNodeId === r.self.id;
     const online = connected && (isSelf || !!nd?.online);
-    let state: "direct" | "relay" | "no-relay" | "offline";
+    let state: "direct" | "relay" | "no-relay" | "offline" | "disabled";
     let label: string;
 
-    if (!online) {
+    if (rt.enabled === false) {
+      state = "disabled";
+      label = "已关闭路由";
+    } else if (!online) {
       state = "offline";
       label = connected ? "节点离线" : "当前网络未连接";
     } else if (!nd) {
@@ -2084,6 +2064,10 @@ function subnetRouteSummaryHTML(n: NetInfo, r: PeersResp | undefined, routes: Re
       <code class="subnet-route-cidr" title="${esc(rt.cidr)}">${esc(rt.cidr)}</code>
       <span class="subnet-route-state ${state}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${icon}</span>
       <span class="subnet-route-node" title="${esc(nodeTitle)}">${nodeDot}${esc(nodeName)}</span>
+      <label class="switch subnet-route-switch" title="启用 / 停用该路由">
+        <input type="checkbox" aria-label="启用路由 ${esc(rt.cidr)}" data-route-toggle="1" data-route-nid="${esc(n.networkId)}" data-route-cidr="${esc(rt.cidr)}" ${rt.enabled !== false ? "checked" : ""} />
+        <span class="slider"></span>
+      </label>
     </div>`;
   }).join("");
 
@@ -2837,6 +2821,13 @@ function closeNetworkDetail() {
   renderNetworks();
 }
 
+function applyRouteEnabledToCaches(nid: string, cidr: string, enabled: boolean) {
+  for (const routes of [peerDetails[nid]?.routes, ownerInfo[nid]?.routes]) {
+    const route = routes?.find((r) => r.cidr === cidr);
+    if (route) route.enabled = enabled;
+  }
+}
+
 function bindNetworkDetailEvents() {
   const detail = $("#net-detail");
   if (!detail) return;
@@ -2988,6 +2979,25 @@ function bindNetworkDetailEvents() {
   });
   detail.addEventListener("change", async (e) => {
     const input = e.target as HTMLInputElement;
+    if (input.dataset.routeToggle === "1") {
+      const nid = input.dataset.routeNid || detailNid || "";
+      const cidr = input.dataset.routeCidr || "";
+      if (!nid || !cidr) return;
+      input.disabled = true;
+      try {
+        const enabled = input.checked;
+        await backend.setRouteEnabled({ nid, cidr, enabled });
+        applyRouteEnabledToCaches(nid, cidr, enabled);
+        renderNetworkDetail();
+        void refreshAfterDeviceChange();
+      } catch (err) {
+        input.checked = !input.checked;
+        toast(String(err), "err");
+      } finally {
+        input.disabled = false;
+      }
+      return;
+    }
     if (input.id !== "detail-net-toggle" || !detailNid) return;
     if (input.checked) {
       const label = status?.networks?.find((n) => n.networkId === detailNid)?.name || detailNid;

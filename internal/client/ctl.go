@@ -475,6 +475,23 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 	// Relay switches are device-wide: allowRelay makes this device a relay
 	// gateway for the networks it belongs to, useRelay controls whether it
 	// honours the network's delegated routes.
+	mux.HandleFunc("POST /ctl/route-enabled", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Nid     string `json:"nid"`
+			CIDR    string `json:"cidr"`
+			Enabled bool   `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.SetRouteEnabled(req.Nid, req.CIDR, req.Enabled); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
 	mux.HandleFunc("POST /ctl/relay", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			AllowRelay bool `json:"allowRelay"`

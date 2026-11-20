@@ -106,10 +106,14 @@ type Config struct {
 	// error instead of silently advertising a gateway that cannot forward.
 	AllowRelay bool `json:"allowRelay,omitempty"`
 
-	// UseRelay makes this device route traffic for delegated subnets through
-	// the network's relay gateways. nil means enabled (default true): the
-	// network's routing decisions are honoured unless the user opts out.
+	// UseRelay is retained for compatibility with older clients. New clients
+	// use RouteEnabled to control each delegated CIDR independently.
 	UseRelay *bool `json:"useRelay,omitempty"`
+
+	// RouteEnabled stores per-route preferences keyed by "networkID|cidr".
+	// A missing key means enabled, preserving the original all-routes-on
+	// behavior when upgrading an existing config.
+	RouteEnabled map[string]bool `json:"routeEnabled,omitempty"`
 }
 
 // RelayAllowed reports whether this device may act as a relay gateway.
@@ -122,6 +126,31 @@ func (c *Config) RelayAllowed() bool {
 // turns it off.
 func (c *Config) RelayUsed() bool {
 	return c != nil && (c.UseRelay == nil || *c.UseRelay)
+}
+
+// RouteAllowed reports whether a delegated route is enabled locally.
+func (c *Config) RouteAllowed(nid, cidr string) bool {
+	if c == nil || c.RouteEnabled == nil {
+		return true
+	}
+	enabled, ok := c.RouteEnabled[nid+"|"+cidr]
+	return !ok || enabled
+}
+
+// SetRouteAllowed updates and returns whether the stored value changed.
+func (c *Config) SetRouteAllowed(nid, cidr string, enabled bool) bool {
+	if c == nil {
+		return false
+	}
+	key := nid + "|" + cidr
+	if c.RouteEnabled == nil {
+		c.RouteEnabled = make(map[string]bool)
+	}
+	if old, ok := c.RouteEnabled[key]; ok && old == enabled {
+		return false
+	}
+	c.RouteEnabled[key] = enabled
+	return true
 }
 
 func ConfigPath() (string, error) {

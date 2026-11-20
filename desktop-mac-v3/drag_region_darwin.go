@@ -64,11 +64,13 @@ import "C"
 import "unsafe"
 
 // installMacDragRegion adds the native drag handle above the WebView content.
-// A 96pt left inset clears the traffic lights; a 150pt right inset keeps the
-// refresh/settings/logout controls outside the drag region.
+// A 96pt left inset clears the traffic lights; a 200pt right inset keeps the
+// refresh/settings/logout controls outside the drag region. Keep the overlay
+// to a narrow blank band: the content column is centered at max 552px, so a
+// wide right inset avoids covering the header action buttons.
 func installMacDragRegion(window unsafe.Pointer) {
 	if window == nil {
 		return
 	}
-	C.snetInstallDragRegion(window, C.double(96), C.double(150), C.double(52))
+	C.snetInstallDragRegion(window, C.double(96), C.double(200), C.double(48))
 }

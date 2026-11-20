@@ -198,6 +198,29 @@ func setRelayOptions(allowRelay, useRelay bool) error {
 	return nil
 }
 
+func setRouteEnabled(nid, cidr string, enabled bool) error {
+	token, err := readCtlToken()
+	if err != nil {
+		return err
+	}
+	body := fmt.Sprintf(`{"nid":%q,"cidr":%q,"enabled":%t}`, nid, cidr, enabled)
+	req, err := http.NewRequest(http.MethodPost, "http://"+ctlAddr+"/ctl/route-enabled", strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Ctl-Token", token)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("设置路由开关失败: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func readCtlToken() (string, error) {
 	b, err := os.ReadFile(ctlTokenPath())
 	if err != nil {

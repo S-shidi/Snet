@@ -83,6 +83,9 @@ type Route struct {
 	CIDR string `json:"cidr"`
 	// Status 是 "pending" 或 "active"。
 	Status string `json:"status"`
+	// Enabled is a client-local preference and is populated only by the
+	// client ctl API; the coordination server never sets it.
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // 中继路由状态常量。

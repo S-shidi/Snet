@@ -178,8 +178,12 @@ const backend: Backend = {
     await api("/role", jsonPost("/role", { nid: params.nid, nodeId: params.nodeId, role: params.role }));
   },
 
-  async setRelayOptions(params: { allowRelay: boolean; useRelay: boolean }): Promise<void> {
-    await api("/relay", jsonPost("/relay", { allowRelay: params.allowRelay, useRelay: params.useRelay }));
+  async setRouteEnabled(params: { nid: string; cidr: string; enabled: boolean }): Promise<void> {
+    await api("/route-enabled", jsonPost("/route-enabled", params));
+  },
+
+  async setRelayOptions(params: { allowRelay: boolean; useRelay?: boolean }): Promise<void> {
+    await api("/relay", jsonPost("/relay", { allowRelay: params.allowRelay, useRelay: params.useRelay ?? true }));
   },
 
   async renameDevice(name: string): Promise<void> {

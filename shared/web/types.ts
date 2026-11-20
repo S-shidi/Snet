@@ -74,6 +74,8 @@ export type RelayRoute = {
   targetNodeId: string;
   cidr: string;
   status?: "pending" | "active";
+  /** Client-local preference; missing means enabled. */
+  enabled?: boolean;
 };
 
 export type DaemonStatus = {
@@ -165,8 +167,10 @@ export interface Backend {
   setNATMapping(enabled: boolean): Promise<void>;
   /** Set a peer node's role (owner only) */
   setRole?(params: { nid: string; nodeId: string; role: string }): Promise<void>;
-  /** Set the device's relay switches: act as a gateway, and use the network's gateways */
-  setRelayOptions(params: { allowRelay: boolean; useRelay: boolean }): Promise<void>;
+  /** Set whether this device acts as a relay gateway. */
+  setRelayOptions(params: { allowRelay: boolean; useRelay?: boolean }): Promise<void>;
+  /** Enable or disable one delegated CIDR on this device. */
+  setRouteEnabled(params: { nid: string; cidr: string; enabled: boolean }): Promise<void>;
   /** Rename this device on every joined network. */
   renameDevice(name: string): Promise<void>;
   /** Rename another device in a network (owner only). */

@@ -350,6 +350,8 @@ type Daemon struct {
 	retryAttempts map[string]int
 	// retryStop signals the background retry loop to exit.
 	retryStop chan struct{}
+	// routeWake wakes poll loops to reapply routes after a per-route toggle.
+	routeWake chan struct{}
 	// androidTunFD holds the TUN file descriptor from VpnService on Android.
 	// When non-zero, bringUp uses NewTunnelFromFD instead of NewTunnel.
 	androidTunFD int
@@ -393,6 +395,7 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 		relayServed:   make(map[string]string),
 		retryPending:  make(map[string]struct{}),
 		retryAttempts: make(map[string]int),
+		routeWake:     make(chan struct{}, 1),
 		relayEP:       make(map[string]string),
 		relayCands:    make(map[string][]string),
 		relayRTT:      make(map[string]int64),
@@ -2239,6 +2242,7 @@ func (d *Daemon) pollLoop(nid string) {
 	for {
 		select {
 		case <-ticker.C:
+		case <-d.routeWake:
 		}
 		d.mu.Lock()
 		rt := d.nets[nid]
@@ -2414,7 +2418,8 @@ func (d *Daemon) pollLoop(nid string) {
 			peers := rt.path.PreparePeers(st.Peers)
 			// Inject the network's delegated relay routes: the CIDR an owner
 			// delegated to a node must travel through that node's tunnel.
-			peers, skipped := d.planRelayRoutesLocked(nc, st.Routes, peers)
+			d.pruneRouteEnabledLocked(nid, st.Routes)
+			peers, skipped := d.planRelayRoutesLocked(nid, nc, st.Routes, peers)
 			if err := rt.tun.ApplyPeers(peers, nc.Subnet, ""); err != nil {
 				log.Printf("apply relay-v2 peers %s: %v", nid, err)
 				d.noteApplyErrLocked(nid, err)
@@ -2443,7 +2448,8 @@ func (d *Daemon) pollLoop(nid string) {
 		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnets(), observed)
 		// Inject the network's delegated relay routes into the peer routing
 		// entries so the delegated CIDRs travel through their gateway node.
-		peers, skipped := d.planRelayRoutesLocked(nc, st.Routes, peers)
+		d.pruneRouteEnabledLocked(nid, st.Routes)
+		peers, skipped := d.planRelayRoutesLocked(nid, nc, st.Routes, peers)
 		// Per-peer WireGuard tunnel stats straight from the engine, so the
 		// poll line distinguishes a real data-plane handshake from the
 		// relay-group "online" guess (Cc, CJEB, KAYS... consumers poll peers
@@ -3586,23 +3592,106 @@ func (d *Daemon) SetRoutes(nid string, routes []protocol.Route) error {
 	return nil
 }
 
-// planRelayRoutesLocked merges the network's delegated relay routes into the
-// peer routing entries. Caller must hold d.mu.
-//
-// When the device opted out of using the network's relay gateways
-// (use_relay = false) every delegated route is ignored and the peers are
-// returned untouched.
-func (d *Daemon) planRelayRoutesLocked(nc *NetworkCfg, routes []protocol.Route, peers []protocol.Node) ([]protocol.Node, []string) {
-	if len(routes) == 0 || !d.cfg.RelayUsed() {
+// planRelayRoutesLocked merges the network's enabled delegated relay routes
+// into the peer routing entries. Caller must hold d.mu.
+func (d *Daemon) planRelayRoutesLocked(nid string, nc *NetworkCfg, routes []protocol.Route, peers []protocol.Node) ([]protocol.Node, []string) {
+	if len(routes) == 0 {
 		return peers, nil
+	}
+	enabled := make([]protocol.Route, 0, len(routes))
+	for _, route := range routes {
+		if d.cfg.RouteAllowed(nid, route.CIDR) {
+			enabled = append(enabled, route)
+		}
 	}
 	selfID := ""
 	if nc != nil {
 		selfID = nc.NodeID
 	}
 	planner := NewRoutePlanner(selfID, true)
-	d.logRelayGatewayRolesLocked(nc, planner.ServedBySelf(routes))
-	return planner.Apply(peers, routes), planner.Skipped()
+	d.logRelayGatewayRolesLocked(nc, planner.ServedBySelf(enabled))
+	return planner.Apply(peers, enabled), planner.Skipped()
+}
+
+// pruneRouteEnabledLocked drops preferences for routes that no longer exist
+// on the network. Caller must hold d.mu.
+func (d *Daemon) pruneRouteEnabledLocked(nid string, routes []protocol.Route) {
+	if d.cfg.RouteEnabled == nil {
+		return
+	}
+	valid := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		valid[nid+"|"+route.CIDR] = struct{}{}
+	}
+	prefix := nid + "|"
+	changed := false
+	for key := range d.cfg.RouteEnabled {
+		if strings.HasPrefix(key, prefix) {
+			if _, ok := valid[key]; !ok {
+				delete(d.cfg.RouteEnabled, key)
+				changed = true
+			}
+		}
+	}
+	if changed {
+		if err := d.save(); err != nil {
+			log.Printf("save pruned route preferences %s: %v", nid, err)
+		}
+	}
+}
+
+// SetRouteEnabled stores a per-CIDR local preference and reapplies the
+// network's routing table. A disabled route stays on the server; this device
+// simply stops installing it locally.
+func (d *Daemon) SetRouteEnabled(nid, cidr string, enabled bool) error {
+	cidr = strings.TrimSpace(cidr)
+	if _, _, err := net.ParseCIDR(cidr); err != nil {
+		return fmt.Errorf("无效的 CIDR: %w", err)
+	}
+	d.mu.Lock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		d.mu.Unlock()
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	if !d.cfg.SetRouteAllowed(nid, cidr, enabled) {
+		d.mu.Unlock()
+		return nil
+	}
+	if err := d.save(); err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	active := nc.Active
+	d.mu.Unlock()
+	if active && d.routeWake != nil {
+		select {
+		case d.routeWake <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+// routeEnabledCopy annotates server routes with the local preference without
+// mutating the server response. Caller must not hold d.mu.
+func (d *Daemon) routeEnabledCopy(nid string, routes []protocol.Route) []protocol.Route {
+	if len(routes) == 0 {
+		return routes
+	}
+	d.mu.Lock()
+	enabled := make([]bool, len(routes))
+	for i, route := range routes {
+		enabled[i] = d.cfg.RouteAllowed(nid, route.CIDR)
+	}
+	d.mu.Unlock()
+	out := make([]protocol.Route, len(routes))
+	for i, route := range routes {
+		out[i] = route
+		value := enabled[i]
+		out[i].Enabled = &value
+	}
+	return out
 }
 
 // noteSkippedRoutesLocked records a network-level warning when one or more
@@ -3920,7 +4009,11 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 	if isOwner {
 		resp, err = api.NetworkInfo(nid, token)
 	}
-	return resp, wrapNetGone(err)
+	if err != nil {
+		return resp, wrapNetGone(err)
+	}
+	resp.Routes = d.routeEnabledCopy(nid, resp.Routes)
+	return resp, nil
 }
 
 // reconcileOwnerRole updates the cached owner flag from the server-reported
@@ -3958,7 +4051,12 @@ func (d *Daemon) Peers(nid string) (protocol.PeersResp, error) {
 	api := d.apiLocked()
 	token := nc.Token
 	d.mu.Unlock()
-	return api.PeersState(nid, token, true)
+	resp, err := api.PeersState(nid, token, true)
+	if err != nil {
+		return resp, err
+	}
+	resp.Routes = d.routeEnabledCopy(nid, resp.Routes)
+	return resp, nil
 }
 
 // Pre-allocated string values so serverState can use *string to distinguish

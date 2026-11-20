@@ -57,9 +57,9 @@ func main() {
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Snet",
-		Width:            1100,
+		Width:            560,
 		Height:           800,
-		MinWidth:         800,
+		MinWidth:         480,
 		MinHeight:        600,
 		Hidden:           false,
 		URL:              "/",
@@ -74,7 +74,7 @@ func main() {
 		e.Cancel()
 		window.Hide()
 	})
-	statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem := setupSystray(app, window, svc)
+	statusItem, ipItem, allowRelayItem, routeRoot, menu := setupSystray(app, window, svc)
 	var trayWatchOnce sync.Once
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		log.Printf("Snet: application started")
@@ -100,7 +100,7 @@ func main() {
 			log.Printf("Snet: native drag region not installed: no NSWindow")
 		}()
 		trayWatchOnce.Do(func() {
-			go watchTrayStatus(statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem)
+			go watchTrayStatus(statusItem, ipItem, allowRelayItem, routeRoot, menu)
 		})
 	})
 
@@ -132,10 +132,9 @@ func showWindow(window *application.WebviewWindow) {
 
 var (
 	trayRelayAllow bool
-	trayRelayUse   = true
 )
 
-func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) (*application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem, *application.MenuItem) {
+func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) (*application.MenuItem, *application.MenuItem, *application.MenuItem, *application.Menu, *application.Menu) {
 	tray := app.SystemTray.New()
 	if len(trayIcon) == 0 {
 		log.Printf("Snet: tray icon is empty; continuing without template icon")
@@ -150,36 +149,27 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 	menu := app.NewMenu()
 	statusItem := menu.Add("未连接").SetEnabled(true).SetBitmap(dotIcon(color.RGBA{R: 239, G: 68, B: 68, A: 255}))
 	ipItem := menu.Add("IP: -").SetEnabled(true).SetBitmap(ipIcon())
-	subnetItem := menu.Add("子网: -").SetEnabled(true).SetBitmap(subnetIcon())
-	subnetItem.SetHidden(true)
 	menu.AddSeparator()
 	allowRelayItem := menu.Add("允许本设备作为中继网关").SetBitmap(blankIcon())
-	useRelayItem := menu.Add("使用网络内的中继网关").SetBitmap(relayCheckIcon(true))
+	menu.AddSeparator()
+	routeRoot := menu.AddSubmenu("子网路由")
+	if routeItem := menu.FindByLabel("子网路由"); routeItem != nil {
+		routeItem.SetBitmap(subnetIcon())
+	}
+	routeRoot.Add("正在加载…").SetEnabled(false)
 	menu.AddSeparator()
 	openItem := menu.Add("打开控制面板")
 	openItem.SetBitmap(windowIcon())
-	openItem.OnClick(func(*application.Context) {
-		showWindow(window)
-	})
-	toggleRelay := func(allow bool) {
-		nextAllow := allow
-		if allow {
-			nextAllow = !trayRelayAllow
-		}
-		nextUse := trayRelayUse
-		if !allow {
-			nextUse = !trayRelayUse
-		}
-		if err := setRelayOptions(nextAllow, nextUse); err != nil {
+	openItem.OnClick(func(*application.Context) { showWindow(window) })
+	allowRelayItem.OnClick(func(*application.Context) {
+		next := !trayRelayAllow
+		if err := setRelayOptions(next, true); err != nil {
 			log.Printf("tray relay options: %v", err)
 			return
 		}
-		trayRelayAllow, trayRelayUse = nextAllow, nextUse
+		trayRelayAllow = next
 		allowRelayItem.SetBitmap(relayCheckIcon(trayRelayAllow))
-		useRelayItem.SetBitmap(relayCheckIcon(trayRelayUse))
-	}
-	allowRelayItem.OnClick(func(*application.Context) { toggleRelay(true) })
-	useRelayItem.OnClick(func(*application.Context) { toggleRelay(false) })
+	})
 	menu.AddSeparator()
 	quitItem := menu.Add("退出 Snet")
 	quitItem.SetBitmap(quitIcon())
@@ -189,7 +179,7 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 		app.Quit()
 	})
 	tray.SetMenu(menu)
-	return statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem
+	return statusItem, ipItem, allowRelayItem, routeRoot, menu
 }
 
 func blankIcon() []byte {
@@ -200,10 +190,10 @@ func relayCheckIcon(on bool) []byte {
 	if !on {
 		return blankIcon()
 	}
-	ink := color.RGBA{R: 63, G: 182, B: 139, A: 255}
+	ink := color.RGBA{R: 52, G: 211, B: 153, A: 255}
 	return makeIcon(func(img *image.RGBA) {
-		drawLine(img, 3, 8, 6, 11, ink)
-		drawLine(img, 6, 11, 13, 4, ink)
+		drawThickLine(img, 3, 8, 6, 11, ink)
+		drawThickLine(img, 6, 11, 13, 4, ink)
 	})
 }
 
@@ -252,6 +242,12 @@ func drawLine(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
 			err += dx
 			y0 += sy
 		}
+	}
+}
+
+func drawThickLine(img *image.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
+	for _, d := range [][2]int{{0, 0}, {-1, 0}, {1, 0}, {0, -1}, {0, 1}} {
+		drawLine(img, x0+d[0], y0+d[1], x1+d[0], y1+d[1], c)
 	}
 }
 
@@ -333,32 +329,52 @@ type trayStatusResponse struct {
 	UseRelay   bool `json:"useRelay"`
 }
 
-func queryTrayStatus() (string, string, string, color.RGBA, bool, bool) {
+type trayRoute struct {
+	CIDR    string
+	Enabled bool
+}
+
+type trayNetwork struct {
+	NID    string
+	Name   string
+	Routes []trayRoute
+}
+
+type trayStatus struct {
+	Label      string
+	IP         string
+	Color      color.RGBA
+	AllowRelay bool
+	Networks   []trayNetwork
+}
+
+func queryTrayStatus() trayStatus {
 	red := color.RGBA{R: 239, G: 68, B: 68, A: 255}
 	yellow := color.RGBA{R: 217, G: 161, B: 58, A: 255}
 	green := color.RGBA{R: 52, G: 199, B: 123, A: 255}
+	empty := trayStatus{Label: "未连接", IP: "-", Color: red}
 	token, err := readCtlToken()
 	if err != nil {
-		return "未连接", "-", "", red, false, true
+		return empty
 	}
 	req, err := http.NewRequest(http.MethodGet, "http://"+ctlAddr+"/ctl/status", nil)
 	if err != nil {
-		return "未连接", "-", "", red, false, true
+		return empty
 	}
 	req.Header.Set("X-Ctl-Token", token)
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
 	if err != nil {
-		return "未连接", "-", "", red, false, true
+		return empty
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "未连接", "-", "", red, false, true
+		return empty
 	}
 	var st trayStatusResponse
 	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
-		return "未连接", "-", "", red, false, true
+		return empty
 	}
+	out := empty
 	for _, n := range st.Networks {
 		if !n.Active || n.ServerState == "gone" {
 			continue
@@ -367,76 +383,150 @@ func queryTrayStatus() (string, string, string, color.RGBA, bool, bool) {
 		if name == "" {
 			name = n.NetworkID
 		}
-		ip := n.IP
-		if ip == "" {
-			ip = "-"
+		routes := queryOnlineSubnets(token, n.NetworkID)
+		out.Networks = append(out.Networks, trayNetwork{NID: n.NetworkID, Name: name, Routes: routes})
+		if len(out.Networks) == 1 {
+			out.IP = n.IP
+			if out.IP == "" {
+				out.IP = "-"
+			}
+			out.AllowRelay = st.AllowRelay
+			out.Color = yellow
+			out.Label = "打洞中"
+			if n.RelayPath != nil && n.RelayPath.Ready {
+				out.Color = green
+				out.Label = "已连接 (" + name + ")"
+			}
 		}
-		subnets := queryOnlineSubnets(token, n.NetworkID)
-		if n.RelayPath != nil && n.RelayPath.Ready {
-			return "已连接 (" + name + ")", ip, subnets, green, st.AllowRelay, st.UseRelay
-		}
-		return "打洞中", ip, subnets, yellow, st.AllowRelay, st.UseRelay
 	}
-	return "未连接", "-", "", red, false, true
+	return out
 }
 
-func queryOnlineSubnets(token, nid string) string {
+func queryOnlineSubnets(token, nid string) []trayRoute {
 	req, err := http.NewRequest(http.MethodGet, "http://"+ctlAddr+"/ctl/peers?nid="+url.QueryEscape(nid), nil)
 	if err != nil {
-		return ""
+		return nil
 	}
 	req.Header.Set("X-Ctl-Token", token)
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
 	if err != nil {
-		return ""
+		return nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return ""
+		return nil
 	}
 	var peers struct {
 		Routes []struct {
-			CIDR   string `json:"cidr"`
-			Status string `json:"status"`
+			CIDR    string `json:"cidr"`
+			Status  string `json:"status"`
+			Enabled *bool  `json:"enabled"`
 		} `json:"routes"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
-		return ""
+		return nil
 	}
-	seen := make(map[string]struct{})
+	out := make([]trayRoute, 0, len(peers.Routes))
+	seen := make(map[string]struct{}, len(peers.Routes))
 	for _, r := range peers.Routes {
-		if r.Status == "active" && r.CIDR != "" {
-			seen[r.CIDR] = struct{}{}
+		if r.Status != "active" || r.CIDR == "" {
+			continue
 		}
+		if _, ok := seen[r.CIDR]; ok {
+			continue
+		}
+		seen[r.CIDR] = struct{}{}
+		enabled := true
+		if r.Enabled != nil {
+			enabled = *r.Enabled
+		}
+		out = append(out, trayRoute{CIDR: r.CIDR, Enabled: enabled})
 	}
-	out := make([]string, 0, len(seen))
-	for sub := range seen {
-		out = append(out, sub)
-	}
-	sort.Strings(out)
-	return strings.Join(out, ", ")
+	sort.Slice(out, func(i, j int) bool { return out[i].CIDR < out[j].CIDR })
+	return out
 }
 
-func watchTrayStatus(statusItem, ipItem, subnetItem, allowRelayItem, useRelayItem *application.MenuItem) {
+func updateTrayMenu(menu *application.Menu) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("tray menu update: %v", r)
+		}
+	}()
+	menu.Update()
+}
+
+func rebuildTrayRoutes(root *application.Menu, networks []trayNetwork) {
+	root.Clear()
+	total := 0
+	for _, network := range networks {
+		if len(network.Routes) == 0 {
+			continue
+		}
+		if total > 0 {
+			root.AddSeparator()
+		}
+		total++
+		for _, route := range network.Routes {
+			route := route
+			nid := network.NID
+			item := root.AddCheckbox(route.CIDR, route.Enabled)
+			item.OnClick(func(ctx *application.Context) {
+				checked := ctx.IsChecked()
+				go func() {
+					if err := setRouteEnabled(nid, route.CIDR, checked); err != nil {
+						log.Printf("tray route %s/%s: %v", nid, route.CIDR, err)
+					}
+				}()
+			})
+		}
+	}
+	if total == 0 {
+		root.Add("暂无子网路由").SetEnabled(false)
+	}
+}
+
+func watchTrayStatus(statusItem, ipItem, allowRelayItem *application.MenuItem, routeRoot, menu *application.Menu) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	lastRoutes := "\x00"
 	for {
-		label, ip, subnets, statusColor, allowRelay, useRelay := queryTrayStatus()
+		st := queryTrayStatus()
+		sig := trayRouteSignature(st.Networks)
+		routeChanged := false
 		application.InvokeSync(func() {
-			statusItem.SetLabel(label)
-			statusItem.SetBitmap(dotIcon(statusColor))
-			ipItem.SetLabel("IP: " + ip)
-			if subnets == "" {
-				subnetItem.SetHidden(true)
-			} else {
-				subnetItem.SetLabel("子网: " + subnets)
-				subnetItem.SetHidden(false)
+			statusItem.SetLabel(st.Label)
+			statusItem.SetBitmap(dotIcon(st.Color))
+			ipItem.SetLabel("IP: " + st.IP)
+			trayRelayAllow = st.AllowRelay
+			allowRelayItem.SetBitmap(relayCheckIcon(st.AllowRelay))
+			if sig != lastRoutes {
+				rebuildTrayRoutes(routeRoot, st.Networks)
+				lastRoutes = sig
+				routeChanged = true
 			}
-			trayRelayAllow, trayRelayUse = allowRelay, useRelay
-			allowRelayItem.SetBitmap(relayCheckIcon(allowRelay))
-			useRelayItem.SetBitmap(relayCheckIcon(useRelay))
 		})
+		if routeChanged {
+			updateTrayMenu(menu)
+		}
 		<-ticker.C
 	}
+}
+
+func trayRouteSignature(networks []trayNetwork) string {
+	var b strings.Builder
+	for _, n := range networks {
+		b.WriteString(n.NID)
+		b.WriteByte(':')
+		for _, r := range n.Routes {
+			b.WriteString(r.CIDR)
+			if r.Enabled {
+				b.WriteString("+")
+			} else {
+				b.WriteString("-")
+			}
+			b.WriteByte(',')
+		}
+		b.WriteByte(';')
+	}
+	return b.String()
 }
