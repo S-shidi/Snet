@@ -59,16 +59,16 @@ func TestNetworksRoutePeersAndPingsToBoundServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Join(tsB.URL, 0, createdB.NetworkID, createdB.PairingCode); err != nil {
-		t.Fatal(err)
-	}
-
 	// Keep an unrelated pending request while joining/using B.
 	d.mu.Lock()
 	d.cfg.PendingJoins = map[string]*PendingJoin{
 		"PENDING-A": {PendingID: "PENDING-A", NetworkID: createdA.NetworkID, SnetServURL: normalizeServer(tsA.URL)},
 	}
 	d.mu.Unlock()
+
+	if _, err := d.Join(tsB.URL, 0, createdB.NetworkID, createdB.PairingCode); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := d.Peers(createdA.NetworkID); err != nil {
 		t.Fatal(err)
