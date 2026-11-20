@@ -1,4 +1,5 @@
 name: Build Android App
+# Feature-branch builds publish an unsigned-test APK artifact; tags publish the release asset.
 
 on:
   workflow_dispatch:
