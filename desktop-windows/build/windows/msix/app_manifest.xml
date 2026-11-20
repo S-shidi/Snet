@@ -10,7 +10,7 @@
   <Identity 
     Name="com.snet.snet"
     Publisher="CN=SNET"
-    Version="1.1.15.0"
+    Version="1.1.16.0"
     ProcessorArchitecture="x64" />
   
   <Properties>
