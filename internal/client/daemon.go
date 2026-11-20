@@ -1085,7 +1085,11 @@ func (d *Daemon) pendingLoop(pendingID string, stop chan struct{}) {
 			d.mu.Unlock()
 			return
 		}
-		api := d.apiLocked()
+		server := pj.SnetServURL
+		if strings.TrimSpace(server) == "" {
+			server = d.defaultServerLocked()
+		}
+		api := d.apiForServerLocked(server)
 		d.mu.Unlock()
 
 		// Poll without holding d.mu so a slow server never stalls the UI.
@@ -1145,7 +1149,11 @@ func (d *Daemon) CancelPending(pendingID string) error {
 	if pj == nil {
 		return fmt.Errorf("待批准请求 %s 未找到", pendingID)
 	}
-	if err := d.apiLocked().CancelPending(pendingID, d.cfg.DeviceID); err != nil {
+	server := pj.SnetServURL
+	if strings.TrimSpace(server) == "" {
+		server = d.defaultServerLocked()
+	}
+	if err := d.apiForServerLocked(server).CancelPending(pendingID, d.cfg.DeviceID); err != nil {
 		var se *httpStatusErr
 		// 404 means the server already removed/approved it; local cleanup can
 		// still proceed. Any other error must be surfaced so the user can retry.
@@ -1215,7 +1223,10 @@ func (d *Daemon) reconcileOwnership(nid string) {
 	if nc == nil {
 		return
 	}
-	api := d.apiLocked()
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return
+	}
 	if err := api.RegisterDevice(d.cfg.DeviceID, d.publicKeyLocked(), d.hostnameLocked()); err != nil {
 		log.Printf("register device: %v", err)
 	}
@@ -1228,7 +1239,8 @@ func (d *Daemon) reconcileOwnership(nid string) {
 			log.Printf("save owner flag: %v", err)
 		}
 	}
-	if d.cfg.RecoveryToken == "" && nc.Token != "" {
+	server := d.serverForConfigLocked(nc)
+	if (d.cfg.RecoveryTokens == nil || d.cfg.RecoveryTokens[server] == "") && nc.Token != "" {
 		d.ensureRecoveryTokenLocked(nc)
 	}
 }
@@ -1693,8 +1705,11 @@ func (d *Daemon) bringUp(nid string) error {
 		// Advertise the LAN/NAT-internal endpoint as the direct candidate so
 		// same-subnet peers can reach this device without the relay. A
 		// gateway mapping, when established, is advertised by probeLoop.
-		if err := d.apiLocked().SetEndpointFor(nid, nc.NodeID, nc.Token, endpoint, endpoint, false); err != nil {
-			log.Printf("set endpoint: %v", err)
+		api, _, apiErr := d.apiForNetworkLocked(nid)
+		if apiErr == nil {
+			if err := api.SetEndpointFor(nid, nc.NodeID, nc.Token, endpoint, endpoint, false); err != nil {
+				log.Printf("set endpoint: %v", err)
+			}
 		}
 	}
 	go d.pollLoop(nid)
@@ -3324,7 +3339,11 @@ func (d *Daemon) Remove(nid string) error {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
 	d.leaveLocked(nid)
-	if err := d.apiLocked().RemoveNode(nid, nc.NodeID, nc.Token); err != nil {
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.RemoveNode(nid, nc.NodeID, nc.Token); err != nil {
 		// 404: the node was already gone on the server (network deleted by owner).
 		// 401: the node was kicked and its token invalidated — server-side cleanup
 		// already happened. In either case proceed with local cleanup. Any other
@@ -3362,7 +3381,11 @@ func (d *Daemon) UpdateSettings(nid, name, subnet string, approvalRequired *bool
 			}
 		}
 	}
-	if err := d.apiLocked().UpdateNetworkSettings(nid, nc.Token, name, subnet, approvalRequired, so.description, so.tags, so.visibility); err != nil {
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.UpdateNetworkSettings(nid, nc.Token, name, subnet, approvalRequired, so.description, so.tags, so.visibility); err != nil {
 		return wrapNetGone(err)
 	}
 	if name != "" {
@@ -3382,7 +3405,11 @@ func (d *Daemon) SetNodeRole(nid, nodeID, role string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	if err := d.apiLocked().SetNodeRole(nid, nc.Token, nodeID, role); err != nil {
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.SetNodeRole(nid, nc.Token, nodeID, role); err != nil {
 		return wrapNetGone(err)
 	}
 	return nil
@@ -3530,16 +3557,16 @@ func (d *Daemon) SetDeviceName(name string) error {
 	d.cfg.DeviceName = name
 	d.hostnameCache = name
 	type target struct {
-		nid   string
-		token string
+		nid    string
+		token  string
+		server string
 	}
 	targets := make([]target, 0, len(d.cfg.Networks))
 	for nid, nc := range d.cfg.Networks {
 		if nc != nil {
-			targets = append(targets, target{nid: nid, token: nc.Token})
+			targets = append(targets, target{nid: nid, token: nc.Token, server: d.serverForConfigLocked(nc)})
 		}
 	}
-	api := d.apiLocked()
 	if err := d.save(); err != nil {
 		d.mu.Unlock()
 		return err
@@ -3547,7 +3574,7 @@ func (d *Daemon) SetDeviceName(name string) error {
 	d.mu.Unlock()
 	var firstErr error
 	for _, t := range targets {
-		if err := api.RenameDevice(t.nid, t.token, name); err != nil && firstErr == nil {
+		if err := d.apiForServerLocked(t.server).RenameDevice(t.nid, t.token, name); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("更新设备名称失败: %w", err)
 		}
 	}
@@ -3562,7 +3589,11 @@ func (d *Daemon) RenameNetworkDevice(nid, nodeID, name string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	return wrapNetGone(d.apiLocked().RenameNetworkDevice(nid, nodeID, nc.Token, name))
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	return wrapNetGone(api.RenameNetworkDevice(nid, nodeID, nc.Token, name))
 }
 
 // SetNodeIP lets the network owner change a member's virtual IPv4 address.
@@ -3573,7 +3604,11 @@ func (d *Daemon) SetNodeIP(nid, nodeID, ip string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	return wrapNetGone(d.apiLocked().SetNodeIP(nid, nodeID, nc.Token, ip))
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	return wrapNetGone(api.SetNodeIP(nid, nodeID, nc.Token, ip))
 }
 
 // Gateways returns gateway candidates for a network the caller owns.
@@ -3584,7 +3619,11 @@ func (d *Daemon) Gateways(nid string) ([]protocol.GatewayInfo, error) {
 	if nc == nil {
 		return nil, fmt.Errorf("网络 %s 未找到", nid)
 	}
-	return d.apiLocked().Gateways(nid, nc.Token)
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return nil, err
+	}
+	return api.Gateways(nid, nc.Token)
 }
 
 // WireGuardConfig exports a standard WireGuard configuration through the
@@ -3597,7 +3636,11 @@ func (d *Daemon) WireGuardConfig(nid, gatewayNodeID string) (string, string, err
 	if nc == nil {
 		return "", "", fmt.Errorf("网络 %s 未找到", nid)
 	}
-	cfg, nodeID, err := d.apiLocked().WireGuardConfig(nid, nc.Token, gatewayNodeID)
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return "", "", err
+	}
+	cfg, nodeID, err := api.WireGuardConfig(nid, nc.Token, gatewayNodeID)
 	if err != nil {
 		return "", "", err
 	}
@@ -3644,7 +3687,10 @@ func (d *Daemon) SetRoutes(nid string, routes []protocol.Route) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	api := d.apiLocked()
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
 	if err := api.SetRoutes(nid, nc.Token, routes); err != nil {
 		var se *httpStatusErr
 		if errors.As(err, &se) && se.code == 404 {
@@ -3928,7 +3974,11 @@ func (d *Daemon) ApprovePending(nid, pendingID string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	return d.apiLocked().ApprovePending(nid, nc.Token, pendingID)
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	return api.ApprovePending(nid, nc.Token, pendingID)
 }
 
 // DenyPending rejects a member's join request on a network this node owns.
@@ -3939,7 +3989,11 @@ func (d *Daemon) DenyPending(nid, pendingID string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	return d.apiLocked().DenyPending(nid, nc.Token, pendingID)
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	return api.DenyPending(nid, nc.Token, pendingID)
 }
 
 // DeleteNetwork deletes a network on the server and forgets it locally.
@@ -3950,7 +4004,11 @@ func (d *Daemon) DeleteNetwork(nid string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	if err := d.apiLocked().DeleteNetwork(nid, nc.Token); err != nil {
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.DeleteNetwork(nid, nc.Token); err != nil {
 		return wrapNetGone(err)
 	}
 	d.leaveLocked(nid)
@@ -3966,7 +4024,11 @@ func (d *Daemon) Kick(nid, nodeID string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	return wrapNetGone(d.apiLocked().KickNode(nid, nc.Token, nodeID))
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	return wrapNetGone(api.KickNode(nid, nc.Token, nodeID))
 }
 
 // ResetCode issues a fresh pairing code for a network this node owns.
@@ -3977,7 +4039,11 @@ func (d *Daemon) ResetCode(nid string) (string, error) {
 	if nc == nil {
 		return "", fmt.Errorf("网络 %s 未找到", nid)
 	}
-	code, err := d.apiLocked().ResetCode(nid, nc.Token)
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return "", err
+	}
+	code, err := api.ResetCode(nid, nc.Token)
 	return code, wrapNetGone(err)
 }
 
@@ -4007,7 +4073,11 @@ func (d *Daemon) InviteLink(nid string) (protocol.InviteLinkResp, error) {
 	if nc == nil {
 		return protocol.InviteLinkResp{}, fmt.Errorf("网络 %s 未找到", nid)
 	}
-	info, err := d.apiLocked().NetworkInfo(nid, nc.Token)
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return protocol.InviteLinkResp{}, err
+	}
+	info, err := api.NetworkInfo(nid, nc.Token)
 	if err != nil {
 		return protocol.InviteLinkResp{}, wrapNetGone(err)
 	}
@@ -4030,7 +4100,11 @@ func (d *Daemon) RotateInvite(nid string) (protocol.RotateInviteResp, error) {
 	if nc == nil {
 		return protocol.RotateInviteResp{}, fmt.Errorf("网络 %s 未找到", nid)
 	}
-	resp, err := d.apiLocked().RotateInvite(nid, nc.Token)
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return protocol.RotateInviteResp{}, err
+	}
+	resp, err := api.RotateInvite(nid, nc.Token)
 	if err != nil {
 		return resp, wrapNetGone(err)
 	}
@@ -4046,7 +4120,11 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 		d.mu.Unlock()
 		return protocol.NetworkInfoResp{}, fmt.Errorf("网络 %s 未找到", nid)
 	}
-	api := d.apiLocked()
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		d.mu.Unlock()
+		return protocol.NetworkInfoResp{}, err
+	}
 	token := nc.Token
 	deviceID := d.cfg.DeviceID
 	d.mu.Unlock()
@@ -4118,7 +4196,11 @@ func (d *Daemon) Peers(nid string) (protocol.PeersResp, error) {
 		d.mu.Unlock()
 		return protocol.PeersResp{}, fmt.Errorf("网络 %s 未找到", nid)
 	}
-	api := d.apiLocked()
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		d.mu.Unlock()
+		return protocol.PeersResp{}, err
+	}
 	token := nc.Token
 	d.mu.Unlock()
 	resp, err := api.PeersState(nid, token, true)
@@ -4249,7 +4331,11 @@ func (d *Daemon) Claim(nid string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	if err := d.apiLocked().ClaimNetwork(nid, nc.Token, d.cfg.DeviceID); err != nil {
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.ClaimNetwork(nid, nc.Token, d.cfg.DeviceID); err != nil {
 		return wrapNetGone(err)
 	}
 	nc.Owner = true
