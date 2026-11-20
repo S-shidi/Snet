@@ -835,17 +835,20 @@ func (d *Daemon) RotateKeys() error {
 		return fmt.Errorf("key rotation already in progress")
 	}
 	d.keyRotating = true
-	serverAddr := d.serverAddrLocked()
 	type target struct {
-		nid, nodeID, token, name string
+		nid, nodeID, token, name, server string
 	}
 	var targets []target
 	for nid, nc := range d.cfg.Networks {
 		if nc.Active && nc.Token != "" {
-			targets = append(targets, target{nid, nc.NodeID, nc.Token, nc.Name})
+			targets = append(targets, target{
+				nid: nid, nodeID: nc.NodeID, token: nc.Token, name: nc.Name,
+				server: d.serverForConfigLocked(nc),
+			})
 		}
 	}
 	deviceID := d.cfg.DeviceID
+	oldPub := d.publicKeyLocked()
 	d.mu.Unlock()
 
 	defer func() {
@@ -860,12 +863,22 @@ func (d *Daemon) RotateKeys() error {
 	}
 	newPrivHex := b64ToHex(priv)
 
-	api := newAPIClient(serverAddr, d.ctx)
+	updated := make([]target, 0, len(targets))
 	for _, t := range targets {
+		api := d.apiForServerLocked(t.server)
 		if err := api.UpdateNodePublicKeyByToken(t.nid, t.nodeID, t.token, pub); err != nil {
-			return fmt.Errorf("rotate %s (%s): %w", t.nid, t.name, err)
+			// Best-effort rollback of servers already updated so the device
+			// keeps one consistent public key across every server.
+			for i := len(updated) - 1; i >= 0; i-- {
+				prev := updated[i]
+				if rbErr := d.apiForServerLocked(prev.server).UpdateNodePublicKeyByToken(prev.nid, prev.nodeID, prev.token, oldPub); rbErr != nil {
+					log.Printf("key rotation rollback %s on %s: %v", prev.nid, prev.server, rbErr)
+				}
+			}
+			return fmt.Errorf("rotate %s (%s) on %s: %w", t.nid, t.name, t.server, err)
 		}
-		log.Printf("key rotation: network %s (%s) now advertises the new public key", t.nid, t.name)
+		updated = append(updated, t)
+		log.Printf("key rotation: network %s (%s) on %s now advertises the new public key", t.nid, t.name, t.server)
 	}
 
 	now := time.Now().Unix()
@@ -3453,7 +3466,11 @@ func (d *Daemon) publishRelayCapabilityLocked() {
 			continue
 		}
 		token := nc.Token
-		api := d.apiLocked()
+		api, _, err := d.apiForNetworkLocked(nid)
+		if err != nil {
+			log.Printf("report relay capability %s: %v", nid, err)
+			continue
+		}
 		if err := api.SetRelayCapability(nid, token, allow, relayErr); err != nil {
 			log.Printf("report relay capability %s: %v", nid, err)
 		}
@@ -3472,20 +3489,20 @@ func (d *Daemon) publishRelayCapabilityAsync() {
 			relayErr = "当前系统不支持中继网络模式"
 		}
 		type target struct {
-			nid   string
-			token string
+			nid    string
+			token  string
+			server string
 		}
 		var targets []target
 		for nid, nc := range d.cfg.Networks {
 			if nc == nil {
 				continue
 			}
-			targets = append(targets, target{nid: nid, token: nc.Token})
+			targets = append(targets, target{nid: nid, token: nc.Token, server: d.serverForConfigLocked(nc)})
 		}
-		api := d.apiLocked()
 		d.mu.Unlock()
 		for _, t := range targets {
-			if err := api.SetRelayCapability(t.nid, t.token, allow, relayErr); err != nil {
+			if err := d.apiForServerLocked(t.server).SetRelayCapability(t.nid, t.token, allow, relayErr); err != nil {
 				log.Printf("report relay capability %s: %v", t.nid, err)
 			}
 		}
