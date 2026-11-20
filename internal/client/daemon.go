@@ -535,6 +535,44 @@ func (d *Daemon) serverAddrLocked() string {
 	return normalizeServer(d.cfg.EffectiveServerAddr())
 }
 
+// defaultServerLocked resolves the legacy/default server for networks that do
+// not have their own SnetServ binding yet.
+func (d *Daemon) defaultServerLocked() string {
+	if strings.TrimSpace(d.cfg.DefaultSnetServURL) != "" {
+		return normalizeServer(d.cfg.DefaultSnetServURL)
+	}
+	if strings.TrimSpace(d.cfg.ServerAddr) != "" {
+		return normalizeServer(d.cfg.ServerAddr)
+	}
+	return constants.DefaultServer
+}
+
+// serverForNetworkLocked returns the coordination server bound to nid. It
+// falls back through the new default field, the legacy ServerAddr field and
+// the official server so stage-0 configs keep working.
+func (d *Daemon) serverForNetworkLocked(nid string) (string, error) {
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return "", fmt.Errorf("网络 %s 未找到", nid)
+	}
+	if strings.TrimSpace(nc.SnetServURL) != "" {
+		return normalizeServer(nc.SnetServURL), nil
+	}
+	return d.defaultServerLocked(), nil
+}
+
+// apiForNetworkLocked returns the API client and resolved server for nid.
+func (d *Daemon) apiForNetworkLocked(nid string) (*apiClient, string, error) {
+	server, err := d.serverForNetworkLocked(nid)
+	if err != nil {
+		return nil, "", err
+	}
+	if d.apiManager != nil {
+		return d.apiManager.Get(server), server, nil
+	}
+	return newAPIClient(server, d.ctx), server, nil
+}
+
 func (d *Daemon) apiLocked() *apiClient {
 	server := d.serverAddrLocked()
 	if d.apiManager != nil {
