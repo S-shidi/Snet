@@ -571,8 +571,12 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		// Keep the API response consistent with client/admin-generated links:
-		// always carry the canonical coordination-server reference, encrypted.
-		resp.Link = protocol.BuildLink(resp.NetworkID, resp.PairingCode, adminPublicServer(r), resp.Name)
+		// always carry the network's canonical SnetServ reference, encrypted.
+		inviteServer := s.NetworkInviteServer(resp.NetworkID)
+		if inviteServer == "" {
+			inviteServer = constants.DefaultServer
+		}
+		resp.Link = protocol.BuildLink(resp.NetworkID, resp.PairingCode, inviteServer, resp.Name)
 		writeJSON(w, http.StatusOK, resp)
 	}))
 
@@ -762,8 +766,15 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusConflict, errors.New("邀请链接已失效，请重置邀请链接"))
 			return
 		}
+		inviteServer := info.SnetServURL
+		if inviteServer == "" {
+			inviteServer = s.SnetServURL()
+		}
+		if inviteServer == "" {
+			inviteServer = constants.DefaultServer
+		}
 		writeJSON(w, http.StatusOK, map[string]string{
-			"link": protocol.BuildLink(info.ID, info.PairingCode, adminPublicServer(r), info.Name),
+			"link": protocol.BuildLink(info.ID, info.PairingCode, inviteServer, info.Name),
 		})
 	}))
 	mux.HandleFunc("DELETE /admin/networks/{nid}/routes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
@@ -1210,31 +1221,6 @@ func (h *handler) gcSessionsLocked() {
 			delete(h.sessions, tok)
 		}
 	}
-}
-
-// adminPublicServer returns the coordination server address embedded in an
-// admin-generated invite. The official hostname is canonicalized so links
-// generated through the web console and the client daemon agree exactly.
-func adminPublicServer(r *http.Request) string {
-	host := strings.TrimSpace(r.Host)
-	if host == "" {
-		return constants.DefaultServer
-	}
-	hostname := host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		hostname = h
-	}
-	if strings.EqualFold(hostname, "snet.uizhi.eu.org") {
-		return constants.DefaultServer
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if p := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); p != "" {
-		scheme = p
-	}
-	return scheme + "://" + host
 }
 
 func (h *handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {

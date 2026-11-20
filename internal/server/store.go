@@ -219,6 +219,7 @@ type networkRecord struct {
 	Visibility       string           `json:"visibility,omitempty"`
 	Routes           []protocol.Route `json:"routes,omitempty"`
 	UseHubNode       bool             `json:"useHubNode,omitempty"`
+	SnetServURL      string           `json:"snetServUrl,omitempty"`
 }
 
 // networkShareOpts carries the optional community-sharing metadata for a
@@ -295,6 +296,10 @@ type Store struct {
 	relayHost  string
 	relayBase  int
 	relayCount int
+	// snetServURL is this instance's canonical public coordination URL. It
+	// is stamped onto new networks and used to generate invites without
+	// trusting an admin request's Host header.
+	snetServURL string
 	// relayAlternates lists additional public relay hosts advertised to peers
 	// as candidate data planes (multi-relay selection). Each alternate is
 	// expected to serve the same network relay port as the primary; clients
@@ -431,6 +436,7 @@ func (s *Store) load() error {
 						Visibility:       r.Visibility,
 						Routes:           r.Routes,
 						UseHubNode:       r.UseHubNode,
+						SnetServURL:      r.SnetServURL,
 					},
 					pairing: &pairing{
 						codeHash:    r.CodeHash,
@@ -640,6 +646,7 @@ func (s *Store) persistNetwork(ns *networkState) error {
 		Visibility:       ns.n.Visibility,
 		Routes:           ns.n.Routes,
 		UseHubNode:       ns.n.UseHubNode,
+		SnetServURL:      ns.n.SnetServURL,
 	}
 	b, err := json.Marshal(r)
 	if err != nil {
@@ -1020,6 +1027,33 @@ func (s *Store) relayV2InfoLocked() *protocol.RelayV2Info {
 // range. Callers must hold no locks. The relay socket for a network's port is
 // bound lazily (via SetRelayEnsure) the first time the port is needed, so a
 // large relayCount costs nothing at startup.
+// SetSnetServURL records this instance's canonical public coordination URL.
+// It is used for networks created after this call and for invite generation.
+func (s *Store) SetSnetServURL(raw string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snetServURL = strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+// SnetServURL returns the configured canonical public coordination URL.
+func (s *Store) SnetServURL() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snetServURL
+}
+
+// NetworkInviteServer returns the server URL embedded in a network invite.
+// Per-network binding wins; the instance URL covers records created before
+// the binding field existed.
+func (s *Store) NetworkInviteServer(nid string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if ns := s.networks[nid]; ns != nil && ns.n.SnetServURL != "" {
+		return ns.n.SnetServURL
+	}
+	return s.snetServURL
+}
+
 func (s *Store) SetRelay(relayHost string, relayBase, relayCount int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2397,6 +2431,7 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 			Description:      description,
 			Tags:             tags,
 			Visibility:       visibility,
+			SnetServURL:      s.snetServURL,
 		},
 		pairing: &pairing{
 			codeHash:  hashCode(code),
@@ -4319,6 +4354,7 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, s
 			Description:      description,
 			Tags:             tags,
 			Visibility:       visibility,
+			SnetServURL:      s.snetServURL,
 		},
 		pairing: &pairing{
 			codeHash:  hashCode(code),

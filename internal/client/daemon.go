@@ -4089,9 +4089,9 @@ var ErrInviteExpired = errors.New("邀请链接已失效，请重置邀请链接
 // coordination server reference is always embedded (encrypted by protocol),
 // so a joiner always reaches the network's server. Callers must hold d.mu.
 func (d *Daemon) inviteLinkLocked(nid, code, name string) string {
-	server := d.serverAddrLocked()
-	if server == "" {
-		server = constants.DefaultServer
+	server := d.defaultServerLocked()
+	if nc := d.cfg.Networks[nid]; nc != nil {
+		server = d.serverForConfigLocked(nc)
 	}
 	return protocol.BuildLink(nid, code, server, name)
 }

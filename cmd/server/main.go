@@ -23,6 +23,7 @@ func main() {
 	addr := flag.String("addr", "0.0.0.0:8090", "listen address")
 	probeAddr := flag.String("probe-addr", "[::]:8091", "UDP probe/echo address for public-IP discovery (dual-stack)")
 	dbPath := flag.String("db", "", "bbolt database path (empty = in-memory, not persistent)")
+	publicURL := flag.String("public-url", os.Getenv("SNETSERV_PUBLIC_URL"), "canonical public coordination URL embedded in invites")
 	adminToken := flag.String("admin-token", os.Getenv("SNET_ADMIN_TOKEN"), "admin API token (env SNET_ADMIN_TOKEN)")
 	adminUser := flag.String("admin-user", os.Getenv("SNET_ADMIN_USER"), "admin login username (env SNET_ADMIN_USER)")
 	adminPass := flag.String("admin-pass", os.Getenv("SNET_ADMIN_PASSWORD"), "admin login password (env SNET_ADMIN_PASSWORD)")
@@ -53,6 +54,7 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+	store.SetSnetServURL(*publicURL)
 
 	if *adminReset {
 		if *adminUser == "" || *adminPass == "" {
