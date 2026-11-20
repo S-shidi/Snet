@@ -38,7 +38,7 @@ sudo modprobe tun
 客户端镜像发布在阿里云 ACR：
 
 ```bash
-export SNET_IMAGE=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.14
+export SNET_IMAGE=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.15
 docker pull "$SNET_IMAGE"
 ```
 
@@ -161,7 +161,7 @@ docker run -d \
   --cap-add NET_ADMIN \
   --device /dev/net/tun:/dev/net/tun \
   -v /opt/snet/data:/etc/snet \
-  crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.14
+  crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.15
 ```
 
 为什么需要这些参数：
@@ -196,7 +196,7 @@ cd /opt/snet
 ```yaml
 services:
   snet:
-    image: ${SNET_IMAGE:-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.14}
+    image: ${SNET_IMAGE:-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.15}
     container_name: snetd
     restart: unless-stopped
     network_mode: host
@@ -211,7 +211,7 @@ services:
 创建可选 `.env`：
 
 ```dotenv
-SNET_IMAGE=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.14
+SNET_IMAGE=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.15
 ```
 
 启动：
@@ -271,7 +271,7 @@ http://<服务器IP>:8081
 普通 Docker：
 
 ```bash
-export SNET_IMAGE=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.14
+export SNET_IMAGE=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.1.15
 docker pull "$SNET_IMAGE"
 docker rm -f snetd
 docker run -d \
@@ -304,18 +304,18 @@ docker exec snetd /usr/local/bin/snetd -version
 
 ```bash
 ACR=crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet
-docker pull $ACR/snet-client:v1.1.14
-docker save $ACR/snet-client:v1.1.14 | gzip -1 > snet-client-v1.1.14.tar.gz
-scp snet-client-v1.1.14.tar.gz root@<目标机器IP>:/tmp/
+docker pull $ACR/snet-client:v1.1.15
+docker save $ACR/snet-client:v1.1.15 | gzip -1 > snet-client-v1.1.15.tar.gz
+scp snet-client-v1.1.15.tar.gz root@<目标机器IP>:/tmp/
 ```
 
 在目标机器：
 
 ```bash
-gunzip -c /tmp/snet-client-v1.1.14.tar.gz | docker load
+gunzip -c /tmp/snet-client-v1.1.15.tar.gz | docker load
 ```
 
-然后按第 4 节或第 5 节启动即可，镜像名保持 `crpi-.../snet-client:v1.1.14`。
+然后按第 4 节或第 5 节启动即可，镜像名保持 `crpi-.../snet-client:v1.1.15`。
 
 ## 10. 卸载
 
