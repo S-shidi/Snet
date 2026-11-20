@@ -1711,7 +1711,7 @@ func (d *Daemon) bringUp(nid string) error {
 	}
 	d.nets[nid] = rt
 
-	endpoint, err := d.localEndpointLocked(nc.Port)
+	endpoint, err := d.localEndpointForNetworkLocked(nid, nc.Port)
 	if err != nil {
 		log.Printf("endpoint detect failed: %v", err)
 	} else {
@@ -1847,6 +1847,18 @@ func (d *Daemon) pickPortLocked() (int, error) {
 }
 
 func (d *Daemon) localEndpointLocked(port int) (string, error) {
+	return d.localEndpointForServerLocked(d.serverAddrLocked(), port)
+}
+
+func (d *Daemon) localEndpointForNetworkLocked(nid string, port int) (string, error) {
+	server, err := d.serverForNetworkLocked(nid)
+	if err != nil {
+		return "", err
+	}
+	return d.localEndpointForServerLocked(server, port)
+}
+
+func (d *Daemon) localEndpointForServerLocked(serverAddr string, port int) (string, error) {
 	ip := strings.TrimSpace(os.Getenv("SNET_LOCAL_IP"))
 	if ip != "" {
 		// Container deployments publish the WireGuard port on the host, so the
@@ -1858,7 +1870,7 @@ func (d *Daemon) localEndpointLocked(port int) (string, error) {
 		}
 		log.Printf("ignoring invalid SNET_LOCAL_IP %q", ip)
 	}
-	ip, err := LocalIPForServer(d.serverAddrLocked())
+	ip, err := LocalIPForServer(serverAddr)
 	if err != nil {
 		return "", err
 	}
@@ -2349,7 +2361,7 @@ func (d *Daemon) pollLoop(nid string) {
 			d.mu.Unlock()
 			return
 		}
-		api, _, err := d.apiForNetworkLocked(nid)
+		api, server, err := d.apiForNetworkLocked(nid)
 		if err != nil {
 			d.mu.Unlock()
 			return
@@ -2494,10 +2506,10 @@ func (d *Daemon) pollLoop(nid string) {
 		}
 		if st.RelayV2 != nil && st.RelayV2.Enabled {
 			if rt.path == nil {
-				rt.path = NewPathManager(d.ctx, nid, nc, d.serverAddrLocked())
+				rt.path = NewPathManager(d.ctx, nid, nc, d.serverForConfigLocked(nc))
 				go rt.path.Run()
 			}
-			subnets := d.DetectLocalSubnets()
+			subnets := d.DetectLocalSubnetsForServer(server)
 			selfIP := ""
 			if st.Self != nil && st.Self.PublicIPv4 != "" {
 				selfIP = st.Self.PublicIPv4
@@ -2543,7 +2555,7 @@ func (d *Daemon) pollLoop(nid string) {
 		// not merely the advertised primary; all per-peer relay decisions hang
 		// off the selected relay so failover actually moves the data plane.
 		st.RelayEndpoint = sel
-		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnets(), observed)
+		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnetsForServer(server), observed)
 		// Inject the network's delegated relay routes into the peer routing
 		// entries so the delegated CIDRs travel through their gateway node.
 		d.pruneRouteEnabledLocked(nid, st.Routes)
@@ -2638,12 +2650,12 @@ func (d *Daemon) probeLoop(nid string) {
 			d.mu.Unlock()
 			return
 		}
-		serverAddr := d.serverAddrLocked()
+		serverAddr := d.serverForConfigLocked(nc)
 		relayAddr := d.relayEP[nid]
 		port := nc.Port
 		d.mu.Unlock()
 
-		localEP, _ := d.localEndpointLocked(port)
+		localEP, _ := d.localEndpointForNetworkLocked(nid, port)
 		// Prefer the in-band relay whoami (works over the already-live tunnel
 		// data path); fall back to the dedicated UDP probe port.
 		ip, err := d.probeSelfPublicIP(relayAddr, nid, nc.NodeID, nc.Token, serverAddr)
@@ -3862,6 +3874,10 @@ func (d *Daemon) logRelayGatewayRolesLocked(nc *NetworkCfg, served []string) {
 // IPv4 CIDR subnets (e.g. "192.168.1.0/24") this device is directly on.
 // Virtual / tunnel interfaces are excluded.
 func (d *Daemon) DetectLocalSubnets() []string {
+	return d.DetectLocalSubnetsForServer(d.serverAddrLocked())
+}
+
+func (d *Daemon) DetectLocalSubnetsForServer(serverAddr string) []string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil
@@ -3913,7 +3929,7 @@ func (d *Daemon) DetectLocalSubnets() []string {
 	// from the source address used to reach the coordination server so LAN
 	// peers are still classified correctly.
 	if d.singleActiveNetwork {
-		if ip, err := LocalIPForServer(d.serverAddrLocked()); err == nil {
+		if ip, err := LocalIPForServer(serverAddr); err == nil {
 			if parsed := net.ParseIP(ip); parsed != nil {
 				if v4 := parsed.To4(); v4 != nil && privateIPv4(v4) {
 					covered := false
