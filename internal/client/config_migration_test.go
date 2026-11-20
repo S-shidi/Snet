@@ -75,8 +75,8 @@ func TestLegacyConfigWithoutServerUsesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultSnetServURL != constants.DefaultServer {
-		t.Fatalf("DefaultSnetServURL = %q, want %q", cfg.DefaultSnetServURL, constants.DefaultServer)
+	if cfg.DefaultSnetServURL != "" {
+		t.Fatalf("DefaultSnetServURL = %q, want empty for legacy config without ServerAddr", cfg.DefaultSnetServURL)
 	}
 	if got := cfg.Networks["NET1"].SnetServURL; got != constants.DefaultServer {
 		t.Fatalf("network SnetServURL = %q, want %q", got, constants.DefaultServer)

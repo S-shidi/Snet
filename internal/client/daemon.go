@@ -561,6 +561,13 @@ func (d *Daemon) serverForNetworkLocked(nid string) (string, error) {
 	return d.defaultServerLocked(), nil
 }
 
+func (d *Daemon) serverForConfigLocked(nc *NetworkCfg) string {
+	if nc != nil && strings.TrimSpace(nc.SnetServURL) != "" {
+		return normalizeServer(nc.SnetServURL)
+	}
+	return d.defaultServerLocked()
+}
+
 // apiForNetworkLocked returns the API client and resolved server for nid.
 func (d *Daemon) apiForNetworkLocked(nid string) (*apiClient, string, error) {
 	server, err := d.serverForNetworkLocked(nid)
@@ -1233,7 +1240,11 @@ func (d *Daemon) ensureRecoveryTokenLocked(nc *NetworkCfg) {
 	if nc == nil || nc.Token == "" || d.cfg.DeviceID == "" {
 		return
 	}
-	token, err := d.apiLocked().EnsureRecoveryToken(d.cfg.DeviceID, nc.Token)
+	server := d.serverForConfigLocked(nc)
+	if d.cfg.RecoveryTokens != nil && d.cfg.RecoveryTokens[server] != "" {
+		return
+	}
+	token, err := d.apiForServerLocked(server).EnsureRecoveryToken(d.cfg.DeviceID, nc.Token)
 	if err != nil {
 		log.Printf("ensure recovery token: %v", err)
 		return
@@ -1241,9 +1252,15 @@ func (d *Daemon) ensureRecoveryTokenLocked(nc *NetworkCfg) {
 	if token == "" {
 		return
 	}
-	d.cfg.RecoveryToken = token
-	if err := SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey, token); err != nil {
-		log.Printf("ensure recovery token: persist: %v", err)
+	if d.cfg.RecoveryTokens == nil {
+		d.cfg.RecoveryTokens = make(map[string]string)
+	}
+	d.cfg.RecoveryTokens[server] = token
+	if d.cfg.RecoveryToken == "" {
+		d.cfg.RecoveryToken = token
+		if err := SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey, token); err != nil {
+			log.Printf("ensure recovery token: persist: %v", err)
+		}
 	}
 	if err := d.save(); err != nil {
 		log.Printf("ensure recovery token: save config: %v", err)
@@ -1347,9 +1364,6 @@ func (d *Daemon) Start() error {
 	// Make sure every network (even a currently disconnected one) can hand
 	// us a recovery token, so a later config loss can still be recovered.
 	for nid := range d.cfg.Networks {
-		if d.cfg.RecoveryToken != "" {
-			break
-		}
 		d.ensureRecoveryTokenLocked(d.cfg.Networks[nid])
 	}
 	// Periodic WireGuard key rotation (KeyRotationDays > 0) for forward secrecy.
@@ -1389,162 +1403,215 @@ func (d *Daemon) SyncNetworks() error {
 	defer d.syncMu.Unlock()
 
 	d.mu.Lock()
-	api := d.apiLocked()
-	server := api.server
 	deviceID := d.cfg.DeviceID
-	recoveryToken := d.cfg.RecoveryToken
+	defaultServer := d.defaultServerLocked()
 	localBefore := make(map[string]struct{}, len(d.cfg.Networks))
-	for nid := range d.cfg.Networks {
+	groups := make(map[string][]string)
+	localServers := make(map[string]string)
+	tokens := make(map[string]string, len(d.cfg.RecoveryTokens)+1)
+	for server, token := range d.cfg.RecoveryTokens {
+		tokens[normalizeServer(server)] = token
+	}
+	if d.cfg.RecoveryToken != "" {
+		if _, ok := tokens[defaultServer]; !ok {
+			tokens[defaultServer] = d.cfg.RecoveryToken
+		}
+	}
+	for nid, nc := range d.cfg.Networks {
 		localBefore[nid] = struct{}{}
+		server := d.serverForConfigLocked(nc)
+		localServers[nid] = server
+		groups[server] = append(groups[server], nid)
+	}
+	// Even with no local networks, the default server can still restore
+	// memberships after a config loss.
+	if len(groups) == 0 {
+		groups[defaultServer] = nil
 	}
 	d.mu.Unlock()
-	if deviceID == "" || recoveryToken == "" {
+	if deviceID == "" {
 		return nil
 	}
 
-	details, err := api.DeviceNetworks(deviceID, recoveryToken)
-	if err != nil {
-		return fmt.Errorf("fetch device networks: %w", err)
+	type syncResult struct {
+		server  string
+		details []protocol.DeviceNetworkDetail
+	}
+	results := make([]syncResult, 0, len(groups))
+	for server := range groups {
+		recoveryToken := tokens[server]
+		if recoveryToken == "" {
+			continue
+		}
+		api := d.apiForServerLocked(server)
+		if api == nil {
+			continue
+		}
+		details, err := api.DeviceNetworks(deviceID, recoveryToken)
+		if err != nil {
+			return fmt.Errorf("fetch device networks from %s: %w", server, err)
+		}
+		d.mu.Lock()
+		pub := d.publicKeyLocked()
+		hostname := d.hostnameLocked()
+		d.mu.Unlock()
+		if err := api.RegisterDevice(deviceID, pub, hostname); err != nil {
+			log.Printf("sync networks: register device on %s: %v", server, err)
+		}
+		results = append(results, syncResult{server: server, details: details})
 	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	// The server changed while the request was in flight; the new server owns
-	// the next sync and this response must not mutate its config.
-	if d.apiLocked().server != server {
-		return nil
-	}
-	api = d.apiLocked()
-	pub := d.publicKeyLocked()
-
-	// Refresh the device record with the current public key/name.
-	if err := api.RegisterDevice(deviceID, pub, d.hostnameLocked()); err != nil {
-		log.Printf("sync networks: register device: %v", err)
-	}
 
 	if d.cfg.Networks == nil {
 		d.cfg.Networks = map[string]*NetworkCfg{}
 	}
+	pub := d.publicKeyLocked()
 	synced, updated := 0, false
-	seen := make(map[string]struct{}, len(details))
-	for _, detail := range details {
-		nid := detail.Network.ID
-		if nid == "" {
-			continue
-		}
-		seen[nid] = struct{}{}
-
-		if existing := d.cfg.Networks[nid]; existing != nil {
-			if detail.Token != "" && existing.Token != detail.Token {
-				existing.Token = detail.Token
-				updated = true
-				if d.serverState != nil {
-					delete(d.serverState, nid)
-				}
-				if rt := d.nets[nid]; rt != nil && rt.path != nil {
-					rt.path.SetToken(existing.Token)
-				}
-			}
-			if existing.Owner != detail.Owner {
-				existing.Owner = detail.Owner
-				updated = true
-				if d.serverState != nil {
-					delete(d.serverState, nid)
-				}
-			}
-			if detail.PublicKey != "" && detail.PublicKey != pub {
-				if err := api.UpdateNodePublicKeyByToken(nid, detail.NodeID, detail.Token, pub); err != nil {
-					log.Printf("sync networks: update public key %s: %v", nid, err)
-				}
-			}
-			continue
-		}
-
-		// The server rotated this node's token in the response; use it to
-		// adopt the current public key before the node is used again.
-		if detail.PublicKey != "" && detail.PublicKey != pub && detail.Token != "" {
-			if err := api.UpdateNodePublicKeyByToken(nid, detail.NodeID, detail.Token, pub); err != nil {
-				log.Printf("sync networks: update public key %s: %v", nid, err)
-			}
-		}
-		active := true
-		for other, oc := range d.cfg.Networks {
-			if other != nid && subnetsOverlap(detail.Subnet, oc.Subnet) {
-				log.Printf("sync networks: subnet %s overlaps with %s (%s), restoring %s inactive", detail.Subnet, other, oc.Subnet, nid)
-				active = false
-				break
-			}
-		}
-		nc := &NetworkCfg{
-			Name:     detail.Name,
-			NodeID:   detail.NodeID,
-			IP:       detail.IP,
-			Token:    detail.Token,
-			Subnet:   detail.Subnet,
-			Port:     0,
-			Active:   active,
-			Owner:    detail.Owner,
-			JoinedAt: time.Now().UTC().Format(time.RFC3339),
-		}
-		d.cfg.Networks[nid] = nc
-		if err := api.SetNodeDevice(nid, detail.NodeID, detail.Token, deviceID); err != nil {
-			log.Printf("sync networks: bind node device %s: %v", nid, err)
-		}
-		if detail.Owner {
-			if err := api.ClaimNetwork(nid, detail.Token, deviceID); err != nil {
-				log.Printf("sync networks: claim %s: %v", nid, err)
-			}
-		}
-		synced++
+	seen := make(map[string]struct{})
+	var removeCandidates []struct {
+		nid, server, token, nodeID string
 	}
 
-	removed := 0
+	for _, result := range results {
+		api := d.apiForServerLocked(result.server)
+		if api == nil {
+			continue
+		}
+		for _, detail := range result.details {
+			nid := detail.Network.ID
+			if nid == "" {
+				continue
+			}
+			seen[nid] = struct{}{}
+			detail.SnetServURL = result.server
+
+			if existing := d.cfg.Networks[nid]; existing != nil {
+				if existing.SnetServURL == "" {
+					existing.SnetServURL = result.server
+					updated = true
+				}
+				if detail.Token != "" && existing.Token != detail.Token {
+					existing.Token = detail.Token
+					updated = true
+					if d.serverState != nil {
+						delete(d.serverState, nid)
+					}
+					if rt := d.nets[nid]; rt != nil && rt.path != nil {
+						rt.path.SetToken(existing.Token)
+					}
+				}
+				if existing.Owner != detail.Owner {
+					existing.Owner = detail.Owner
+					updated = true
+					if d.serverState != nil {
+						delete(d.serverState, nid)
+					}
+				}
+				if detail.PublicKey != "" && detail.PublicKey != pub {
+					if err := api.UpdateNodePublicKeyByToken(nid, detail.NodeID, detail.Token, pub); err != nil {
+						log.Printf("sync networks: update public key %s on %s: %v", nid, result.server, err)
+					}
+				}
+				continue
+			}
+
+			if detail.PublicKey != "" && detail.PublicKey != pub && detail.Token != "" {
+				if err := api.UpdateNodePublicKeyByToken(nid, detail.NodeID, detail.Token, pub); err != nil {
+					log.Printf("sync networks: update public key %s on %s: %v", nid, result.server, err)
+				}
+			}
+			active := true
+			for other, oc := range d.cfg.Networks {
+				if other != nid && subnetsOverlap(detail.Subnet, oc.Subnet) {
+					log.Printf("sync networks: subnet %s overlaps with %s (%s), restoring %s inactive", detail.Subnet, other, oc.Subnet, nid)
+					active = false
+					break
+				}
+			}
+			nc := &NetworkCfg{
+				Name:        detail.Name,
+				NodeID:      detail.NodeID,
+				IP:          detail.IP,
+				Token:       detail.Token,
+				Subnet:      detail.Subnet,
+				Port:        0,
+				Active:      active,
+				Owner:       detail.Owner,
+				JoinedAt:    time.Now().UTC().Format(time.RFC3339),
+				SnetServURL: result.server,
+			}
+			d.cfg.Networks[nid] = nc
+			if err := api.SetNodeDevice(nid, detail.NodeID, detail.Token, deviceID); err != nil {
+				log.Printf("sync networks: bind node device %s on %s: %v", nid, result.server, err)
+			}
+			if detail.Owner {
+				if err := api.ClaimNetwork(nid, detail.Token, deviceID); err != nil {
+					log.Printf("sync networks: claim %s on %s: %v", nid, result.server, err)
+				}
+			}
+			synced++
+		}
+	}
+
 	for nid, nc := range d.cfg.Networks {
 		if _, ok := seen[nid]; ok {
 			continue
 		}
-		// Only reconcile networks that existed before this request started.
-		// A Create/Join racing with startup sync must not be removed just
-		// because its membership was not in the older server response.
 		if _, existed := localBefore[nid]; !existed {
 			continue
 		}
-		// Never remove a local network unless the server explicitly confirms
-		// 404 Not Found for that network. Transient 500/502/timeout errors or
-		// a node whose deviceId has not been bound yet must not wipe local state.
-		token := ""
-		nodeID := ""
-		if nc != nil {
-			token = nc.Token
-			nodeID = nc.NodeID
+		server := localServers[nid]
+		if server == "" {
+			server = defaultServer
 		}
-		d.mu.Unlock()
-		_, checkErr := api.NetworkExists(nid, token)
-		if checkErr == nil && nodeID != "" && token != "" {
-			_ = api.SetNodeDevice(nid, nodeID, token, deviceID)
+		removeCandidates = append(removeCandidates, struct {
+			nid, server, token, nodeID string
+		}{nid: nid, server: server, token: nc.Token, nodeID: nc.NodeID})
+	}
+
+	// NetworkExists probes must run without d.mu; only remove after a confirmed
+	// 404 for the same server/token that was checked.
+	d.mu.Unlock()
+	removed := 0
+	for _, candidate := range removeCandidates {
+		api := d.apiForServerLocked(candidate.server)
+		if api == nil {
+			continue
 		}
-		d.mu.Lock()
-		if d.apiLocked().server != server {
-			return nil
+		_, checkErr := api.NetworkExists(candidate.nid, candidate.token)
+		if checkErr == nil && candidate.nodeID != "" && candidate.token != "" {
+			_ = api.SetNodeDevice(candidate.nid, candidate.nodeID, candidate.token, deviceID)
 		}
 		var se *httpStatusErr
 		if !errors.As(checkErr, &se) || se.code != http.StatusNotFound {
 			if checkErr != nil {
-				log.Printf("sync networks: keep local network %s (verify exists: %v)", nid, checkErr)
+				log.Printf("sync networks: keep local network %s (verify exists on %s: %v)", candidate.nid, candidate.server, checkErr)
 			}
 			continue
 		}
-		if cur := d.cfg.Networks[nid]; cur == nil || cur.Token != token {
+		d.mu.Lock()
+		cur := d.cfg.Networks[candidate.nid]
+		if cur == nil || cur.Token != candidate.token {
+			d.mu.Unlock()
 			continue
 		}
-		log.Printf("sync networks: removing deleted local network %s (confirmed 404)", nid)
-		d.leaveLocked(nid)
-		delete(d.cfg.Networks, nid)
+		if curServer := d.serverForConfigLocked(cur); curServer != candidate.server {
+			d.mu.Unlock()
+			continue
+		}
+		log.Printf("sync networks: removing deleted local network %s (confirmed 404 on %s)", candidate.nid, candidate.server)
+		d.leaveLocked(candidate.nid)
+		delete(d.cfg.Networks, candidate.nid)
 		if d.serverState != nil {
-			delete(d.serverState, nid)
+			delete(d.serverState, candidate.nid)
 		}
 		removed++
+		d.mu.Unlock()
 	}
+	d.mu.Lock()
+
 	if synced > 0 || updated || removed > 0 {
 		if err := d.save(); err != nil {
 			log.Printf("sync networks: save: %v", err)
@@ -2254,7 +2321,11 @@ func (d *Daemon) pollLoop(nid string) {
 			d.mu.Unlock()
 			return
 		}
-		api := d.apiLocked()
+		api, _, err := d.apiForNetworkLocked(nid)
+		if err != nil {
+			d.mu.Unlock()
+			return
+		}
 		token := nc.Token
 		d.mu.Unlock()
 
@@ -4083,11 +4154,15 @@ func (d *Daemon) pingServerState(nid string) {
 			d.mu.Unlock()
 			return
 		}
-		api := d.apiLocked()
+		api, _, err := d.apiForNetworkLocked(nid)
+		if err != nil {
+			d.mu.Unlock()
+			return
+		}
 		token := nc.Token
 		d.mu.Unlock()
 
-		_, err := api.NetworkExists(nid, token)
+		_, err = api.NetworkExists(nid, token)
 		var se *httpStatusErr
 		// 404 means the network was deleted. 401 means this node's token is no
 		// longer valid (the network was deleted or the node was kicked); either

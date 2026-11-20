@@ -191,8 +191,8 @@ func migrateConfig(c *Config) {
 		c.SchemaVersion = 1
 	}
 	serverURL := c.EffectiveServerAddr()
-	if c.DefaultSnetServURL == "" {
-		c.DefaultSnetServURL = serverURL
+	if c.DefaultSnetServURL == "" && strings.TrimSpace(c.ServerAddr) != "" {
+		c.DefaultSnetServURL = normalizeServer(strings.TrimSpace(c.ServerAddr))
 	}
 	for _, nc := range c.Networks {
 		if nc != nil && nc.SnetServURL == "" {
