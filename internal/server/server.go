@@ -573,6 +573,9 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			handleStoreErr(w, err)
 			return
 		}
+		// Keep the API response consistent with client/admin-generated links:
+		// always carry the canonical coordination-server reference, encrypted.
+		resp.Link = protocol.BuildLink(resp.NetworkID, resp.PairingCode, adminPublicServer(r), resp.Name)
 		writeJSON(w, http.StatusOK, resp)
 	}))
 
