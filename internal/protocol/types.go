@@ -68,6 +68,12 @@ type Network struct {
 	// UseHubNode records whether the owner enabled the official Hub for this
 	// network. Removing the Hub clears it.
 	UseHubNode bool `json:"useHubNode,omitempty"`
+	// SnetServURL is the canonical coordination server address this network
+	// belongs to. Empty on legacy records.
+	SnetServURL string `json:"snetServUrl,omitempty"`
+	// SnetServID is the stable coordination server identity for this network.
+	// Empty on legacy records.
+	SnetServID string `json:"snetServId,omitempty"`
 }
 
 // Route 是一条由网络所有者委派的中继路由：目标节点（TargetNodeID）被要求

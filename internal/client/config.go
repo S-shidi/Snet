@@ -24,6 +24,9 @@ type PendingJoin struct {
 	CreatedAt string `json:"createdAt,omitempty"`
 	Status    string `json:"status,omitempty"` // pending | denied
 	Err       string `json:"err,omitempty"`
+	// SnetServURL is the coordination server this pending join belongs to.
+	// Empty on legacy records; migrated to the legacy/default server.
+	SnetServURL string `json:"snetServUrl,omitempty"`
 }
 
 // NetworkCfg is the persisted per-network state of this daemon. A daemon can
@@ -43,6 +46,11 @@ type NetworkCfg struct {
 	// immediately exclude our own mapping without awaiting a fresh probe.
 	PublicIP string `json:"publicIP,omitempty"`
 	JoinedAt string `json:"joinedAt,omitempty"`
+	// SnetServURL is the coordination server this network is bound to.
+	// Empty on legacy records; migrated to the legacy/default server.
+	SnetServURL string `json:"snetServUrl,omitempty"`
+	// SnetServID is the stable identity of that coordination server.
+	SnetServID string `json:"snetServId,omitempty"`
 }
 
 // Config is the daemon configuration (v2, multi-network). PrivateKey is the
@@ -62,18 +70,26 @@ type WireGuardExport struct {
 }
 
 type Config struct {
-	ServerAddr    string `json:"serverAddr"`
-	WireguardPort int    `json:"wireguardPort"`
-	PrivateKey    string `json:"privateKey"`
-	DeviceID      string `json:"deviceId,omitempty"`
-	DeviceName    string `json:"deviceName,omitempty"`
-	// RecoveryToken authenticates device-scoped recovery requests (fetching
-	// this device's existing memberships after its local config was lost).
-	// It is issued by the coordination server and also persisted in device.id
-	// so it survives a reinstall that keeps the identity file.
-	RecoveryToken string                  `json:"recoveryToken,omitempty"`
-	Networks      map[string]*NetworkCfg  `json:"networks,omitempty"`     // key = network ID
-	PendingJoins  map[string]*PendingJoin `json:"pendingJoins,omitempty"` // key = pending ID`
+	// SchemaVersion is the persisted client config schema version. Version 1
+	// adds per-network SnetServ binding fields while retaining legacy fields.
+	SchemaVersion int `json:"schemaVersion,omitempty"`
+	// ServerAddr is retained as the legacy/default coordination server. New
+	// code uses each network's SnetServURL when one is available.
+	ServerAddr string `json:"serverAddr"`
+	// DefaultSnetServURL is the default server for newly created networks and
+	// for legacy records that have no per-network binding.
+	DefaultSnetServURL string `json:"defaultSnetServUrl,omitempty"`
+	WireguardPort      int    `json:"wireguardPort"`
+	PrivateKey         string `json:"privateKey"`
+	DeviceID           string `json:"deviceId,omitempty"`
+	DeviceName         string `json:"deviceName,omitempty"`
+	// RecoveryToken is the legacy single-server recovery token. It is kept
+	// for compatibility; RecoveryTokens holds one token per SnetServ.
+	RecoveryToken string `json:"recoveryToken,omitempty"`
+	// RecoveryTokens maps a canonical SnetServ URL to its recovery token.
+	RecoveryTokens map[string]string       `json:"recoveryTokens,omitempty"`
+	Networks       map[string]*NetworkCfg  `json:"networks,omitempty"`     // key = network ID
+	PendingJoins   map[string]*PendingJoin `json:"pendingJoins,omitempty"` // key = pending ID`
 	// WireGuardExports stores generated WireGuard configs by "nid/nodeID".
 	// The private key is deliberately local-only and never uploaded.
 	WireGuardExports map[string]WireGuardExport `json:"wireGuardExports,omitempty"`
@@ -165,6 +181,34 @@ func ConfigPath() (string, error) {
 	return filepath.Join(dir, "config.json"), nil
 }
 
+// migrateConfig fills the stage-0 compatibility fields without changing any
+// existing routing behavior. It is idempotent and safe to run on every load.
+func migrateConfig(c *Config) {
+	if c == nil {
+		return
+	}
+	if c.SchemaVersion == 0 {
+		c.SchemaVersion = 1
+	}
+	serverURL := c.EffectiveServerAddr()
+	if c.DefaultSnetServURL == "" {
+		c.DefaultSnetServURL = serverURL
+	}
+	for _, nc := range c.Networks {
+		if nc != nil && nc.SnetServURL == "" {
+			nc.SnetServURL = serverURL
+		}
+	}
+	for _, pj := range c.PendingJoins {
+		if pj != nil && pj.SnetServURL == "" {
+			pj.SnetServURL = serverURL
+		}
+	}
+	if c.RecoveryToken != "" && len(c.RecoveryTokens) == 0 {
+		c.RecoveryTokens = map[string]string{serverURL: c.RecoveryToken}
+	}
+}
+
 // LoadConfigAt loads config from an explicit path (used for multi-instance
 // testing); empty path falls back to the user config dir. v1 single-network
 // configs are migrated to the v2 multi-network schema in place.
@@ -175,7 +219,9 @@ func LoadConfigAt(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Config{WireguardPort: protocol.DefaultWGPort}, nil
+			c := &Config{WireguardPort: protocol.DefaultWGPort}
+			migrateConfig(c)
+			return c, nil
 		}
 		return nil, err
 	}
@@ -213,6 +259,7 @@ func parseConfig(data []byte) (*Config, error) {
 			},
 		}
 	}
+	migrateConfig(&c)
 	return &c, nil
 }
 

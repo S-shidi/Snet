@@ -275,8 +275,9 @@ type Daemon struct {
 	// api caches the HTTP client so TCP/TLS connections are reused across
 	// poll ticks instead of paying a full handshake every PollIntervalSeconds.
 	// Rebuilt whenever the server address or pinned CA path changes.
-	api       *apiClient
-	apiServer string
+	api        *apiClient
+	apiServer  string
+	apiManager *APIManager
 	// ctx/cancel scope the Daemon's lifetime; cancelling ctx aborts all
 	// in-flight HTTP requests made through api.
 	ctx    context.Context
@@ -389,6 +390,7 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 	return &Daemon{
 		cfg:           cfg,
 		configPath:    configPath,
+		apiManager:    NewAPIManager(ctx),
 		nets:          make(map[string]*netRuntime),
 		pendingRuns:   make(map[string]chan struct{}),
 		netErrs:       make(map[string]string),
@@ -535,6 +537,11 @@ func (d *Daemon) serverAddrLocked() string {
 
 func (d *Daemon) apiLocked() *apiClient {
 	server := d.serverAddrLocked()
+	if d.apiManager != nil {
+		d.api = d.apiManager.Get(server)
+		d.apiServer = server
+		return d.api
+	}
 	if d.api != nil && d.apiServer == server {
 		return d.api
 	}
