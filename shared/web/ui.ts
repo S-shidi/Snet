@@ -310,7 +310,7 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
   <div class="net" data-nid="${esc(n.networkId)}" data-owner="${n.owner ? "1" : "0"}" ${gone ? 'data-gone="1"' : ""}>
     <div class="net-row">
       <div class="net-main">
-        <div class="net-name">${esc(n.name || n.networkId)} ${n.owner ? `<span class="pill created">我创建的</span>` : ""} ${sharePill} ${pendingPill}</div>
+        <div class="net-name">${esc(n.name || n.networkId)} ${sharePill} ${pendingPill}</div>
         <div class="net-meta">
           <span>IP <code>${esc(n.ip ?? "-")}</code></span>
           <span>网段 <code>${esc(n.subnet ?? "-")}</code></span>
@@ -1508,6 +1508,15 @@ function openSettingsModal() {
       <section class="settings-panel">
         <div class="settings-panel-head"><h3>设备</h3><span class="hint">本机身份</span></div>
         <div class="settings-list">
+          <div class="settings-row">
+            <div class="settings-row-main">
+              <div class="settings-row-title">设备名称</div>
+              <div class="settings-row-desc">当前名称：<span id="s-device-name">${esc(status?.deviceName || "未设置")}</span></div>
+            </div>
+            <div class="settings-row-actions">
+              <button type="button" id="s-rename-device" class="btn ghost sm">编辑</button>
+            </div>
+          </div>
           <div class="settings-row settings-row-device">
             <div class="settings-row-main">
               <div class="settings-row-title">设备 ID</div>
@@ -1701,6 +1710,9 @@ function openSettingsModal() {
       serverReset?.addEventListener("click", () => saveServer(""));
       body.querySelector("#s-copy-device")?.addEventListener("click", async (e) => {
         await copyText(status?.deviceId || "", e.currentTarget as HTMLButtonElement);
+      });
+      body.querySelector("#s-rename-device")?.addEventListener("click", () => {
+        openRenameDeviceModal(status?.deviceName || "");
       });
 
       const natInput = body.querySelector<HTMLInputElement>("#s-nat");
@@ -2015,7 +2027,148 @@ function pendingBannersHTML(nid: string, pending: NetInfoDetail["pending"]): str
   }).join("");
 }
 
-function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string, routes: RelayRoute[] | undefined): string {
+
+function subnetRouteSummaryHTML(n: NetInfo, r: PeersResp | undefined, routes: RelayRoute[] | undefined): string {
+  const canManage = canManageNetwork(n);
+  const active = (routes ?? []).filter((rt) => rt.status === "active");
+  if (!active.length && !canManage) return "";
+
+  const nodes = new Map<string, NetNode>();
+  if (r?.self) nodes.set(r.self.id, r.self);
+  for (const nd of r?.peers ?? []) nodes.set(nd.id, nd);
+  for (const nd of ownerInfo[n.networkId]?.nodes ?? []) {
+    if (!nodes.has(nd.id)) nodes.set(nd.id, nd as NetNode);
+  }
+
+  const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
+  const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
+  const connected = n.active === true && n.serverState !== "gone";
+  const arrow = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h15"/><path d="m13 6 6 6-6 6"/></svg>';
+  const cross = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+
+  const rows = active.map((rt) => {
+    const nd = nodes.get(rt.targetNodeId);
+    const isSelf = !!r?.self?.id && rt.targetNodeId === r.self.id;
+    const online = connected && (isSelf || !!nd?.online);
+    let state: "direct" | "relay" | "no-relay" | "offline";
+    let label: string;
+
+    if (!online) {
+      state = "offline";
+      label = connected ? "节点离线" : "当前网络未连接";
+    } else if (!nd) {
+      state = "offline";
+      label = "节点信息不可用";
+    } else if (!nd.allowRelay || nd.relayError) {
+      state = "no-relay";
+      label = nd.relayError ? `中继网关不可用：${nd.relayError}` : "节点未允许成为中继网关";
+    } else {
+      const path = effectivePath(directMap[rt.targetNodeId], relayReady);
+      if (path === "direct") {
+        state = "direct";
+        label = "与节点直连路由";
+      } else if (path === "relay") {
+        state = "relay";
+        label = "与节点中继路由";
+      } else {
+        state = "relay";
+        label = "正在尝试直连，当前使用中继";
+      }
+    }
+
+    const nodeName = nd?.deviceName?.trim() || (nd?.id || rt.targetNodeId).slice(0, 8);
+    const nodeTitle = nd?.deviceName?.trim() || nd?.id || rt.targetNodeId;
+    const icon = state === "direct" || state === "relay" ? arrow : cross;
+    const nodeDot = `<span class="status-dot ${online ? "ok" : "off"}" title="${online ? "在线" : "离线"}"></span>`;
+    return `<div class="subnet-route-row">
+      <code class="subnet-route-cidr" title="${esc(rt.cidr)}">${esc(rt.cidr)}</code>
+      <span class="subnet-route-state ${state}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${icon}</span>
+      <span class="subnet-route-node" title="${esc(nodeTitle)}">${nodeDot}${esc(nodeName)}</span>
+    </div>`;
+  }).join("");
+
+  const config = canManage
+    ? `<button type="button" class="btn ghost subnet-route-config" style="width:24px;height:24px;padding:0;border-radius:50%" data-subnet-route-config title="管理子网路由" aria-label="管理子网路由"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>`
+    : "";
+  const emptyText = canManage ? "暂未配置任何路由信息，请点击右上角按钮配置" : "暂无已生效路由";
+  return `<section class="subnet-route-summary" aria-label="子网路由">
+    <div class="subnet-route-summary-head"><h3>子网路由</h3><span class="hint">已生效</span>${config}</div>
+    <div class="subnet-route-list">${rows || `<div class="subnet-route-empty">${emptyText}</div>`}</div>
+  </section>`;
+}
+
+
+function memberSummaryHTML(n: NetInfo, r: PeersResp | undefined, selfRole: string): string {
+  if (!r) return `<p class="hint member-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
+  const self = r.self;
+  const list: NetNode[] = (self ? [self, ...(r.peers ?? [])] : (r.peers ?? []))
+    .slice()
+    .sort((a, b) => {
+      const aSelf = !!self && a.id === self.id ? 0 : 1;
+      const bSelf = !!self && b.id === self.id ? 0 : 1;
+      return aSelf - bSelf || String(a.id).localeCompare(String(b.id));
+    });
+  if (!list.length) return `<section class="member-summary"><div class="member-summary-head"><h3>成员</h3></div><p class="hint member-empty">暂无其他成员</p></section>`;
+
+  const directMap: Record<string, PeerDirect> = n.relayPath?.peerDirect ?? {};
+  const relayReady = (n.relayPath?.relayReady ?? 0) > 0;
+  const connected = n.active === true && n.serverState !== "gone";
+  const arrow = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h15"/><path d="m13 6 6 6-6 6"/></svg>';
+  const cross = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+
+  const rows = list.map((nd) => {
+    const isSelf = !!self && nd.id === self.id;
+    const online = connected && !!nd.online;
+    const pd = directMap[nd.id];
+    let state: "self" | "direct" | "relay" | "offline";
+    let label: string;
+
+    if (isSelf) {
+      state = "self";
+      label = "当前设备";
+    } else if (!online) {
+      state = "offline";
+      label = connected ? "节点离线" : "当前网络未连接";
+    } else {
+      const path = effectivePath(pd, relayReady);
+      if (path === "direct") {
+        state = "direct";
+        const kind = directKindLabel(pd);
+        label = `在线 · 与节点直连${kind ? `（${kind}）` : ""}`;
+      } else if (path === "relay") {
+        state = "relay";
+        label = "在线 · 与节点中继";
+      } else {
+        state = "relay";
+        label = "在线 · 正在尝试直连，当前使用中继";
+      }
+    }
+
+    const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
+    const crown = role === "owner" && !nd.isHub
+      ? `<span class="network-owner-mark" title="我创建的网络" aria-label="我创建的网络">${ICON_CROWN}</span>`
+      : "";
+    const name = nd.isHub ? "官方中继" : (nd.deviceName?.trim() || (nd.id || "").slice(0, 8));
+    const icon = state === "offline" ? cross : arrow;
+    const stateHTML = isSelf
+      ? `<span class="member-summary-self" role="status" title="当前设备">本设备</span>`
+      : `<span class="member-summary-state ${state}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${icon}</span>`;
+    const dotOnline = isSelf ? connected : online;
+    const nodeDot = `<span class="status-dot ${dotOnline ? "ok" : "off"}" title="${dotOnline ? "在线" : "离线"}"></span>`;
+    return `<div class="member-summary-row${isSelf ? " self" : ""}">
+      <code class="member-summary-ip" title="${esc(nd.ip || "-")}">${esc(nd.ip || "-")}</code>
+      ${stateHTML}
+      <span class="member-summary-name" title="${esc(name)}"><span class="member-summary-name-text">${nodeDot}${crown}${esc(name)}</span></span>
+    </div>`;
+  }).join("");
+
+  return `<section class="member-summary" aria-label="成员">
+    <div class="member-summary-head"><h3>成员</h3><span class="hint">${list.length} 位</span></div>
+    <div class="member-summary-list">${rows}</div>
+  </section>`;
+}
+
+function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolean, selfRole: string): string {
   if (!r) return `<p class="hint member-empty">${peerErrors[n.networkId] ? "该网络已失效或加载失败" : "正在获取成员信息…"}</p>`;
   const self = r.self;
   const list: NetNode[] = (self ? [self, ...(r.peers ?? [])] : (r.peers ?? []))
@@ -2037,19 +2190,19 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const online = connected && !!nd.online;
     const pd = directMap[nd.id];
     const path = isSelf
-      ? '<span class="path-badge self">本机</span>'
+      ? '<span class="member-summary-self" role="status">本设备</span>'
       : online ? pathBadge(pd, relayReady) : "";
-    const routeCell = nodeRouteCell(routes, nd.id);
-    const relay = nd.allowRelay
-      ? '<span class="pill ok">中继网关</span>'
-      : nd.relayError
-        ? `<span class="pill warn" title="${esc(nd.relayError)}">网关不可用</span>`
-        : "";
     const role = String(isSelf ? selfRole : (nd.role || "member")).trim().toLowerCase();
-    const roleText = nd.isHub ? "中继" : roleLabel(role);
+    const crown = role === "owner" && !nd.isHub
+      ? `<span class="network-owner-mark" title="我创建的网络" aria-label="我创建的网络">${ICON_CROWN}</span>`
+      : "";
+    const dotOnline = isSelf ? connected : online;
+    const statusDot = `<span class="status-dot ${dotOnline ? "ok" : "off"}" title="${dotOnline ? "在线" : "离线"}"></span>`;
+    const deviceName = nd.deviceName?.trim() || (nd.deviceId || "").slice(0, 8);
+    const nameHTML = deviceName ? (nd.deviceName?.trim() ? esc(deviceName) : `<span class="muted mono">${esc(deviceName)}</span>`) : "-";
     const hubName = nd.isHub
-      ? '<span class="hub-name"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6.5 6.5 0 0 0 5.2 12.2 3.5 3.5 0 0 0 6.5 19h11Z"/></svg> 官方中继</span>'
-      : deviceLabel(nd);
+      ? `<span class="hub-name">${statusDot}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6.5 6.5 0 0 0 5.2 12.2 3.5 3.5 0 0 0 6.5 19h11Z"/></svg> 官方中继</span>`
+      : `${statusDot}${crown}${nameHTML}`;
     const selfPublic = n.relayPath?.publicIP || nd.publicIPv4 || (isPublicEndpoint4(nd.endpoint) ? nd.endpoint : "");
     const peerPublic = [nd.publicIPv4, pd?.public, pd?.addr, pd?.lan, nd.endpoint].find(isPublicEndpoint4) || "";
     const public4 = isSelf
@@ -2061,15 +2214,18 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     const last = isSelf
       ? (connected ? "当前设备" : "已断开")
       : (connected ? lastActiveLabel(pd, online) : "未连接");
-    const poke = isSelf
-      ? ""
-      : `<button type="button" class="btn ghost sm member-poke" data-detail-poke="${esc(nd.id)}" data-poke-target="${esc(nd.ip || "")}" title="发送探测包唤醒节点"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>唤醒</button>`;
-    const diag = isSelf
-      ? ""
-      : `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button>`;
+    const publicLine = canManage
+      ? `<div class="member-card-line member-card-public"><span class="member-card-label">公网 IP</span><span class="member-card-value"><code class="member-endpoint">${esc(public4)}</code>${showPublic6 ? `<code class="member-endpoint member-endpoint-v6">${esc(public6)}</code>` : ""}</span></div>`
+      : "";
     const wgExport = nd.deviceId?.startsWith("wg-") ? wgExports[n.networkId]?.[nd.id] : undefined;
     const wgConfig = canManage && wgExport
       ? `<button type="button" class="btn ghost sm" data-wg-config="${esc(nd.id)}" data-wg-name="${esc(nd.deviceName || "WireGuard 客户端")}">配置</button>`
+      : "";
+    const poke = !isSelf && canManage
+      ? `<button type="button" class="btn ghost sm member-poke" data-detail-poke="${esc(nd.id)}" data-poke-target="${esc(nd.ip || "")}" title="发送探测包唤醒节点"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>唤醒</button>`
+      : "";
+    const diag = !isSelf && canManage
+      ? `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button>`
       : "";
     const kick = !isSelf && canManage
       ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}" ${nd.isHub ? 'data-hub="1"' : ""}>${nd.isHub ? "移除" : "踢出"}</button>`
@@ -2090,13 +2246,18 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
     return `<article class="member-card${isSelf ? " self" : ""}${online ? "" : " offline"}" data-member-id="${esc(nd.id)}">
       <div class="member-card-head">
         <div class="member-card-name"><span class="member-name-text">${hubName}</span>${rename}</div>
-        <div class="member-card-status">${path}${!connected ? `<span class="pill off">${isSelf ? "已断开" : "未连接"}</span>` : online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>'}</div>
+        <div class="member-card-status">${path}</div>
       </div>
       <div class="member-card-body">
         <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${editIP}</div>
-        <div class="member-card-line"><span class="member-card-label">身份</span><span class="member-card-value">${roleText}</span></div>
-        <div class="member-card-line member-card-public"><span class="member-card-label">公网 IP</span><span class="member-card-value"><code class="member-endpoint">${esc(public4)}</code>${showPublic6 ? `<code class="member-endpoint member-endpoint-v6">${esc(public6)}</code>` : ""}</span></div>
-        <div class="member-card-line"><span class="member-card-label">子网路由</span><span class="member-card-value">${routeCell}${relay}</span></div>
+        <div class="member-card-line">
+          <span class="member-card-label">设备 ID</span>
+          <button type="button" class="member-device-id" data-copy-device-id="${esc(nd.deviceId || "")}" title="${nd.deviceId ? "点击复制设备 ID" : "无设备 ID"}" ${nd.deviceId ? "" : "disabled"}>
+            <code>${esc(nd.deviceId || "-")}</code>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="13" height="13" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          </button>
+        </div>
+        ${publicLine}
       </div>
       ${foot}
     </article>`;
@@ -2267,6 +2428,7 @@ function openEditIPModal(nid: string, nodeId: string, current: string) {
   });
 }
 
+
 function showPingModal(text: string, cls: string) {
   openModal({
     title: "诊断结果",
@@ -2292,8 +2454,6 @@ async function runPeerPing(btn: HTMLButtonElement) {
     const cls = loss >= 50 || avg >= 200 ? "err" : loss > 0 || avg >= 80 ? "warn" : "ok";
     showPingModal(`延迟: ${avg > 0 ? `${avg.toFixed(0)}ms` : "-"} / 丢包: ${loss.toFixed(0)}%`, cls);
   } catch (e) {
-    // Report the real reason: a missing ping binary, an unreachable target
-    // and an auth failure all need different fixes.
     const msg = String(e).replace(/^Error:\s*/, "") || "未知错误";
     showPingModal(`诊断失败：${msg}`, "err");
     toast(`诊断失败：${msg}`, "err");
@@ -2547,11 +2707,6 @@ function networkDetailHTML(n: NetInfo): string {
   const selfIp = n.ip || self?.ip || "-";
   const nat = n.relayPath?.natType || self?.natType || "unknown";
   const routes = ownerInfo[n.networkId]?.routes ?? r?.routes ?? [];
-  const activeRoutes = routes.filter((rt) => rt.status === "active").length;
-  const memberCount = r ? (r.peers ?? []).length + 1 : 0;
-  const rolePill = role === "owner"
-    ? '<span class="pill created">我创建的</span>'
-    : '<span class="pill off">已加入</span>';
   const iconInvite = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M16 11h6"/></svg>';
   const iconMore = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
   const more = `<div class="detail-more">
@@ -2569,7 +2724,6 @@ function networkDetailHTML(n: NetInfo): string {
     <div class="detail-heading">
       <div class="detail-title-row">
         <div class="detail-title">${esc(n.name || n.networkId)}</div>
-        ${rolePill}
         <div class="detail-head-actions">
           <label class="switch detail-conn-switch" title="连接 / 断开">
             <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
@@ -2583,14 +2737,13 @@ function networkDetailHTML(n: NetInfo): string {
         <span class="detail-net-id"><code>${esc(n.networkId)}</code></span>
         <span>↑ ${fmtSpeed(status?.txSpeed)} · ↓ ${fmtSpeed(status?.rxSpeed)}</span>
         <span>NAT ${esc(nat)}</span>
-        <span>${activeRoutes} 条生效路由</span>
-        ${memberCount ? `<span>${memberCount} 位成员</span>` : ""}
       </div>
     </div>
   </div>
   ${canManage ? pendingBannersHTML(n.networkId, ownerInfo[n.networkId]?.pending) : ""}
   ${cgnatCompactHTML()}
-  ${memberCardsHTML(n, r, canManage, role, routes)}`;
+  ${subnetRouteSummaryHTML(n, r, routes)}
+  ${canManage ? memberCardsHTML(n, r, canManage, role) : memberSummaryHTML(n, r, role)}`;
 }
 
 function pendingDetailHTML(p: NonNullable<DaemonStatus["pendingJoins"]>[number]): string {
@@ -2689,6 +2842,11 @@ function bindNetworkDetailEvents() {
   if (!detail) return;
   detail.addEventListener("click", async (e) => {
     const target = e.target as HTMLElement;
+    const subnetConfig = target.closest<HTMLButtonElement>("[data-subnet-route-config]");
+    if (subnetConfig && detailNid) {
+      void openSubnetRouteModal(detailNid);
+      return;
+    }
     const moreBtn = target.closest<HTMLButtonElement>("#detail-more-btn");
     if (moreBtn) {
       e.stopPropagation();
@@ -2738,6 +2896,22 @@ function bindNetworkDetailEvents() {
       }
       return;
     }
+    const copyDeviceEl = target.closest<HTMLButtonElement>("[data-copy-device-id]");
+    if (copyDeviceEl) {
+      const id = copyDeviceEl.dataset.copyDeviceId || "";
+      if (id) await copyText(id, copyDeviceEl);
+      return;
+    }
+    const pokeEl = target.closest<HTMLButtonElement>("[data-detail-poke]");
+    if (pokeEl) {
+      await runPoke(pokeEl);
+      return;
+    }
+    const pingEl = target.closest<HTMLButtonElement>("[data-detail-ping]");
+    if (pingEl) {
+      await runPeerPing(pingEl);
+      return;
+    }
     const renameEl = target.closest<HTMLButtonElement>("[data-detail-rename]");
     if (renameEl) {
       openRenameDeviceModal(renameEl.dataset.detailRename || "");
@@ -2754,16 +2928,6 @@ function bindNetworkDetailEvents() {
     const editIPEl = target.closest<HTMLButtonElement>("[data-detail-edit-ip]");
     if (editIPEl) {
       openEditIPModal(editIPEl.dataset.editIpNid || detailNid || "", editIPEl.dataset.detailEditIp || "", editIPEl.dataset.currentIp || "");
-      return;
-    }
-    const pokeEl = target.closest<HTMLButtonElement>("[data-detail-poke]");
-    if (pokeEl && detailNid) {
-      await runPoke(pokeEl);
-      return;
-    }
-    const pingEl = target.closest<HTMLButtonElement>("[data-detail-ping]");
-    if (pingEl && detailNid) {
-      await runPeerPing(pingEl);
       return;
     }
     const wgBtn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-wg-config]");

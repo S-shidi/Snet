@@ -963,6 +963,7 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	if err := d.attach(resp.NetworkID, name, resp.NodeID, resp.IP, resp.Token, resp.PairingCode, resp.Subnet, true); err != nil {
 		return resp, err
 	}
+	resp.Link = d.inviteLinkLocked(resp.NetworkID, resp.PairingCode, name)
 	// Post-create reconciliation and relay-capability reporting can block on
 	// the coordination server. Do them after the HTTP response has had time to
 	// flush, otherwise a slow server makes the client's create request appear
@@ -3827,13 +3828,12 @@ func (d *Daemon) ResetCode(nid string) (string, error) {
 var ErrInviteExpired = errors.New("邀请链接已失效，请重置邀请链接")
 
 // inviteLinkLocked builds the shareable invite link of a network. The
-// coordination server address is embedded in the link only when the network
-// does not live on the official server, so a joiner always reaches the right
-// one. Callers must hold d.mu.
+// coordination server reference is always embedded (encrypted by protocol),
+// so a joiner always reaches the network's server. Callers must hold d.mu.
 func (d *Daemon) inviteLinkLocked(nid, code, name string) string {
-	server := ""
-	if addr := d.serverAddrLocked(); addr != "" && !strings.EqualFold(addr, constants.DefaultServer) {
-		server = addr
+	server := d.serverAddrLocked()
+	if server == "" {
+		server = constants.DefaultServer
 	}
 	return protocol.BuildLink(nid, code, server, name)
 }
@@ -4265,6 +4265,7 @@ func (d *Daemon) Status() (map[string]any, error) {
 		"commit":       buildinfo.Commit,
 		"buildDate":    buildinfo.BuildDate,
 		"deviceId":     d.cfg.DeviceID,
+		"deviceName":   d.cfg.DeviceName,
 		"serverAddr":   d.serverAddrLocked(),
 		"wgPort":       d.cfg.WireguardPort,
 		"rxSpeed":      rxSpeed,

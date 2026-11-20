@@ -41,8 +41,9 @@ func resolveServer(server string) string {
 var shutdownGraceDelay = 200 * time.Millisecond
 
 var (
-	pingLossRE = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%\s+(?:packet )?loss`)
-	pingAvgRE  = regexp.MustCompile(`(?:rtt|round-trip)[^=]*=\s*[0-9.]+\/([0-9.]+)\/`)
+	pingLossRE      = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%\s+(?:packet )?loss`)
+	pingAvgRE       = regexp.MustCompile(`(?:rtt|round-trip)[^=]*=\s*[0-9.]+\/([0-9.]+)\/`)
+	pingAvgSimpleRE = regexp.MustCompile(`(?i)(?:average|avg)\s*=\s*([0-9.]+)\s*ms`)
 )
 
 func pingBinary() string {
@@ -65,6 +66,11 @@ func parsePingOutput(out string) (float64, float64) {
 		}
 	}
 	if m := pingAvgRE.FindStringSubmatch(out); len(m) == 2 {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			avg = v
+		}
+	} else if m := pingAvgSimpleRE.FindStringSubmatch(out); len(m) == 2 {
+		// Windows: "Average = 12ms".
 		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
 			avg = v
 		}
@@ -278,11 +284,16 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 		defer cancel()
-		wait := "2"
-		if runtime.GOOS == "darwin" {
-			wait = "2000"
+		args := []string{"-c", "3", "-W", "2"}
+		switch runtime.GOOS {
+		case "darwin":
+			// macOS ping waits in milliseconds.
+			args = []string{"-c", "3", "-W", "2000"}
+		case "windows":
+			// Windows uses -n for count and -w for timeout, both in milliseconds.
+			args = []string{"-n", "3", "-w", "2000"}
 		}
-		out, err := exec.CommandContext(ctx, bin, "-c", "3", "-W", wait, target).CombinedOutput()
+		out, err := exec.CommandContext(ctx, bin, append(args, target)...).CombinedOutput()
 		if err != nil && len(out) == 0 {
 			writeCtlErr(w, 500, fmt.Errorf("诊断失败：无法执行 ping：%w", err))
 			return
