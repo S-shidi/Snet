@@ -24,7 +24,6 @@ jobs:
           cache: true
           cache-dependency-path: |
             go.sum
-            desktop-mac/go.sum
             desktop-mac-v3/go.sum
 
       - name: Setup Node

@@ -1,4 +1,7 @@
-# SnetMac — macOS Wails 客户端
+# SnetMac — macOS Wails 客户端（已归档）
+
+> 这是早期 Wails v2 客户端，已被 `desktop-mac-v3/`（Wails v3）取代。
+> 本文保留用于追溯，不参与当前构建与发布。
 
 基于 **Wails v2** 的 macOS 原生客户端。前端复用 `shared/web`，Go 后端通过 LaunchDaemon 管理内置 `snetd`。
 
@@ -133,4 +136,4 @@ GitHub Actions 会自动完成上述步骤，并生成 `.zip` / `.dmg`。
 
 - 不要提交 `ctl-token`、`device.id`、`config.json` 或私钥。
 - `snetd` 需要 root；只通过 LaunchDaemon 运行，不在 WebView 内执行特权命令。
-- 开发排坑记录见 [`docs/MAC-DEV-NOTES.md`](../docs/MAC-DEV-NOTES.md)。
+- 开发排坑记录见 [`docs/MAC-DEV-NOTES.md`](../../docs/MAC-DEV-NOTES.md)。

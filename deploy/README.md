@@ -1,4 +1,7 @@
-# Snet 服务器部署
+# Snet 传统 systemd 部署（历史记录）
+
+> 当前推荐部署方式：`deploy-prod/docker-server/`（Docker Compose + `cmd/server` 兼容入口）。
+> 本文保留 systemd 手工部署流程，部分脚本/路径可能已过时；旧 NAS/Docker 文档见 `deploy/archive/`。
 
 已部署：Hostodo VPS `us-tpa01-8304f360`（66.187.6.46，Debian 13 x86_64，root + systemd）。
 对外服务：`https://snet.uizhi.eu.org:8090`（HTTPS 协调）+ `udp://snet.uizhi.eu.org:51820..52075`（旧版 relay 池）+ `udp://snet.uizhi.eu.org:8092`（Relay v2，可选启用）。
@@ -9,11 +12,12 @@
 
 ## 1. 上传二进制
 
-推荐用版本化发布脚本（自动注入版本、备份、原子替换、健康校验和失败回滚）：
+先构建版本化发布产物，再手动上传/替换（旧的 `scripts/rollout-vps.sh` 已移除）：
 
 ```bash
 ./scripts/build-release.sh
-SNET_ADMIN_USER=... SNET_ADMIN_PASSWORD='...' ./scripts/rollout-vps.sh
+scp dist/server-linux-amd64 root@66.187.6.46:/usr/local/snet/bin/server.new
+# 在 VPS 上备份、替换并用 systemctl restart snet-server 验证 /healthz
 ```
 
 VPS 仅部署服务端 `server`；`snetd`/`snetctl` 属于成员主机（NAS、SDserver、桌面等），
@@ -150,14 +154,9 @@ WireGuard MTU 统一为 1320，relay 帧头 42 字节不会触发路径 MTU 黑�
 `kind=lan|ipv6|public` 及 `lan`/`ipv6`/`public` 候选地址。relay metrics 增加
 `snet_relay_control_drops_total`。
 
-也可以让 rollout 脚本一并安装/升级 relay（会重写两个 env 文件；secret 需每次显式传入）：
-
-```bash
-SNET_ADMIN_USER=admin SNET_ADMIN_PASSWORD='...' \
-SNET_RELAY_V2_ENDPOINTS=snet.uizhi.eu.org:8092,relay2.example:8092 \
-SNET_RELAY_SECRET="$SECRET" \
-scripts/rollout-vps.sh
-```
+Relay v2 推荐使用 `deploy-prod/docker-server/` 的 Compose 部署（自动管理
+`snet-relay` 与共享 secret）。手工部署时，确保 `snet-server` 与 `snet-relay`
+使用同一个 `SNET_RELAY_SECRET`，并设置 `SNET_RELAY_V2_ENDPOINTS`。
 
 不传 `SNET_RELAY_V2_ENDPOINT` / `SNET_RELAY_V2_ENDPOINTS` 时服务端 env 不包含
 Relay v2 配置；已安装的 `snet-relay` 单元会保持运行。

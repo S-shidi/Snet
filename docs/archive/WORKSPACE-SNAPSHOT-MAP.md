@@ -277,9 +277,9 @@ AGENTS.md
 | `.github/workflows/` | 不存在 | 缺失 |
 | `.archify/` | 不存在 | 缺失 |
 | `.opencode/skills/snet-*` | 不存在 | 缺失 |
-| `docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md` | 存在 | 存在 |
+| `NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md` | 存在 | 存在 |
 | `docs/ONLINE-STATUS-LOGIC.md` | 存在 | 存在 |
-| `docs/PROJECT-ATLAS.md` | 存在 | 存在 |
+| `../PROJECT-ATLAS.md` | 存在 | 存在 |
 | `PROJECT-STRUCTURE.md` / `AGENTS.md` | 不存在 | 缺失 |
 | `dist/` | 不存在 | 缺失 |
 | `go test ./...` | 10 包：5 包有测试全通过，0 失败，0 跳过，5 包无测试文件 | 通过 |
@@ -548,7 +548,7 @@ Server 鉴权剩余项与 probe.go 盘点（2026-11-07）：
 ### 下一阶段建议（若上游补齐数据）
 
 1. 先补齐 Docker Web 本地构建与部署文件，起本地 server + 2 个 snetd 做双节点互通。
-2. 按 `docs/NETWORK-VALIDATION-PLAN.md` 跑 T1/T2/T6/T7/T10/T12/T13/T14 的单机可验证子集。
+2. 按 `NETWORK-VALIDATION-PLAN.md` 跑 T1/T2/T6/T7/T10/T12/T13/T14 的单机可验证子集。
 3. 再做四节点 Relay v2 真机矩阵（NAT rebinding/IPv6/Docker 端口/跨 relay）与 Docker/nginx Web session 端到端；Android 不再作为下一阶段目标。
 
 ## 部署产物结构（2026-11-08）

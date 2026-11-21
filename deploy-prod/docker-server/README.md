@@ -3,6 +3,10 @@
 目标：在 VPS 上用 Docker Compose 部署 `server` 和 `relay`，启用 Relay v2。
 本目录不提交真实 `.env`；`.env` 在 VPS 上生成并保持 0600。
 
+> 本 Compose 使用 `cmd/server` 兼容入口（公网 API + 内置 `/admin`）。
+> 新部署可改用拆分的 `cmd/snetserv` + `cmd/admin-server`；拆分后管理台是独立进程，
+> 公网 API 不再暴露 `/admin`，管理请求经 loopback 内部 RPC 访问数据。
+
 ## 1. 前置
 
 - Docker Engine + Docker Compose v2

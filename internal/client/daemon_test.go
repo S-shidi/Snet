@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2043,5 +2044,37 @@ func TestEnforceSingleActiveNetwork(t *testing.T) {
 	if !d.cfg.Networks["old"].Active || d.cfg.Networks["new"].Active {
 		t.Fatalf("explicit network was not kept: old=%v new=%v",
 			d.cfg.Networks["old"].Active, d.cfg.Networks["new"].Active)
+	}
+}
+
+func TestPortOwnedByOtherNetwork(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"a": {Port: 50000},
+		"b": {Port: 50001},
+		"c": {Port: 0},
+	}
+	if !d.portOwnedByOtherLocked("a", 50001) {
+		t.Fatal("port of another network must be reserved")
+	}
+	if d.portOwnedByOtherLocked("a", 50000) {
+		t.Fatal("own port must not be treated as another network's port")
+	}
+	if d.portOwnedByOtherLocked("a", 0) {
+		t.Fatal("zero port is not an owned port")
+	}
+}
+
+func TestIsPortInUseError(t *testing.T) {
+	for _, msg := range []string{
+		"listen udp4 :51820: bind: address already in use",
+		"wg up: Only one usage of each socket address (protocol/network address/port) is normally permitted.",
+	} {
+		if !isPortInUseError(errors.New(msg)) {
+			t.Fatalf("expected port-in-use for %q", msg)
+		}
+	}
+	if isPortInUseError(errors.New("create tun: access denied")) {
+		t.Fatal("non-port error classified as port conflict")
 	}
 }

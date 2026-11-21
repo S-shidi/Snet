@@ -3,7 +3,7 @@
 # Production guide: https://github.com/S-shidi/Snet/blob/master/deploy-prod/docker-server/README.md
 set -euo pipefail
 
-VERSION="${SNET_VERSION:-1.2.0}"
+VERSION="${SNET_VERSION:-1.2.1}"
 DIR="${SNET_DIR:-/opt/snet}"
 ACR="crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet"
 

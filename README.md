@@ -64,7 +64,7 @@ http://<VPS_IP>:8090/admin
 
 - **macOS（Apple Silicon）**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `.dmg`
 - **Windows**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `Snet-v*-win-Setup.zip`，解压后运行安装程序（ZIP 可避免浏览器拦截未签名 `.exe` 下载）
-- **Android**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `Snet-v1.2.0-android.apk`（[直接下载](https://github.com/S-shidi/Snet/releases/download/v1.2.0/Snet-v1.2.0-android.apk)）。安装时需在系统设置中允许浏览器或文件管理器“安装未知应用”。该 APK 使用正式 Release keystore 签名；如果设备上装过旧版 debug 签名包，需要先卸载旧版再安装，之后即可同签名覆盖升级。Android 当前为单网络模式：连接或创建另一个网络时会提示并断开当前网络。
+- **Android**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 `Snet-v1.2.1-android.apk`（[直接下载](https://github.com/S-shidi/Snet/releases/download/v1.2.1/Snet-v1.2.1-android.apk)）。安装时需在系统设置中允许浏览器或文件管理器“安装未知应用”。该 APK 使用正式 Release keystore 签名；如果设备上装过旧版 debug 签名包，需要先卸载旧版再安装，之后即可同签名覆盖升级。Android 当前为单网络模式：连接或创建另一个网络时会提示并断开当前网络。
 - **NAS / Linux**：[Docker 客户端部署](deploy-prod/docker-client/README.md)
 
 客户端首次启动后打开 Web 控制台，设置管理密码。
@@ -74,10 +74,10 @@ http://<VPS_IP>:8090/admin
 当前发布包为 Apple Silicon（arm64）。在“终端”中执行：
 
 ```bash
-curl -fL -o /tmp/Snet-v1.2.0-mac.dmg \
-  https://github.com/S-shidi/Snet/releases/download/v1.2.0/Snet-v1.2.0-mac.dmg
+curl -fL -o /tmp/Snet-v1.2.1-mac.dmg \
+  https://github.com/S-shidi/Snet/releases/download/v1.2.1/Snet-v1.2.1-mac.dmg
 
-hdiutil attach /tmp/Snet-v1.2.0-mac.dmg -nobrowse
+hdiutil attach /tmp/Snet-v1.2.1-mac.dmg -nobrowse
 sudo cp -R "/Volumes/Snet Installer/Snet.app" /Applications/
 sudo xattr -cr /Applications/Snet.app
 hdiutil detach "/Volumes/Snet Installer"
@@ -147,7 +147,7 @@ sudo docker run -d \
   --cap-add NET_ADMIN \
   --device /dev/net/tun \
   -v /opt/snet-gateway:/etc/snet \
-  crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.2.0
+  crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.2.1
 ```
 
 如果 Registry 提示未授权，请先登录对应镜像仓库，或使用自己构建的 `snet-client` 镜像。查看运行日志：
@@ -176,7 +176,8 @@ flowchart LR
     A["Mac / iPhone<br/>WireGuard"]
     B["Home NAS<br/>Docker client"]
     C["Remote laptop<br/>Windows / macOS"]
-    S["SNET Coordinator<br/>HTTPS :8090"]
+    S["SnetServ<br/>HTTPS :8090 / UDP :8091"]
+    M["Admin Server<br/>:8095"]
     R["Relay v2<br/>UDP :8092"]
     H["Official Hub<br/>public endpoint"]
     L["Home LAN<br/>10.7.86.0/24"]
@@ -188,6 +189,7 @@ flowchart LR
     C ---|"control"| S
     B ---|"control"| S
     A ---|"control"| S
+    M -->|"loopback admin RPC"| S
     H <-->|"WireGuard / relay"| A
     H <-->|"LAN gateway"| L
     H ---|"network member"| S
@@ -196,27 +198,35 @@ flowchart LR
 - **Client A ↔ Client B**：优先 LAN / IPv6 / NAT 打洞直连。
 - **Client ↔ Relay**：直连失败时自动回退，Relay 不读取业务明文。
 - **Client ↔ Hub ↔ LAN**：手机或外部 WireGuard 客户端通过 Hub 接入私有网段。
+- **每个网络绑定一个 SnetServ**：邀请链接携带该网络的协调服务器；不再假设全局唯一服务器。
+- **管理面独立**：`admin-server` 通过 loopback 内部 RPC 管理数据，公网 API 不暴露 `/admin`。
 
 ## 🛠 技术栈
 
 | 层 | 实现 |
 |---|---|
 | 数据面 | WireGuard（wireguard-go） |
-| 协调面 | Go + HTTPS + bbolt |
-| 中继 | Relay v2，signed ticket，多实例候选 |
-| 客户端 | Wails v3（macOS / Windows），Docker + Nginx + Web UI |
-| 移动接入 | 标准 WireGuard `.conf` + QR |
-| CI/CD | GitHub Actions（macOS DMG、Windows NSIS、Docker ACR） |
+| 协调面 | Go + HTTPS + bbolt；`cmd/snetserv`（或兼容入口 `cmd/server`） |
+| 管理面 | `cmd/admin-server` + admin.html；loopback 内部 RPC |
+| 中继 | Relay v2，signed ticket，多实例候选；legacy relay 兼容 |
+| 桌面客户端 | Wails v3（macOS / Windows）+ 共享 Web UI |
+| Docker / NAS | snetd + Nginx + 共享 Web UI |
+| Android | Kotlin + WebView + gomobile（单网络模式） |
+| 标准 WireGuard | `.conf` + QR（手机、软路由、第三方客户端） |
+| CI/CD | GitHub Actions（macOS DMG、Windows NSIS、Android APK、Docker ACR） |
 
 ## 📦 服务端 / 客户端
 
 服务端、Relay 和客户端镜像：
 
 ```text
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.2.0
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.2.0
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.2.0
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.2.1
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.2.1
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.2.1
 ```
+
+> `cmd/server` 仍作为单进程兼容入口；新部署可使用拆分的 `cmd/snetserv` +
+> `cmd/admin-server`。拆分入口的管理台是独立进程，公网 API 不再暴露 `/admin`。
 
 ## 🔐 安全
 
@@ -241,10 +251,14 @@ cd desktop-windows/frontend && ./build-frontend.sh
 
 ## 📚 文档
 
+- [文档总索引](docs/README.md)
+- [系统设计](DESIGN.md)
+- [项目全局图谱](docs/PROJECT-ATLAS.md)
 - [服务端部署（Docker / TLS / Relay）](deploy-prod/docker-server/README.md)
 - [Docker 客户端 / 群晖 NAS](deploy-prod/docker-client/README.md)
 - [VPS 部署记录](docs/VPS-DEPLOY-VIA-HOSTODO.md)
 - [部署环境与路径](docs/DEPLOYMENTS.md)
+- [决策日志](docs/DECISION-LOG.md)
 - [贡献指南](CONTRIBUTING.md)
 - [安全策略](SECURITY.md)
 

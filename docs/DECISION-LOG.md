@@ -1,7 +1,11 @@
 # SNET 决策日志
 
-> 按时间顺序记录本快照内已落地的产品/架构决策。只记录决策与证据，不替代设计文档。
+> 按时间顺序记录已落地的产品/架构决策。只记录决策与证据，不替代设计文档。
 > 基线：`3fb8b97`（快照导入，上游 `c379790` 不可比）。
+>
+> 注意：第 2、13 条已被 v1.2.0 取代——仓库不再收缩为 server + snetd + web，
+> Android 已恢复为交付目标，桌面端已升级到 Wails v3。以 `DESIGN.md` /
+> `PROJECT-ATLAS.md` 和当前代码为准。
 
 ## 1. 2026-11-07：采用快照导入基线
 
@@ -19,7 +23,7 @@
 - 选择：B。
 - 理由：减少不可验证目录和过期事实；把精力集中在可编译/可测试的 Go 与 Web 核心。
 - 对应 commit：`9e1c763`、`50a51a4`、`58691dc`、`688a967`、`0dc27db`、`5ae3ea3`、`d124a1f`、`f98878a`。
-- 影响：VERSION、Android、snetbind、CI、Docker/nginx、发布产物成为永久缺口；见 `WORKSPACE-SNAPSHOT-MAP.md`。
+- 影响：VERSION、Android、snetbind、CI、Docker/nginx、发布产物成为永久缺口；见 `docs/archive/WORKSPACE-SNAPSHOT-MAP.md`。（2026-11-21 更正：这些缺口已随完整仓库恢复而关闭。）
 
 ## 3. 2026-11-07：exact-flow 发送失败删除 hint（方案 A）
 
@@ -118,4 +122,28 @@
 - 选择：B。
 - 理由：Docker Web + snetd 是当前保留的客户端路径，组网验证以它为准；Android 不是当前交付目标。
 - 对应 commit：`docs: drop android client, keep docker web for network validation`。
-- 影响：`snetbind/`、`android/` 从“永久缺口”改为“明确移出范围”；CI 若保留仅用于 Go 测试/Web 构建；下一阶段集中做 Docker Web 多节点组网验证，见 `docs/NETWORK-VALIDATION-PLAN.md`。
+- 影响：`snetbind/`、`android/` 从“永久缺口”改为“明确移出范围”；CI 若保留仅用于 Go 测试/Web 构建；下一阶段集中做 Docker Web 多节点组网验证，见 `docs/archive/NETWORK-VALIDATION-PLAN.md`。（2026-11-21 更正：Android 已恢复为交付目标，见第 14 条。）
+
+## 14. 2026-11-21：Android 恢复为交付目标
+
+- 背景：完整仓库恢复后，Android 客户端、`snetbind`、签名与发布流程已重新纳入维护范围。
+- 选项：A. 继续只保留 Docker Web；B. 恢复 Android 客户端并保持单网络模式。
+- 选择：B。
+- 理由：移动端是主要使用场景；Android 已有 gomobile 桥、VPN Service、扫码和审批 UI。
+- 影响：撤销第 13 条。Android 为单网络模式；桌面端仍支持多网络并行。
+
+## 15. 2026-11-21：拆分 SnetServ 与 Admin Server
+
+- 背景：管理台与公网协调 API 混在同一进程，管理员凭据和服务令牌边界不清。
+- 选项：A. 继续单进程；B. 拆分 `cmd/snetserv` + `cmd/admin-server`，管理台通过 loopback RPC 访问数据。
+- 选择：B。
+- 理由：公网 API 不再暴露 `/admin`；内部 RPC 仅 loopback + 服务令牌；`admin-server` 只暴露登录 session。
+- 影响：保留 `cmd/server` 作为兼容入口；新部署优先使用拆分入口。`admin-server` 当前只管理一个 SnetServ。
+
+## 16. 2026-11-21：文档与目录整理
+
+- 背景：`DESIGN.md` / `PROJECT-ATLAS.md` 仍描述 Tauri、固定服务器、32 个 gomobile 方法等旧实现；根目录混有旧客户端和快照文档。
+- 选项：A. 继续增量修补；B. 重写核心文档，归档旧客户端与快照文档，保留当前文档索引。
+- 选择：B。
+- 理由：减少误导性事实；当前文档只描述可验证的代码行为；历史内容仍可追溯。
+- 影响：新增 `docs/README.md`、`docs/archive/`、`archive/`；旧 Tauri 客户端移至 `archive/desktop-mac-tauri/`；发布脚本补充 `snetserv` / `admin-server`。

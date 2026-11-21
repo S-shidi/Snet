@@ -1,7 +1,7 @@
 services:
   snet:
     # Combined image: snetd + nginx + shared/web, supervised by supervisord.
-    image: ${SNET_IMAGE:-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.2.0}
+    image: ${SNET_IMAGE:-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.2.1}
     container_name: snetd
     restart: unless-stopped
     network_mode: host

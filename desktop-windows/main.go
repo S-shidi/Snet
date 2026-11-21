@@ -71,13 +71,13 @@ func main() {
 		e.Cancel()
 		window.Hide()
 	})
-	statusItem, ipItem, allowRelayItem, routeRoot, menu := setupSystray(app, window, svc)
+	statusItem, allowRelayItem, networkItems, routeRoot, menu := setupSystray(app, window, svc)
 	var trayWatchOnce sync.Once
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		log.Printf("Snet: application started")
 		showWindow(window)
 		trayWatchOnce.Do(func() {
-			go watchTrayStatus(statusItem, ipItem, allowRelayItem, routeRoot, menu)
+			go watchTrayStatus(statusItem, allowRelayItem, networkItems, routeRoot, menu)
 		})
 		watchShowRequests(showEvent, func() {
 			log.Printf("Snet: second launch requested window")
@@ -115,7 +115,7 @@ func showWindow(window *application.WebviewWindow) {
 	window.Focus()
 }
 
-func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) (*application.MenuItem, *application.MenuItem, *application.MenuItem, *application.Menu, *application.Menu) {
+func setupSystray(app *application.App, window *application.WebviewWindow, svc *SnetService) (*application.MenuItem, *application.MenuItem, []*application.MenuItem, *application.Menu, *application.Menu) {
 	tray := app.SystemTray.New()
 	if len(trayIcon) == 0 {
 		log.Printf("Snet: tray icon is empty; continuing without icon")
@@ -129,17 +129,24 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 
 	menu := app.NewMenu()
 	statusItem := menu.Add("未连接").SetEnabled(true).SetBitmap(dotIcon(color.RGBA{R: 239, G: 68, B: 68, A: 255}))
-	ipItem := menu.Add("IP: -").SetEnabled(true).SetBitmap(ipIcon())
-	menu.AddSeparator()
 	allowRelayItem := menu.Add("允许本设备作为中继网关").SetBitmap(blankIcon())
 	// Windows cannot host the delegated relay gateway safely; keep the
 	// capability hidden instead of letting users toggle a non-functional option.
 	allowRelayItem.SetHidden(true)
+	// Fixed pool of top-level network rows. Hiding/showing pre-created items
+	// keeps each network visible directly in the tray without a duplicate
+	// "网络状态" submenu.
+	const maxTrayNetworks = 16
+	networkItems := make([]*application.MenuItem, 0, maxTrayNetworks)
+	for i := 0; i < maxTrayNetworks; i++ {
+		networkItems = append(networkItems, menu.Add("").SetHidden(true).SetEnabled(true))
+	}
+	menu.AddSeparator()
 	routeRoot := menu.AddSubmenu("子网路由")
 	if routeItem := menu.FindByLabel("子网路由"); routeItem != nil {
 		routeItem.SetBitmap(subnetIcon())
 	}
-	routeRoot.Add("正在加载…").SetEnabled(false)
+	routeRoot.Add("正在加载…").SetEnabled(false).SetBitmap(blankIcon())
 	openItem := menu.Add("打开控制面板")
 	openItem.SetBitmap(windowIcon())
 	openItem.OnClick(func(*application.Context) { showWindow(window) })
@@ -151,7 +158,7 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 		app.Quit()
 	})
 	tray.SetMenu(menu)
-	return statusItem, ipItem, allowRelayItem, routeRoot, menu
+	return statusItem, allowRelayItem, networkItems, routeRoot, menu
 }
 
 func blankIcon() []byte {
@@ -236,22 +243,6 @@ func dotIcon(c color.RGBA) []byte {
 	})
 }
 
-func ipIcon() []byte {
-	ink := color.RGBA{R: 0, G: 0, B: 0, A: 255}
-	return makeIcon(func(img *image.RGBA) {
-		for y := 0; y < 16; y++ {
-			for x := 0; x < 16; x++ {
-				dx, dy := float64(x)-7.5, float64(y)-7.5
-				if dx*dx+dy*dy >= 4.0*4.0 && dx*dx+dy*dy <= 5.8*5.8 {
-					setPixel(img, x, y, ink)
-				}
-			}
-		}
-		drawLine(img, 3, 8, 12, 8, ink)
-		drawLine(img, 8, 3, 8, 12, ink)
-	})
-}
-
 func subnetIcon() []byte {
 	ink := color.RGBA{R: 0, G: 0, B: 0, A: 255}
 	return makeIcon(func(img *image.RGBA) {
@@ -264,6 +255,30 @@ func subnetIcon() []byte {
 		}
 		drawLine(img, 4, 8, 11, 4, ink)
 		drawLine(img, 4, 8, 11, 12, ink)
+	})
+}
+
+func routeStateIcon(route trayRoute) []byte {
+	if route.Active && route.Enabled {
+		return routeIcon()
+	}
+	return routeCrossIcon()
+}
+
+func routeCrossIcon() []byte {
+	ink := color.RGBA{R: 0, G: 0, B: 0, A: 255}
+	return makeIcon(func(img *image.RGBA) {
+		drawLine(img, 4, 4, 11, 11, ink)
+		drawLine(img, 11, 4, 4, 11, ink)
+	})
+}
+
+func routeIcon() []byte {
+	ink := color.RGBA{R: 0, G: 0, B: 0, A: 255}
+	return makeIcon(func(img *image.RGBA) {
+		drawLine(img, 3, 8, 12, 8, ink)
+		drawLine(img, 9, 5, 12, 8, ink)
+		drawLine(img, 9, 11, 12, 8, ink)
 	})
 }
 
@@ -292,9 +307,19 @@ type trayStatusResponse struct {
 		Name        string `json:"name"`
 		IP          string `json:"ip"`
 		Active      bool   `json:"active"`
+		Interface   string `json:"interface"`
 		ServerState string `json:"serverState"`
-		RelayPath   *struct {
-			Ready bool `json:"ready"`
+		State       string `json:"state"`
+		Owner       bool   `json:"owner"`
+		JoinedAt    string `json:"joinedAt"`
+		PeerStats   map[string]struct {
+			RxBytes int64 `json:"RxBytes"`
+			TxBytes int64 `json:"TxBytes"`
+		} `json:"peerStats"`
+		RelayPath *struct {
+			Ready       bool `json:"ready"`
+			DirectReady int  `json:"directReady"`
+			RelayReady  int  `json:"relayReady"`
 		} `json:"relayPath"`
 	} `json:"networks"`
 	AllowRelay bool `json:"allowRelay"`
@@ -304,19 +329,27 @@ type trayStatusResponse struct {
 type trayRoute struct {
 	CIDR    string
 	Enabled bool
+	Active  bool
 }
 
 type trayNetwork struct {
-	NID    string
-	Name   string
-	Routes []trayRoute
+	NID      string
+	Name     string
+	IP       string
+	Status   string
+	Online   bool
+	Owner    bool
+	JoinedAt string
+	Color    color.RGBA
+	Routes   []trayRoute
 }
 
 type trayStatus struct {
 	Label      string
-	IP         string
 	Color      color.RGBA
 	AllowRelay bool
+	Active     int
+	Online     int
 	Networks   []trayNetwork
 }
 
@@ -324,7 +357,7 @@ func queryTrayStatus() trayStatus {
 	red := color.RGBA{R: 239, G: 68, B: 68, A: 255}
 	yellow := color.RGBA{R: 217, G: 161, B: 58, A: 255}
 	green := color.RGBA{R: 52, G: 199, B: 123, A: 255}
-	empty := trayStatus{Label: "未连接", IP: "-", Color: red}
+	empty := trayStatus{Label: "未连接", Color: red}
 	token, err := readCtlToken()
 	if err != nil {
 		return empty
@@ -347,34 +380,81 @@ func queryTrayStatus() trayStatus {
 		return empty
 	}
 	out := empty
+	out.AllowRelay = st.AllowRelay
 	for _, n := range st.Networks {
-		if !n.Active || n.ServerState == "gone" {
+		if n.ServerState == "gone" {
 			continue
 		}
 		name := n.Name
 		if name == "" {
 			name = n.NetworkID
 		}
-		routes := queryOnlineSubnets(token, n.NetworkID)
-		out.Networks = append(out.Networks, trayNetwork{NID: n.NetworkID, Name: name, Routes: routes})
-		if len(out.Networks) == 1 {
-			out.IP = n.IP
-			if out.IP == "" {
-				out.IP = "-"
-			}
-			out.AllowRelay = st.AllowRelay
-			out.Color = yellow
-			out.Label = "打洞中"
-			if n.RelayPath != nil && n.RelayPath.Ready {
-				out.Color = green
-				out.Label = "已连接 (" + name + ")"
+		hasTraffic := false
+		for _, ps := range n.PeerStats {
+			if ps.RxBytes > 0 || ps.TxBytes > 0 {
+				hasTraffic = true
+				break
 			}
 		}
+		online := n.Active && n.State != "error" && n.Interface != "" && n.RelayPath != nil &&
+			(n.RelayPath.Ready || n.RelayPath.DirectReady > 0 || n.RelayPath.RelayReady > 0 || hasTraffic)
+		status := "已断开"
+		statusColor := color.RGBA{R: 105, G: 118, B: 140, A: 255}
+		switch {
+		case !n.Active:
+		case n.State == "error":
+			status = "异常"
+			statusColor = red
+		case online:
+			status = "已连接"
+			statusColor = green
+		case n.Interface != "":
+			status = "等待路径"
+			statusColor = yellow
+		case n.State == "active":
+			status = "启动中"
+			statusColor = yellow
+		}
+		ip := n.IP
+		if ip == "" {
+			ip = "-"
+		}
+		routes := queryTrayRoutes(token, n.NetworkID)
+		out.Networks = append(out.Networks, trayNetwork{
+			NID: n.NetworkID, Name: name, IP: ip, Status: status, Online: online,
+			Owner: n.Owner, JoinedAt: n.JoinedAt, Color: statusColor, Routes: routes,
+		})
+		if n.Active {
+			out.Active++
+		}
+		if online {
+			out.Online++
+		}
+	}
+	sort.SliceStable(out.Networks, func(i, j int) bool {
+		a, b := out.Networks[i], out.Networks[j]
+		if a.Owner != b.Owner {
+			return a.Owner
+		}
+		if a.JoinedAt != b.JoinedAt {
+			if a.JoinedAt == "" {
+				return false
+			}
+			if b.JoinedAt == "" {
+				return true
+			}
+			return a.JoinedAt < b.JoinedAt
+		}
+		return a.Name < b.Name
+	})
+	if len(out.Networks) == 0 {
+		out.Label = "未连接"
+		out.Color = red
 	}
 	return out
 }
 
-func queryOnlineSubnets(token, nid string) []trayRoute {
+func queryTrayRoutes(token, nid string) []trayRoute {
 	req, err := http.NewRequest(http.MethodGet, "http://"+ctlAddr+"/ctl/peers?nid="+url.QueryEscape(nid), nil)
 	if err != nil {
 		return nil
@@ -401,7 +481,7 @@ func queryOnlineSubnets(token, nid string) []trayRoute {
 	out := make([]trayRoute, 0, len(peers.Routes))
 	seen := make(map[string]struct{}, len(peers.Routes))
 	for _, r := range peers.Routes {
-		if r.Status != "active" || r.CIDR == "" {
+		if r.CIDR == "" {
 			continue
 		}
 		if _, ok := seen[r.CIDR]; ok {
@@ -412,10 +492,25 @@ func queryOnlineSubnets(token, nid string) []trayRoute {
 		if r.Enabled != nil {
 			enabled = *r.Enabled
 		}
-		out = append(out, trayRoute{CIDR: r.CIDR, Enabled: enabled})
+		out = append(out, trayRoute{CIDR: r.CIDR, Enabled: enabled, Active: r.Status == "active"})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CIDR < out[j].CIDR })
 	return out
+}
+
+func updateTrayNetworkItems(items []*application.MenuItem, networks []trayNetwork) {
+	for i, item := range items {
+		if i >= len(networks) {
+			item.SetHidden(true)
+			continue
+		}
+		network := networks[i]
+		label := network.Name + " · " + network.IP
+		if network.IP == "-" {
+			label = network.Name
+		}
+		item.SetLabel(label).SetBitmap(dotIcon(network.Color)).SetHidden(false)
+	}
 }
 
 func updateTrayMenu(menu *application.Menu) {
@@ -441,7 +536,7 @@ func rebuildTrayRoutes(root *application.Menu, networks []trayNetwork) {
 		for _, route := range network.Routes {
 			route := route
 			nid := network.NID
-			item := root.AddCheckbox(route.CIDR, route.Enabled)
+			item := root.AddCheckbox(route.CIDR, route.Enabled).SetBitmap(routeStateIcon(route))
 			item.OnClick(func(ctx *application.Context) {
 				checked := ctx.IsChecked()
 				go func() {
@@ -453,34 +548,56 @@ func rebuildTrayRoutes(root *application.Menu, networks []trayNetwork) {
 		}
 	}
 	if total == 0 {
-		root.Add("暂无子网路由").SetEnabled(false)
+		root.Add("暂无子网路由").SetEnabled(false).SetBitmap(subnetIcon())
 	}
 }
 
-func watchTrayStatus(statusItem, ipItem, allowRelayItem *application.MenuItem, routeRoot, menu *application.Menu) {
+func watchTrayStatus(statusItem, allowRelayItem *application.MenuItem, networkItems []*application.MenuItem, routeRoot, menu *application.Menu) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	lastRoutes := "\x00"
+	lastNetworkState := "\x00"
 	for {
 		st := queryTrayStatus()
 		sig := trayRouteSignature(st.Networks)
-		routeChanged := false
+		netSig := trayNetworkSignature(st.Networks)
+		changed := false
 		application.InvokeSync(func() {
 			statusItem.SetLabel(st.Label)
 			statusItem.SetBitmap(dotIcon(st.Color))
-			ipItem.SetLabel("IP: " + st.IP)
+			statusItem.SetHidden(len(st.Networks) > 0)
 			allowRelayItem.SetBitmap(relayCheckIcon(st.AllowRelay))
+			if netSig != lastNetworkState {
+				updateTrayNetworkItems(networkItems, st.Networks)
+				lastNetworkState = netSig
+				changed = true
+			}
 			if sig != lastRoutes {
 				rebuildTrayRoutes(routeRoot, st.Networks)
 				lastRoutes = sig
-				routeChanged = true
+				changed = true
 			}
 		})
-		if routeChanged {
+		if changed {
 			updateTrayMenu(menu)
 		}
 		<-ticker.C
 	}
+}
+
+func trayNetworkSignature(networks []trayNetwork) string {
+	var b strings.Builder
+	for _, n := range networks {
+		b.WriteString(n.NID)
+		b.WriteByte(':')
+		b.WriteString(n.Name)
+		b.WriteByte(':')
+		b.WriteString(n.Status)
+		b.WriteByte(':')
+		b.WriteString(n.IP)
+		b.WriteByte(';')
+	}
+	return b.String()
 }
 
 func trayRouteSignature(networks []trayNetwork) string {
@@ -490,6 +607,11 @@ func trayRouteSignature(networks []trayNetwork) string {
 		b.WriteByte(':')
 		for _, r := range n.Routes {
 			b.WriteString(r.CIDR)
+			if r.Active {
+				b.WriteByte('a')
+			} else {
+				b.WriteByte('i')
+			}
 			if r.Enabled {
 				b.WriteString("+")
 			} else {

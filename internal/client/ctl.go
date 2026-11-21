@@ -133,7 +133,7 @@ type CtlJoinReq struct {
 	Link string `json:"link"`
 }
 
-// ServeCtl exposes the local control API for snetctl and the Tauri UI.
+// ServeCtl exposes the local control API for snetctl and the desktop UI.
 // The listener is bound to 127.0.0.1 only (no network exposure).
 // ctlToken is a shared secret written by the daemon to a 0644 file (readable
 // by the desktop GUI which runs as a different privilege domain than the root
@@ -159,7 +159,7 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 	// The web console is proxied by nginx, which injects the ctl-token. That
 	// token proves the request reached the local daemon, not that the browser
 	// user completed the web login. Requests marked as web-proxied therefore
-	// also need a valid web session; native clients (Tauri/Android/snetctl)
+	// also need a valid web session; native clients (desktop/Android/snetctl)
 	// keep using the ctl-token alone.
 	auth := &authManager{d: d}
 	ctlAuthMux := newCtlAuthHandler(mux, ctlToken, auth)

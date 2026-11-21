@@ -1,28 +1,36 @@
 # 部署环境与路径
 
-## 当前生产拓扑（v1.2.0）
+## 当前生产拓扑（v1.2.1）
 
 业务网络：`ARF38UYW`（`HomeNET`，`10.88.0.0/24`），Relay v2 入口：
 `snet.uizhi.eu.org:8092`。
 
 | 角色 | 位置 | 地址 / 网段 | 版本 | 当前状态 |
 |---|---|---|---|---|
-| 协调服务端 + Relay v2 | VPS `66.187.6.46` | `snet.uizhi.eu.org:8090` / `:8092` | `v1.2.0` | 正常，Relay 会话稳定 |
-| VPS Hub 容器 | VPS `/opt/snet-hub` | `snet-hub` | `v1.2.0` | 容器在线；当前未加入业务网络 |
-| sdserver | Docker 主机 | `10.10.11.11`，`10.10.11.0/24` 网关 | `v1.2.0` | 在线，member，与 SDNAS/MacBook 直连 |
-| SDNAS | 群晖 NAS | `10.7.86.111`，`10.7.86.0/24` 网关 | `v1.2.0` | 在线，`natType=cone`，与 sdserver 直连 |
-| MacBook | 家庭 LAN | `10.88.0.75` | `v1.1.16`，待升级 `v1.2.0` | 在线，owner；尚未升级 |
-| SHIDI-PC | Windows | `10.88.0.77` | `v1.1.16`，待升级 `v1.2.0` | 当前离线 |
-| Android | 移动网络 | `10.88.0.93` | `v1.1.16`，待升级 `v1.2.0` | 当前离线 |
+| 协调服务端 + Relay v2 | VPS `66.187.6.46` | `snet.uizhi.eu.org:8090` / `:8092` | `v1.2.1` | 正常，Relay 会话稳定 |
+| VPS Hub 容器 | VPS `/opt/snet-hub` | `snet-hub` | `v1.2.1` | 容器在线；当前未加入业务网络 |
+| sdserver | Docker 主机 | `10.10.11.11`，`10.10.11.0/24` 网关 | `v1.2.1` | 在线，member，与 SDNAS/MacBook 直连 |
+| SDNAS | 群晖 NAS | `10.7.86.111`，`10.7.86.0/24` 网关 | `v1.2.1` | 在线，`natType=cone`，与 sdserver 直连 |
+| MacBook | 家庭 LAN | `10.88.0.75` | `v1.1.16`，待升级 `v1.2.1` | 在线，owner；尚未升级 |
+| SHIDI-PC | Windows | `10.88.0.77` | `v1.1.16`，待升级 `v1.2.1` | 当前离线 |
+| Android | 移动网络 | `10.88.0.93` | `v1.1.16`，待升级 `v1.2.1` | 当前离线 |
 
 说明：
 
 - 当前在线节点均通过 Relay v2 建链；`sdserver`、`SDNAS`、`MacBook` 之间的 `peerDirect`
   显示 `path=direct`，其余离线节点上线后会按同一策略探测直连。
-- VPS Hub 容器保持 `v1.2.0`，但截至本记录未加入 `ARF38UYW`；业务中继由
+- VPS Hub 容器保持 `v1.2.1`，但截至本记录未加入 `ARF38UYW`；业务中继由
   VPS 上的 `snet-relay` 承担。
 - 群晖 NAS 通过 `10.7.86.0/24` 网关向网络暴露家庭 LAN；sdserver 通过
   `10.10.11.0/24` 暴露其所在 LAN。
+
+## 服务端入口
+
+- 当前 Compose 使用 `cmd/server` 兼容入口：同一进程提供公网 API、`/admin`、probe 和 legacy relay。
+- 新部署可拆分为 `cmd/snetserv`（公网 API `8090`、probe `8091`、loopback Admin RPC `8096`）
+  + `cmd/admin-server`（管理台 `8095`）。拆分后公网 API 不再暴露 `/admin`。
+- Relay v2 始终是独立进程 `cmd/relay`（`8092/udp`，metrics 仅 `127.0.0.1:8094`）。
+- `admin-server` v1.2.1 只管理一个 SnetServ；多服务端联邦管理计划在 v1.3。
 
 ## 标准路径
 

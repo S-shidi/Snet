@@ -1632,16 +1632,49 @@ func (d *Daemon) bringUp(nid string) error {
 		rt.shutdown()
 		delete(d.nets, nid)
 	}
-	if nc.Port == 0 {
-		p, err := d.pickPortLocked()
+	// A persisted port can collide with another network's reserved port or
+	// with a non-Snet process. Re-pick instead of failing every retry on the
+	// same stale port; each network needs its own local WireGuard UDP socket.
+	if nc.Port == 0 || d.portOwnedByOtherLocked(nid, nc.Port) || !portFree(nc.Port) {
+		oldPort := nc.Port
+		p, err := d.pickPortLocked(nid)
 		if err != nil {
 			d.netErrs[nid] = err.Error()
 			d.scheduleRetryLocked(nid)
 			return fmt.Errorf("pick port: %w", err)
 		}
 		nc.Port = p
+		if oldPort != 0 {
+			d.nat.unclaim(oldPort)
+		}
+		if err := d.save(); err != nil {
+			log.Printf("save port %d for %s: %v", p, nid, err)
+		}
 	}
-	t, err := createTunnelForPlatform(d.androidTunFD, d.cfg.PrivateKey, nc.IP, nc.Port, protocol.DefaultMTU, nid)
+	var t *Tunnel
+	var err error
+	for attempt := 0; attempt < 4; attempt++ {
+		t, err = createTunnelForPlatform(d.androidTunFD, d.cfg.PrivateKey, nc.IP, nc.Port, protocol.DefaultMTU, nid)
+		if err == nil {
+			break
+		}
+		if !isPortInUseError(err) {
+			break
+		}
+		// Another process raced us for the port after the preflight check.
+		// Never retry the same port: Windows may report it free to a plain
+		// IPv4 probe while the WireGuard dual-stack bind still fails.
+		oldPort := nc.Port
+		p, pickErr := d.pickPortLocked(nid, oldPort)
+		if pickErr != nil {
+			break
+		}
+		nc.Port = p
+		d.nat.unclaim(oldPort)
+		if saveErr := d.save(); saveErr != nil {
+			log.Printf("save port %d for %s: %v", p, nid, saveErr)
+		}
+	}
 	if err != nil {
 		d.netErrs[nid] = err.Error()
 		d.scheduleRetryLocked(nid)
@@ -1774,7 +1807,11 @@ func (d *Daemon) retryLoop(stop chan struct{}) {
 // server's relay pool (usually DefaultWGPort..DefaultWGPort+64, bound by the
 // relay) fully occupies the first band. Falling through to later bands keeps
 // the client's WireGuard port disjoint from the server's relay ports.
-func (d *Daemon) pickPortLocked() (int, error) {
+func (d *Daemon) pickPortLocked(nid string, exclude ...int) (int, error) {
+	blocked := make(map[int]struct{}, len(exclude))
+	for _, p := range exclude {
+		blocked[p] = struct{}{}
+	}
 	base := d.cfg.WireguardPort
 	if base == 0 {
 		base = protocol.DefaultWGPort
@@ -1784,12 +1821,39 @@ func (d *Daemon) pickPortLocked() (int, error) {
 	for b := 0; b < bands; b++ {
 		start := base + b*band
 		for p := start; p < start+band; p++ {
+			if _, skip := blocked[p]; skip {
+				continue
+			}
+			if d.portOwnedByOtherLocked(nid, p) {
+				continue
+			}
 			if portFree(p) {
 				return p, nil
 			}
 		}
 	}
 	return 0, fmt.Errorf("no free UDP port in range %d-%d", base, base+bands*band-1)
+}
+
+func (d *Daemon) portOwnedByOtherLocked(nid string, port int) bool {
+	if port == 0 {
+		return false
+	}
+	for other, nc := range d.cfg.Networks {
+		if other != nid && nc != nil && nc.Port == port {
+			return true
+		}
+	}
+	return false
+}
+
+func isPortInUseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "address already in use") ||
+		strings.Contains(s, "only one usage of each socket address")
 }
 
 func (d *Daemon) localEndpointForNetworkLocked(nid string, port int) (string, error) {

@@ -2,7 +2,7 @@
 
 > 日期：2026-11-07
 > 范围：`internal/server/store.go` 的 `RelayRouteNodePort` / `deliver` 闭包
-> 依据：`docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md` §3.1、§7 T12、§8.4；`docs/PROJECT-ATLAS.md` §3.2
+> 依据：`NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md` §3.1、§7 T12、§8.4；`../PROJECT-ATLAS.md` §3.2
 > 状态：决策材料；方案 A 已实施（commit `a9b9163`）。
 
 ## 1. 评审原文与解释边界

@@ -230,7 +230,7 @@ openssl rand -hex 32 > /etc/snet/relay.secret
    - 再做真实 NAT/IPv6/多 relay 真机矩阵；不要把单机结果写成真机已验证。
 
 6. **Web/Docker（后续）**
-   - 当前快照缺 Dockerfile/nginx/entrypoint/compose 与 Web 产物；见 `docs/NETWORK-VALIDATION-PLAN.md`。
+   - 当前快照缺 Dockerfile/nginx/entrypoint/compose 与 Web 产物；见 `NETWORK-VALIDATION-PLAN.md`。
    - 在补齐部署文件前，先用 `snetctl` 验证组网。
 
 ## 7. 阻塞与下一步

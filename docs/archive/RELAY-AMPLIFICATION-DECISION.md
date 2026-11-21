@@ -2,7 +2,7 @@
 
 > 日期：2026-11-07
 > 范围：`internal/server/store.go`（`RelayRouteNodePort` / `deliver`）、`internal/server/relay.go`（`SendFanned`）、`internal/client/pathmanager.go`（relay shim）
-> 依据：`docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md` §4.3、§5、§7 T12、§8.4、§9 阶段 1
+> 依据：`NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md` §4.3、§5、§7 T12、§8.4、§9 阶段 1
 > 状态：已实施（2B、2B follow-up、1B+1C 计数、3C、3C legacy follow-up）。本文记录实施后状态。
 
 ## 1. 评审原文立场

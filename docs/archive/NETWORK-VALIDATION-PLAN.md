@@ -100,7 +100,7 @@ snetd-3  ctl :19434, WG :52102, config /tmp/snet-n3
 
 ## 3. 验证矩阵
 
-对照 `docs/NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md` §7 T1-T14。
+对照 `NETWORKING-ARCHITECTURE-REVIEW-2026-10-25.md` §7 T1-T14。
 
 | ID | 场景 | 操作 | 通过标准 | 单机 Docker 可验证？ | 需真机？ |
 |---|---|---|---|---|---|

@@ -412,19 +412,36 @@ function sortedNetworks(): NetInfo[] {
 
 const ICON_CROWN = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m3 7 4.4 3.7L12 4l4.6 6.7L21 7l-2.1 11H5.1L3 7Z"/><path d="M5 20h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
+function networkTabStatus(n: NetInfo): { cls: string; label: string } {
+  if (n.state === "error") {
+    return { cls: "err", label: n.error ? `异常：${n.error}` : "异常" };
+  }
+  if (!n.active) return { cls: "off", label: "已断开" };
+  if (!n.interface) return { cls: "warn", label: "启动中" };
+  const stats = Object.values(n.peerStats ?? {});
+  const hasTraffic = stats.some((s) => (s.RxBytes ?? 0) > 0 || (s.TxBytes ?? 0) > 0);
+  const pathReady = !!n.relayPath?.ready ||
+    (n.relayPath?.directReady ?? 0) > 0 ||
+    (n.relayPath?.relayReady ?? 0) > 0 ||
+    hasTraffic;
+  if (!pathReady) return { cls: "warn", label: "已连接，正在建立路径" };
+  return { cls: "ok", label: "已连接" };
+}
+
 function renderNetworkTabs(nets: NetInfo[]) {
   const tabs = $("#network-tabs");
   if (!tabs) return;
   const pending = status?.pendingJoins ?? [];
   const html = nets.filter((n) => n.serverState !== "gone").map((n) => {
     const active = n.networkId === detailNid ? " active" : "";
-    const dot = n.state === "error" ? "warn" : n.interface ? "ok" : n.active ? "warn" : "off";
+    const state = networkTabStatus(n);
     const owner = n.owner ? " owner" : "";
     const crown = n.owner
       ? `<span class="network-owner-mark" title="我创建的网络" aria-label="我创建的网络">${ICON_CROWN}</span>`
       : "";
-    const title = n.owner ? `我创建的网络 · ${n.name || n.networkId}` : (n.name || n.networkId);
-    return `<button type="button" class="network-tab${owner}${active}" data-nid="${esc(n.networkId)}" title="${esc(title)}"><span class="network-dot ${dot}"></span>${crown}${esc(n.name || n.networkId)}</button>`;
+    const name = n.name || n.networkId;
+    const title = n.owner ? `${state.label} · 我创建的网络 · ${name}` : `${state.label} · ${name}`;
+    return `<button type="button" class="network-tab${owner}${active}" data-nid="${esc(n.networkId)}" title="${esc(title)}"><span class="network-dot ${state.cls}"></span>${crown}${esc(name)}</button>`;
   }).join("") + pending.map((p) => {
     const active = p.pendingId === detailPendingId ? " active" : "";
     return `<button type="button" class="network-tab pending${active}" data-pid="${esc(p.pendingId)}" title="等待批准 · ${esc(p.networkId)}"><span class="network-dot warn"></span>${esc(p.networkId)}</button>`;
@@ -470,13 +487,29 @@ function renderNetworks() {
   const nets = sortedNetworks().filter((n) => n.serverState !== "gone");
   const pending = status?.pendingJoins ?? [];
   const hasContent = !!status && (nets.length > 0 || pending.length > 0);
+  const booting = !status;
   const empty = $("#empty-state");
+  const startup = $("#startup-state");
   const main = $("#app-main");
-  if (empty) empty.hidden = hasContent;
+  if (empty) empty.hidden = hasContent || booting;
+  if (startup) startup.hidden = !booting;
   if (main) main.hidden = !hasContent;
   document.body.classList.toggle("empty-mode", !hasContent);
   const networkTabs = $("#network-tabs");
   if (networkTabs) networkTabs.hidden = !hasContent;
+  if (booting) {
+    const title = $("#startup-title");
+    const text = $("#startup-text");
+    if (title && text) {
+      if (desktopDaemon.error) {
+        title.textContent = "后台服务启动失败";
+        text.textContent = "请点击右上角“重试”，或打开设置导出诊断日志。";
+      } else {
+        title.textContent = "正在启动 Snet";
+        text.textContent = "正在连接后台服务并加载网络，请稍候…";
+      }
+    }
+  }
 
   if (!hasContent) {
     detailNid = null;
@@ -1543,7 +1576,7 @@ function openSettingsModal() {
             </label>
           </div>
           <p class="settings-note ${relayErr ? "err" : allowRelay ? "ok" : ""}" id="s-allow-relay-state">${relayErr ? esc(relayErr) : allowRelay ? "已开启，等待目标节点确认路由" : "已关闭"}</p>`
-            : '<p class="settings-note muted">当前系统不支持作为中继网关；仍可使用网络内其他节点提供的中继路由。</p>'}
+            : '<p class="settings-note settings-note-center muted">当前系统不支持作为中继网关；仍可使用网络内其他节点提供的中继路由。</p>'}
         </div>
       </section>
 
@@ -2989,6 +3022,7 @@ async function pollDesktopDaemon(): Promise<void> {
     const st = await backend.daemonStatus();
     desktopDaemon = { running: !!st.running, starting: !!st.starting, error: st.error || "" };
     renderHeader();
+    if (!status) renderNetworks();
     if (st.running) {
       await refresh();
       return;
@@ -3004,6 +3038,7 @@ async function retryDesktopDaemon(): Promise<void> {
   if (!isWailsWindows()) return;
   desktopDaemon = { running: false, starting: true, error: "" };
   renderHeader();
+  if (!status) renderNetworks();
   try {
     await backend.ensureDaemon();
   } catch {
