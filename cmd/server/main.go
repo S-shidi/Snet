@@ -24,6 +24,7 @@ func main() {
 	probeAddr := flag.String("probe-addr", "[::]:8091", "UDP probe/echo address for public-IP discovery (dual-stack)")
 	dbPath := flag.String("db", "", "bbolt database path (empty = in-memory, not persistent)")
 	publicURL := flag.String("public-url", os.Getenv("SNETSERV_PUBLIC_URL"), "canonical public coordination URL embedded in invites")
+	serverID := flag.String("server-id", os.Getenv("SNETSERV_ID"), "stable federation server identity (auto-generated and persisted when empty)")
 	adminToken := flag.String("admin-token", os.Getenv("SNET_ADMIN_TOKEN"), "admin API token (env SNET_ADMIN_TOKEN)")
 	adminUser := flag.String("admin-user", os.Getenv("SNET_ADMIN_USER"), "admin login username (env SNET_ADMIN_USER)")
 	adminPass := flag.String("admin-pass", os.Getenv("SNET_ADMIN_PASSWORD"), "admin login password (env SNET_ADMIN_PASSWORD)")
@@ -54,7 +55,23 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+
+	resolvedID, err := store.EnsureServerID(*serverID)
+	if err != nil {
+		log.Fatalf("server id: %v", err)
+	}
+	if *dbPath == "" {
+		log.Printf("WARNING: in-memory database; server ID %s is temporary. Federation requires a persistent database.", resolvedID)
+	} else {
+		log.Printf("server id: %s", resolvedID)
+	}
+
 	store.SetSnetServURL(*publicURL)
+	if backfilled, err := store.BackfillNetworkIdentity(); err != nil {
+		log.Fatalf("backfill network identity: %v", err)
+	} else if backfilled > 0 {
+		log.Printf("backfilled snetServId/snetServUrl on %d networks", backfilled)
+	}
 
 	if *adminReset {
 		if *adminUser == "" || *adminPass == "" {
