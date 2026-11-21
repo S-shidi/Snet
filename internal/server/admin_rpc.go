@@ -2,9 +2,13 @@ package server
 
 import (
 	"crypto/subtle"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
+
+	"snet/internal/buildinfo"
+	"snet/internal/protocol"
 )
 
 const internalAdminPrefix = "/internal/admin"
@@ -44,6 +48,24 @@ func NewInternalAdminHandler(s *Store, opts Options, token string) http.Handler 
 		got := r.Header.Get("X-Internal-Admin-Token")
 		if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 			writeErr(w, http.StatusForbidden, errInternalAdminUnauthorized)
+			return
+		}
+		if r.URL.Path == internalAdminPrefix+"/health" {
+			if r.Method != http.MethodGet {
+				writeErr(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+				return
+			}
+			snap := s.HealthSnapshot()
+			writeJSON(w, http.StatusOK, protocol.SnetServHealth{
+				ServerID:    s.ServerID(),
+				SnetServURL: s.SnetServURL(),
+				Version:     buildinfo.Version,
+				APIVersion:  protocol.APIVersion,
+				StartedAt:   snap.StartedAt,
+				Networks:    snap.Networks,
+				Devices:     snap.Devices,
+				Nodes:       snap.Nodes,
+			})
 			return
 		}
 		path := r.URL.Path

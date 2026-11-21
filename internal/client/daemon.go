@@ -903,7 +903,7 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	if err != nil {
 		return resp, err
 	}
-	if err := d.attach(resp.NetworkID, name, resp.NodeID, resp.IP, resp.Token, resp.PairingCode, resp.Subnet, true, serverAddr); err != nil {
+	if err := d.attachWithIdentity(resp.NetworkID, name, resp.NodeID, resp.IP, resp.Token, resp.PairingCode, resp.Subnet, true, serverAddr, resp.SnetServID); err != nil {
 		return resp, err
 	}
 	resp.Link = d.inviteLinkLocked(resp.NetworkID, resp.PairingCode, name)
@@ -962,7 +962,7 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 	if _, ok := d.cfg.Networks[resp.NetworkID]; ok {
 		return resp, fmt.Errorf("本机已加入网络 %s", resp.NetworkID)
 	}
-	if err := d.attach(resp.NetworkID, resp.Name, resp.NodeID, resp.IP, resp.Token, "", resp.Subnet, false, serverAddr); err != nil {
+	if err := d.attachWithIdentity(resp.NetworkID, resp.Name, resp.NodeID, resp.IP, resp.Token, "", resp.Subnet, false, serverAddr, resp.SnetServID); err != nil {
 		return resp, err
 	}
 	d.reconcileOwnership(resp.NetworkID)
@@ -1050,7 +1050,7 @@ func (d *Daemon) pendingLoop(pendingID string, stop chan struct{}) {
 		}
 		switch status.Status {
 		case "approved":
-			err := d.attach(status.NetworkID, pj.Name, status.NodeID, status.IP, status.Token, pj.Code, status.Subnet, false, pj.SnetServURL)
+			err := d.attachWithIdentity(status.NetworkID, pj.Name, status.NodeID, status.IP, status.Token, pj.Code, status.Subnet, false, pj.SnetServURL, status.SnetServID)
 			if err != nil {
 				log.Printf("join approved %s: %v", pendingID, err)
 				d.mu.Unlock()
@@ -1119,6 +1119,13 @@ func (d *Daemon) CancelPending(pendingID string) error {
 
 // attach stores a joined network and brings it up.
 func (d *Daemon) attach(nid, name, nodeID, ip, token, pairingCode, subnet string, owner bool, snetServURL ...string) error {
+	if len(snetServURL) > 0 {
+		return d.attachWithIdentity(nid, name, nodeID, ip, token, pairingCode, subnet, owner, snetServURL[0], "")
+	}
+	return d.attachWithIdentity(nid, name, nodeID, ip, token, pairingCode, subnet, owner, "", "")
+}
+
+func (d *Daemon) attachWithIdentity(nid, name, nodeID, ip, token, pairingCode, subnet string, owner bool, snetServURL, snetServID string) error {
 	if subnet == "" {
 		subnet = defaultSubnet
 	}
@@ -1145,8 +1152,11 @@ func (d *Daemon) attach(nid, name, nodeID, ip, token, pairingCode, subnet string
 		Owner:       owner,
 		JoinedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
-	if len(snetServURL) > 0 && strings.TrimSpace(snetServURL[0]) != "" {
-		nc.SnetServURL = normalizeServer(snetServURL[0])
+	if strings.TrimSpace(snetServURL) != "" {
+		nc.SnetServURL = normalizeServer(snetServURL)
+	}
+	if strings.TrimSpace(snetServID) != "" {
+		nc.SnetServID = strings.TrimSpace(snetServID)
 	}
 	if existing, ok := d.cfg.Networks[nid]; ok && existing.Name != "" && name == "" {
 		nc.Name = existing.Name
@@ -1460,6 +1470,10 @@ func (d *Daemon) SyncNetworks() error {
 					existing.SnetServURL = result.server
 					updated = true
 				}
+				if detail.SnetServID != "" && existing.SnetServID != detail.SnetServID {
+					existing.SnetServID = detail.SnetServID
+					updated = true
+				}
 				if detail.Token != "" && existing.Token != detail.Token {
 					existing.Token = detail.Token
 					updated = true
@@ -1509,6 +1523,7 @@ func (d *Daemon) SyncNetworks() error {
 				Owner:       detail.Owner,
 				JoinedAt:    time.Now().UTC().Format(time.RFC3339),
 				SnetServURL: result.server,
+				SnetServID:  detail.SnetServID,
 			}
 			d.cfg.Networks[nid] = nc
 			if err := api.SetNodeDevice(nid, detail.NodeID, detail.Token, deviceID); err != nil {
@@ -4525,6 +4540,7 @@ func (d *Daemon) Status() (map[string]any, error) {
 			"peerStats":   map[string]PeerStats{},
 			"joinedAt":    nc.JoinedAt,
 			"snetServUrl": d.serverForConfigLocked(nc),
+			"snetServId":  nc.SnetServID,
 		}
 		if rt := d.nets[nid]; rt != nil {
 			if rt.tun != nil {

@@ -186,7 +186,7 @@ archive/                   历史客户端与产物（不参与构建）
 
 ## 5. 数据模型
 
-### 5.1 服务端 bbolt（8 个 bucket）
+### 5.1 服务端 bbolt（9 个 bucket）
 
 | Bucket | Key | 说明 |
 |---|---|---|
@@ -198,6 +198,7 @@ archive/                   历史客户端与产物（不参与构建）
 | `admin` | username | 内置管理台 bcrypt 密码（兼容入口） |
 | `authcodes` | authCodeId | 设备授权码（历史/预留，当前 HTTP 未挂载） |
 | `relaytopo` | `netId/nodeId` | 每节点 relay 端口/主机拓扑 |
+| `meta` | `serverId` | 本实例稳定身份（`srv_<16 hex>`），联邦化管理使用 |
 
 所有读走内存缓存；需要重启保留的写入必须同时更新内存与 bbolt `persist*`。
 
@@ -272,6 +273,9 @@ type Node struct {
 | 内部 RPC | SnetServ `127.0.0.1:8096/internal/admin/*` | `X-Internal-Admin-Token` + 仅 loopback |
 
 `admin-server` 只转发白名单数据端点，登录/初始化/改密不会经内部 RPC 暴露。
+
+内部健康端点：`GET /internal/admin/health`（仅 loopback + `X-Internal-Admin-Token`）
+返回 `serverId`、`snetServUrl`、`version`、`apiVersion`、`startedAt` 与网络/设备/节点计数。
 
 ## 7. 前端与平台
 

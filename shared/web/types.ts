@@ -49,6 +49,8 @@ export type NetInfo = {
   serverState?: string;
   /** Coordination server bound to this network. */
   snetServUrl?: string;
+  /** Stable identity of the coordination server. */
+  snetServId?: string;
   relayPath?: RelayPath;
   hubNodeId?: string;
   useHubNode?: boolean;
@@ -112,6 +114,7 @@ export type NetInfoDetail = {
   tags?: string[];
   visibility?: string;
   snetServUrl?: string;
+  snetServId?: string;
   routes?: RelayRoute[];
   pending?: Array<{ id: string; publicKey: string; deviceId?: string; createdAt?: string; deviceName?: string }>;
   nodes?: Array<{ id: string; ip: string; deviceId?: string; deviceName?: string; online?: boolean; role?: string; publicKey?: string; allowRelay?: boolean; relayError?: string }>;

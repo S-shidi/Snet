@@ -205,6 +205,9 @@ type CreateNetworkResp struct {
 	Subnet           string `json:"subnet,omitempty"`
 	RelayPort        int    `json:"relayPort,omitempty"`
 	ApprovalRequired bool   `json:"approvalRequired,omitempty"`
+	// SnetServID is the stable identity of the coordination server that owns
+	// the network. Clients persist it for federated admin/status views.
+	SnetServID string `json:"snetServId,omitempty"`
 	// Link is populated by the client daemon after the network is created. It
 	// carries the encrypted coordination server reference used by the invite.
 	Link string `json:"link,omitempty"`
@@ -228,6 +231,9 @@ type JoinResp struct {
 	Subnet    string `json:"subnet,omitempty"`
 	RelayPort int    `json:"relayPort,omitempty"`
 	Peers     []Node `json:"peers"`
+	// SnetServID is the stable identity of the coordination server that owns
+	// the network.
+	SnetServID string `json:"snetServId,omitempty"`
 	// Status 为 "pending" 时表示加入需网络创建者批准：不返回 IP/Token，
 	// 客户端应轮询 PendingID 对应的待批准状态。空/“ok” 为正常加入。
 	Status    string `json:"status,omitempty"`
@@ -372,6 +378,9 @@ type PendingStatusResp struct {
 	Subnet    string `json:"subnet,omitempty"`
 	RelayPort int    `json:"relayPort,omitempty"`
 	Peers     []Node `json:"peers,omitempty"`
+	// SnetServID is the stable identity of the coordination server that owns
+	// the network.
+	SnetServID string `json:"snetServId,omitempty"`
 }
 
 // GatewayInfo describes a node that can be used as the public WireGuard
@@ -501,6 +510,7 @@ type AdminCreateNetworkResp struct {
 	PairingCode string `json:"pairingCode"`
 	Subnet      string `json:"subnet,omitempty"`
 	RelayPort   int    `json:"relayPort,omitempty"`
+	SnetServID  string `json:"snetServId,omitempty"`
 }
 
 // AdminPasswordReq changes the admin login password. OldPassword is verified
@@ -521,6 +531,20 @@ type AdminLoginReq struct {
 type AdminLoginResp struct {
 	Token   string `json:"token"`
 	Expires int64  `json:"expires"`
+}
+
+// SnetServHealth is returned by GET /internal/admin/health. A federated admin
+// server uses it to bind a server record to a stable identity and to show
+// version/uptime/counts without a full admin listing.
+type SnetServHealth struct {
+	ServerID    string `json:"serverId"`
+	SnetServURL string `json:"snetServUrl"`
+	Version     string `json:"version"`
+	APIVersion  int    `json:"apiVersion"`
+	StartedAt   int64  `json:"startedAt"`
+	Networks    int    `json:"networks"`
+	Devices     int    `json:"devices"`
+	Nodes       int    `json:"nodes"`
 }
 
 type ErrResp struct {

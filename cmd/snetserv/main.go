@@ -23,6 +23,7 @@ func main() {
 	probeAddr := flag.String("probe-addr", "[::]:8091", "UDP probe/echo address for public-IP discovery (dual-stack)")
 	dbPath := flag.String("db", "", "bbolt database path (empty = in-memory, not persistent)")
 	publicURL := flag.String("public-url", os.Getenv("SNETSERV_PUBLIC_URL"), "canonical public coordination URL embedded in invites")
+	serverID := flag.String("server-id", os.Getenv("SNETSERV_ID"), "stable federation server identity (auto-generated and persisted when empty)")
 	internalAddr := flag.String("internal-addr", "127.0.0.1:8096", "loopback-only internal admin RPC listen address")
 	internalToken := flag.String("internal-token", os.Getenv("SNET_INTERNAL_ADMIN_TOKEN"), "internal admin service token (env SNET_INTERNAL_ADMIN_TOKEN)")
 	zombieTTL := flag.Duration("zombie-ttl", 72*time.Hour, "delete networks idle for this long; 0 disables reaping")
@@ -51,7 +52,23 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+
+	resolvedID, err := store.EnsureServerID(*serverID)
+	if err != nil {
+		log.Fatalf("server id: %v", err)
+	}
+	if *dbPath == "" {
+		log.Printf("WARNING: in-memory database; server ID %s is temporary. Federation requires a persistent database.", resolvedID)
+	} else {
+		log.Printf("server id: %s", resolvedID)
+	}
+
 	store.SetSnetServURL(*publicURL)
+	if backfilled, err := store.BackfillNetworkIdentity(); err != nil {
+		log.Fatalf("backfill network identity: %v", err)
+	} else if backfilled > 0 {
+		log.Printf("backfilled snetServId/snetServUrl on %d networks", backfilled)
+	}
 
 	if err := store.SetHubNode(os.Getenv("SNET_HUB_NODE_ID"), os.Getenv("SNET_HUB_PUBLIC_KEY"), os.Getenv("SNET_HUB_ENDPOINT")); err != nil {
 		log.Fatalf("official hub config: %v", err)

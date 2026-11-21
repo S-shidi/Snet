@@ -135,7 +135,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 6. **鉴权**：`/ctl/*` 用 `ctl-token`；Docker Web 额外要求 Web session（`X-Snet-Web: 1`）；
    `admin-server` session 与内部服务令牌分离；日志经 `sanitizeLog`；绝不把 token、授权码、私钥写进仓库/日志/聊天。
 7. **角色**：只有 `owner` / `member`；legacy `admin` 角色拒绝；owner 转让后旧 owner 降为 member。
-8. **bbolt bucket**：8 个：`networks`、`nodes`、`tokens`、`devices`、`pending`、`admin`、`authcodes`、`relaytopo`。
+8. **bbolt bucket**：9 个：`networks`、`nodes`、`tokens`、`devices`、`pending`、`admin`、`authcodes`、`relaytopo`、`meta`（`meta` 存 `serverId`）。
 9. **Web 构建**：改 `shared/web` 后必须重新构建；不要手改 `deploy/docker/web/` 产物。
 10. **平台文件**：`internal/client` 的平台文件必须成组补齐，否则交叉编译失败。
 11. **Android 单网络**：加入/创建新网络会断开当前网络；桌面端才支持多网络并行。
@@ -221,6 +221,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 
 | 日期 | 变更 | 验证 |
 |---|---|---|
+| 2026-11-21 | Phase 0 联邦化地基：SnetServ 持久化 `serverId`（`meta` bucket）、网络回填 `snetServId`、新增 `/internal/admin/health`、客户端 `/ctl/status` 暴露 `snetServId` | `go build ./...`、`go test ./...`、`tsc --noEmit` |
 | 2026-11-21 | 文档与目录整理：重写 `DESIGN.md` / `PROJECT-ATLAS.md`；新增 `docs/README.md`、`archive/README.md`、`docs/archive/`；归档旧 Tauri 客户端与快照文档；更新发布脚本与 macOS CI 缓存路径 | `go build ./...`、`go test ./...`、`go vet ./...`、`tsc --noEmit` |
 | 2026-11-08 | 四条线闭环收口：relay T12、NAT P0/P1、pathmanager #1-#10、server 鉴权/路由矩阵/probe | `go test ./... -count=1`、`go test -race ./...`、`go vet ./...` |
 | 2026-10-27 | v1.3.0 预备（Relay v2 补齐）与 v1.2.0 发布部署 | `go test ./...`、`go vet ./...`、VPS `/healthz` |

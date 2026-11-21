@@ -110,6 +110,40 @@ func TestNetworkErrorSurfacedInStatus(t *testing.T) {
 	}
 }
 
+// TestStatusIncludesSnetServIdentity verifies /ctl/status surfaces the
+// network's bound SnetServ identity for federated admin views.
+func TestStatusIncludesSnetServIdentity(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	d.mu.Lock()
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"n1": {
+			NodeID:      "n1",
+			IP:          "10.0.0.1",
+			Token:       "t",
+			Subnet:      "10.0.0.0/24",
+			Active:      true,
+			SnetServURL: "https://snet.example:8090",
+			SnetServID:  "srv_0123456789abcdef",
+		},
+	}
+	d.mu.Unlock()
+
+	st, err := d.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nets, _ := st["networks"].([]map[string]any)
+	if len(nets) != 1 {
+		t.Fatalf("networks = %v", nets)
+	}
+	if nets[0]["snetServId"] != "srv_0123456789abcdef" {
+		t.Fatalf("snetServId = %v", nets[0]["snetServId"])
+	}
+	if nets[0]["snetServUrl"] != "https://snet.example:8090" {
+		t.Fatalf("snetServUrl = %v", nets[0]["snetServUrl"])
+	}
+}
+
 // TestRetryScheduling verifies a failed bring-up schedules a background retry
 // that is cancelled when the daemon closes.
 func TestRetryScheduling(t *testing.T) {

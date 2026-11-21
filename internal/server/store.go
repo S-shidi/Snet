@@ -95,6 +95,10 @@ var (
 	// the port a node keeps re-announcing (and that peers cache) does not
 	// drift, and so cross-instance routing knows the serving host.
 	bktRelayTopo = []byte("relaytopo")
+	// bktMeta stores instance identity. serverID is stable across restarts and
+	// identifies this SnetServ to a federated admin server.
+	bktMeta     = []byte("meta")
+	serverIDKey = []byte("serverId")
 )
 
 // relayTopoRecord is the per-node relay topology persisted under
@@ -221,6 +225,7 @@ type networkRecord struct {
 	Routes           []protocol.Route `json:"routes,omitempty"`
 	UseHubNode       bool             `json:"useHubNode,omitempty"`
 	SnetServURL      string           `json:"snetServUrl,omitempty"`
+	SnetServID       string           `json:"snetServId,omitempty"`
 }
 
 // networkShareOpts carries the optional community-sharing metadata for a
@@ -297,6 +302,12 @@ type Store struct {
 	relayHost  string
 	relayBase  int
 	relayCount int
+	// serverID is this instance's stable federation identity, e.g.
+	// "srv_0123456789abcdef". It is persisted in bktMeta and stamped onto
+	// networks so an admin server can route by server without relying on a
+	// mutable public URL.
+	serverID  string
+	startedAt int64
 	// snetServURL is this instance's canonical public coordination URL. It
 	// is stamped onto new networks and used to generate invites without
 	// trusting an admin request's Host header.
@@ -373,6 +384,7 @@ func NewStoreAt(path string) (*Store, error) {
 		netByPort:     make(map[int]*networkState),
 		portToNode:    make(map[int]string),
 		nodeRelayHost: make(map[string]map[string]string),
+		startedAt:     time.Now().Unix(),
 	}
 	if path == "" {
 		return s, nil
@@ -438,6 +450,7 @@ func (s *Store) load() error {
 						Routes:           r.Routes,
 						UseHubNode:       r.UseHubNode,
 						SnetServURL:      r.SnetServURL,
+						SnetServID:       r.SnetServID,
 					},
 					pairing: &pairing{
 						codeHash:    r.CodeHash,
@@ -613,7 +626,7 @@ func hashToken(tok string) string {
 // ---- persistence helpers (no-op when db == nil) ----
 
 func (s *Store) ensureBuckets(tx *bbolt.Tx) error {
-	for _, b := range [][]byte{bktNetworks, bktNodes, bktTokens, bktDevices, bktPending, bktAdmin, bktAuthCodes, bktRelayTopo} {
+	for _, b := range [][]byte{bktNetworks, bktNodes, bktTokens, bktDevices, bktPending, bktAdmin, bktAuthCodes, bktRelayTopo, bktMeta} {
 		if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 			return err
 		}
@@ -648,6 +661,7 @@ func (s *Store) persistNetwork(ns *networkState) error {
 		Routes:           ns.n.Routes,
 		UseHubNode:       ns.n.UseHubNode,
 		SnetServURL:      ns.n.SnetServURL,
+		SnetServID:       ns.n.SnetServID,
 	}
 	b, err := json.Marshal(r)
 	if err != nil {
@@ -1050,6 +1064,141 @@ func (s *Store) SnetServURL() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.snetServURL
+}
+
+// EnsureServerID resolves this instance's stable federation identity. An
+// explicit preferred value wins and is persisted; otherwise a stored ID from
+// the meta bucket is reused, and a fresh srv_<16 hex> ID is generated when no
+// identity exists yet. In-memory stores (db == nil) keep the ID for the life
+// of the process only.
+func (s *Store) EnsureServerID(preferred string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	preferred = strings.TrimSpace(preferred)
+	if preferred != "" {
+		if s.serverID != preferred {
+			s.serverID = preferred
+			if err := s.persistServerIDLocked(); err != nil {
+				return "", err
+			}
+		}
+		return s.serverID, nil
+	}
+	if s.serverID != "" {
+		return s.serverID, nil
+	}
+	if s.db != nil {
+		var stored string
+		if err := s.db.View(func(tx *bbolt.Tx) error {
+			if b := tx.Bucket(bktMeta); b != nil {
+				stored = strings.TrimSpace(string(b.Get(serverIDKey)))
+			}
+			return nil
+		}); err != nil {
+			return "", err
+		}
+		if stored != "" {
+			s.serverID = stored
+			return stored, nil
+		}
+	}
+	id, err := newServerID()
+	if err != nil {
+		return "", err
+	}
+	s.serverID = id
+	if err := s.persistServerIDLocked(); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func newServerID() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return "srv_" + hex.EncodeToString(b[:]), nil
+}
+
+func (s *Store) persistServerIDLocked() error {
+	if s.db == nil || s.serverID == "" {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(bktMeta)
+		if err != nil {
+			return err
+		}
+		return b.Put(serverIDKey, []byte(s.serverID))
+	})
+}
+
+// ServerID returns the instance's federation identity, or "" when it has not
+// been resolved yet.
+func (s *Store) ServerID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.serverID
+}
+
+// BackfillNetworkIdentity stamps the current server ID and public URL onto
+// networks persisted before federation identity existed. It returns the number
+// of networks changed.
+func (s *Store) BackfillNetworkIdentity() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	changed := 0
+	for _, ns := range s.networks {
+		if ns == nil {
+			continue
+		}
+		dirty := false
+		if ns.n.SnetServID == "" && s.serverID != "" {
+			ns.n.SnetServID = s.serverID
+			dirty = true
+		}
+		if ns.n.SnetServURL == "" && s.snetServURL != "" {
+			ns.n.SnetServURL = s.snetServURL
+			dirty = true
+		}
+		if !dirty {
+			continue
+		}
+		if err := s.persistNetwork(ns); err != nil {
+			return changed, err
+		}
+		changed++
+	}
+	return changed, nil
+}
+
+// HealthSnapshot is the cheap aggregate exposed by the internal admin health
+// endpoint. It never touches the database.
+type HealthSnapshot struct {
+	StartedAt int64
+	Networks  int
+	Devices   int
+	Nodes     int
+}
+
+func (s *Store) HealthSnapshot() HealthSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	nodes := 0
+	for _, ns := range s.networks {
+		if ns != nil {
+			nodes += len(ns.nodes)
+		}
+	}
+	return HealthSnapshot{
+		StartedAt: s.startedAt,
+		Networks:  len(s.networks),
+		Devices:   len(s.devices),
+		Nodes:     nodes,
+	}
 }
 
 // NetworkInviteServer returns the server URL embedded in a network invite.
@@ -2442,6 +2591,7 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 			Tags:             tags,
 			Visibility:       visibility,
 			SnetServURL:      s.snetServURL,
+			SnetServID:       s.serverID,
 		},
 		pairing: &pairing{
 			codeHash:  hashCode(code),
@@ -2506,6 +2656,7 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 		Subnet:           sub,
 		RelayPort:        ns.relayPort,
 		ApprovalRequired: ns.n.ApprovalRequired,
+		SnetServID:       ns.n.SnetServID,
 	}, nil
 }
 
@@ -2683,10 +2834,11 @@ func (s *Store) JoinWithOptions(nid, rawCode, publicKey, deviceID string, useHub
 			return protocol.JoinResp{}, err
 		}
 		return protocol.JoinResp{
-			NetworkID: nid,
-			Name:      ns.n.Name,
-			Status:    "pending",
-			PendingID: pendingID,
+			NetworkID:  nid,
+			Name:       ns.n.Name,
+			Status:     "pending",
+			PendingID:  pendingID,
+			SnetServID: ns.n.SnetServID,
 		}, nil
 	}
 
@@ -2740,14 +2892,15 @@ func (s *Store) JoinWithOptions(nid, rawCode, publicKey, deviceID string, useHub
 	}
 
 	return protocol.JoinResp{
-		NetworkID: nid,
-		Name:      ns.n.Name,
-		NodeID:    nodeID,
-		IP:        ip,
-		Token:     tok,
-		Subnet:    ns.n.Subnet,
-		RelayPort: ns.relayPort,
-		Peers:     peers,
+		NetworkID:  nid,
+		Name:       ns.n.Name,
+		NodeID:     nodeID,
+		IP:         ip,
+		Token:      tok,
+		Subnet:     ns.n.Subnet,
+		RelayPort:  ns.relayPort,
+		Peers:      peers,
+		SnetServID: ns.n.SnetServID,
 	}, nil
 }
 
@@ -3735,23 +3888,24 @@ func (s *Store) PendingClaim(pendingID string) (protocol.PendingStatusResp, bool
 				}
 			}
 			resp := protocol.PendingStatusResp{
-				Status:    "approved",
-				NetworkID: ns.n.ID,
-				Name:      ns.n.Name,
-				NodeID:    p.NodeID,
-				IP:        p.IP,
-				Token:     p.Token,
-				Subnet:    p.Subnet,
-				RelayPort: p.RelayPort,
-				Peers:     peers,
+				Status:     "approved",
+				NetworkID:  ns.n.ID,
+				Name:       ns.n.Name,
+				NodeID:     p.NodeID,
+				IP:         p.IP,
+				Token:      p.Token,
+				Subnet:     p.Subnet,
+				RelayPort:  p.RelayPort,
+				Peers:      peers,
+				SnetServID: ns.n.SnetServID,
 			}
 			delete(ns.pending, pendingID)
 			_ = s.deletePending(pendingID)
 			return resp, true, nil
 		case "denied":
-			return protocol.PendingStatusResp{Status: "denied", NetworkID: ns.n.ID, Name: ns.n.Name}, false, nil
+			return protocol.PendingStatusResp{Status: "denied", NetworkID: ns.n.ID, Name: ns.n.Name, SnetServID: ns.n.SnetServID}, false, nil
 		default:
-			return protocol.PendingStatusResp{Status: "pending", NetworkID: ns.n.ID, Name: ns.n.Name}, false, nil
+			return protocol.PendingStatusResp{Status: "pending", NetworkID: ns.n.ID, Name: ns.n.Name, SnetServID: ns.n.SnetServID}, false, nil
 		}
 	}
 	return protocol.PendingStatusResp{Status: "gone"}, false, nil
@@ -3920,15 +4074,16 @@ func (s *Store) pendingStatusLocked(ns *networkState, p *pendingNode) protocol.P
 		}
 	}
 	return protocol.PendingStatusResp{
-		Status:    "approved",
-		NetworkID: ns.n.ID,
-		Name:      ns.n.Name,
-		NodeID:    p.NodeID,
-		IP:        p.IP,
-		Token:     p.Token,
-		Subnet:    p.Subnet,
-		RelayPort: p.RelayPort,
-		Peers:     peers,
+		Status:     "approved",
+		NetworkID:  ns.n.ID,
+		Name:       ns.n.Name,
+		NodeID:     p.NodeID,
+		IP:         p.IP,
+		Token:      p.Token,
+		Subnet:     p.Subnet,
+		RelayPort:  p.RelayPort,
+		Peers:      peers,
+		SnetServID: ns.n.SnetServID,
 	}
 }
 
@@ -4363,6 +4518,7 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, s
 			Tags:             tags,
 			Visibility:       visibility,
 			SnetServURL:      s.snetServURL,
+			SnetServID:       s.serverID,
 		},
 		pairing: &pairing{
 			codeHash:  hashCode(code),
@@ -4397,6 +4553,7 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, s
 		PairingCode: ns.n.PairingCode,
 		Subnet:      sub,
 		RelayPort:   ns.relayPort,
+		SnetServID:  ns.n.SnetServID,
 	}, nil
 }
 
