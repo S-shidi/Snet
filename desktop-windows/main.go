@@ -55,9 +55,9 @@ func main() {
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Snet",
-		Width:            1100,
+		Width:            560,
 		Height:           800,
-		MinWidth:         800,
+		MinWidth:         480,
 		MinHeight:        600,
 		Hidden:           false,
 		URL:              "/",
@@ -135,17 +135,14 @@ func setupSystray(app *application.App, window *application.WebviewWindow, svc *
 	// Windows cannot host the delegated relay gateway safely; keep the
 	// capability hidden instead of letting users toggle a non-functional option.
 	allowRelayItem.SetHidden(true)
-	menu.AddSeparator()
 	routeRoot := menu.AddSubmenu("子网路由")
 	if routeItem := menu.FindByLabel("子网路由"); routeItem != nil {
 		routeItem.SetBitmap(subnetIcon())
 	}
 	routeRoot.Add("正在加载…").SetEnabled(false)
-	menu.AddSeparator()
 	openItem := menu.Add("打开控制面板")
 	openItem.SetBitmap(windowIcon())
 	openItem.OnClick(func(*application.Context) { showWindow(window) })
-	menu.AddSeparator()
 	quitItem := menu.Add("退出 Snet")
 	quitItem.SetBitmap(quitIcon())
 	quitItem.OnClick(func(*application.Context) {
