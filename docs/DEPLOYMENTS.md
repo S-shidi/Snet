@@ -29,7 +29,7 @@
 - Compose 只运行 `cmd/snetserv`（公网 API `8090`、probe `8091`、内部 Admin RPC `8096`）。
 - 管理台是独立的 `cmd/admin-server`（`8095`），通过内部 RPC 访问 SnetServ；公网 API `:8090` 不暴露 `/admin`。
 - Relay v2 是独立进程 `cmd/relay`（`8092/udp`，metrics 仅 `127.0.0.1:8094`）。
-- 管理后台：`https://snet.uizhi.eu.org:8095/admin`；凭据由部署时生成并保存在服务器的 0600 文件中。
+- 管理后台：仅绑定 `127.0.0.1:8095`，通过 SSH 隧道访问 `https://127.0.0.1:8095/admin`；凭据保存在服务器的 0600 文件中。
 - `admin-server` v1.2.1 只管理一个 SnetServ；多服务端联邦管理计划在 v1.3。
 
 ## 标准路径

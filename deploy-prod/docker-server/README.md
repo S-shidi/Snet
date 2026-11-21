@@ -14,7 +14,7 @@
   - 默认路径：`/etc/letsencrypt/live/snet.uizhi.eu.org/fullchain.pem` 和 `privkey.pem`
   - 路径不同则在 `.env` 设置 `TLS_CERT_PATH` / `TLS_KEY_PATH`
 - 公网 DNS：`snet.uizhi.eu.org` 指向 VPS
-- 防火墙：放行 8090/tcp、8091/udp、8092/udp、8095/tcp；不要放行 8094
+- 防火墙：放行 8090/tcp、8091/udp、8092/udp；不要放行 8094 和 8095（8095 仅绑定 127.0.0.1）
 - 8096/tcp 只绑定 `127.0.0.1`，用于本机 curl/排障；跨容器访问走 Compose 网络
 
 `snetserv` 和 `admin-server` 都支持直接 TLS：`-tls-cert` / `-tls-key`。Compose 已传入同一份证书，不需要 nginx/caddy 反代。
@@ -77,7 +77,7 @@ docker compose logs -f relay server
 | 8091 | UDP | 公网 | public-IP probe |
 | 8092 | UDP | 公网 | Relay v2 |
 | 8094 | TCP | **仅容器网络/本机** | relay metrics/healthz，不映射 |
-| 8095 | TCP | 公网 | admin-server 管理台 |
+| 8095 | TCP | **仅 127.0.0.1** | admin-server 管理台（SSH 隧道访问） |
 | 8096 | TCP | **仅 127.0.0.1** | snetserv 内部 Admin RPC |
 
 8094 只用于 Compose healthcheck 和容器内排障；不要发布到公网。
@@ -87,7 +87,7 @@ docker compose logs -f relay server
 ```bash
 curl -fsS https://snet.uizhi.eu.org:8090/healthz
 curl -fsS -o /dev/null -w '%{http_code}\n' https://snet.uizhi.eu.org:8090/admin   # 404
-curl -fsS -o /dev/null -w '%{http_code}\n' https://snet.uizhi.eu.org:8095/admin   # 200
+curl -fsS -o /dev/null -w '%{http_code}\n' https://127.0.0.1:8095/admin   # 200（在 VPS 上或 SSH 隧道内）
 docker compose ps
 docker compose exec relay wget -qO- http://127.0.0.1:8094/healthz
 ```
@@ -96,7 +96,7 @@ docker compose exec relay wget -qO- http://127.0.0.1:8094/healthz
 
 - `/healthz` 返回 `serverVersion` 和 `status:"ok"`；
 - `relay`、`server`、`admin-server` 都是 running/healthy；
-- 公网 `:8090/admin` 返回 404，`:8095/admin` 返回管理台页面；
+- 公网 `:8090/admin` 返回 404；`:8095/admin` 只在 VPS 回环/SSH 隧道内可访问；
 - server 日志包含 Relay v2 ticket 配置；
 - 客户端 `/ctl/status` 能看到 `relayPath`，`/peers` 返回 `RelayV2.Enabled=true` 和 endpoint `snet.uizhi.eu.org:8092`。
 

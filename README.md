@@ -55,10 +55,12 @@ curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install
 
 生产环境建议配置域名和 TLS，并阅读 [服务端部署文档](deploy-prod/docker-server/README.md)。
 
-管理控制台（独立端口，公网 API 不暴露 `/admin`）：
+管理控制台（仅绑定 VPS 回环地址，公网 API 不暴露 `/admin`）：
 
-```text
-http://<VPS_IP>:8095/admin
+```bash
+ssh -L 8095:127.0.0.1:8095 root@<VPS_IP>
+# 然后在本机打开
+https://127.0.0.1:8095/admin
 ```
 
 ### 2. 安装客户端

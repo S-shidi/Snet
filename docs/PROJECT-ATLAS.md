@@ -125,7 +125,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 1. **每网络 SnetServ**：网络请求必须使用该网络的 `SnetServURL`；不要恢复全局服务器假设。
 2. **端口规划**：`8090` HTTPS、`8091` UDP probe、`8092/udp` Relay v2、`8094` metrics、
    `51820-52075` legacy relay、`52100+` 成员 Docker WG、`19432` 本地 ctl、
-   `8095` admin-server、`8096` 内部 Admin RPC。
+   `8095` admin-server（仅 loopback）、`8096` 内部 Admin RPC。
 3. **锁规则**：`Daemon.mu` / `Store.mu` 保护状态；持锁禁止网络 I/O、文件写入、进程 spawn；
    持 `d.mu` 时用 `hostnameLocked()` 而不是 `hostname()`。
 4. **持久化**：新增需要重启保留的字段必须同时更新内存与 bbolt `persist*`。

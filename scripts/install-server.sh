@@ -85,7 +85,7 @@ ENV
 chmod 600 "${DIR}/.env"
 umask 077
 cat > "${DIR}/admin-credentials.txt" <<CREDS
-URL=${SCHEME}://${DOMAIN}:8095/admin
+URL=${SCHEME}://127.0.0.1:8095/admin
 USERNAME=${ADMIN_USER}
 PASSWORD=${ADMIN_PASSWORD}
 CREDS
@@ -163,7 +163,7 @@ $(printf '%s\n' "${TLS_MOUNT}")
       - "http://snet-server:8096"
 $(printf '%s\n' "${TLS_ARGS}")
     ports:
-      - "8095:8095/tcp"
+      - "127.0.0.1:8095:8095/tcp"
 $(printf '%s\n' "${TLS_MOUNT}")
 
 volumes:
@@ -186,7 +186,7 @@ cat <<INFO
 
 SNET ${VERSION} is running.
 
-  Admin console : ${SCHEME}://${DOMAIN}:8095/admin
+  Admin console : ${SCHEME}://127.0.0.1:8095/admin (SSH tunnel: ssh -L 8095:127.0.0.1:8095 root@${DOMAIN})
   Admin login   : ${DIR}/admin-credentials.txt
   Health        : ${SCHEME}://${DOMAIN}:8090/healthz
   Relay         : ${RELAY_ENDPOINT}

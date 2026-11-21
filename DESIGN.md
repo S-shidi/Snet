@@ -311,7 +311,7 @@ type Node struct {
 | UDP probe | `8091/udp` | 公网地址发现 |
 | Relay v2 | `8092/udp` | 无状态转发 |
 | Relay metrics | `8094/tcp` | 默认仅 loopback |
-| Admin UI | `8095/tcp` | `admin-server` |
+| Admin UI | `8095/tcp` | `admin-server`，仅 loopback / SSH 隧道 |
 | 内部 Admin RPC | `8096/tcp` | 仅 loopback/私有 CIDR + 服务令牌 |
 | Legacy relay | `51820-52075/udp` | 每网络懒绑定 |
 | 本地控制 | `19432/tcp` | `/ctl/*`，仅本机 |

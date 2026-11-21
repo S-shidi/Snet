@@ -96,7 +96,7 @@ services:
       - "-tls-key"
       - "${TLS_KEY_PATH:-/etc/letsencrypt/live/snet.uizhi.eu.org/privkey.pem}"
     ports:
-      - "8095:8095/tcp"
+      - "127.0.0.1:8095:8095/tcp"
     volumes:
       - /etc/letsencrypt:/etc/letsencrypt:ro
 
