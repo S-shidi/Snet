@@ -2994,12 +2994,10 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 			}
 		}
 		if now-ns.lastSeenWrite >= int64(lastSeenThrot/time.Second) {
-			// Snapshot the node while s.mu is held; the background
-			// goroutine may run after other writers mutate the live struct.
+			// Persist synchronously so a network delete cannot race a
+			// background write and leave a stale node row behind.
 			nodeCopy := *me
-			go func(networkID string, node *protocol.Node) {
-				_ = s.persistNode(networkID, node)
-			}(te.NetworkID, &nodeCopy)
+			_ = s.persistNode(te.NetworkID, &nodeCopy)
 			ns.lastSeenWrite = now
 		}
 	}
