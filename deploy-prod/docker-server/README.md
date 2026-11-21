@@ -1,10 +1,10 @@
-# SNET 生产 Docker Compose（VPS：snetserv + admin-server + relay）
+# SNET 生产 Docker Compose（VPS：snetserv + relay）
 
-目标：在 VPS 上用 Docker Compose 部署 `snetserv`、独立的 `admin-server` 和 `relay`，启用 Relay v2。
+目标：在 VPS 上用 Docker Compose 部署 `snetserv` 和 `relay`，启用 Relay v2。管理台部署在 SNET 成员主机，见 `deploy-prod/sdserver-admin/`。
 本目录不提交真实 `.env`；`.env` 在 VPS 上生成并保持 0600。
 
-> 服务端只运行 `cmd/snetserv`；管理台是独立的 `cmd/admin-server`，通过内部 RPC
-> 访问数据。公网 API `:8090` 不再暴露 `/admin`。
+> 服务端只运行 `cmd/snetserv`。管理台 `cmd/admin-server` 部署在 SNET 成员主机，
+> 通过 SNET 虚拟网络访问内部 RPC。公网 API `:8090` 不暴露 `/admin`，VPS 不暴露 8095。
 
 ## 1. 前置
 
@@ -14,10 +14,10 @@
   - 默认路径：`/etc/letsencrypt/live/snet.uizhi.eu.org/fullchain.pem` 和 `privkey.pem`
   - 路径不同则在 `.env` 设置 `TLS_CERT_PATH` / `TLS_KEY_PATH`
 - 公网 DNS：`snet.uizhi.eu.org` 指向 VPS
-- 防火墙：放行 8090/tcp、8091/udp、8092/udp；不要放行 8094 和 8095（8095 仅绑定 127.0.0.1）
+- 防火墙：放行 8090/tcp、8091/udp、8092/udp；不要放行 8094。8096 只绑定 SNET 虚拟 IP，并用 iptables 限制来源。
 - 8096/tcp 只绑定 `127.0.0.1`，用于本机 curl/排障；跨容器访问走 Compose 网络
 
-`snetserv` 和 `admin-server` 都支持直接 TLS：`-tls-cert` / `-tls-key`。Compose 已传入同一份证书，不需要 nginx/caddy 反代。
+`snetserv` 支持直接 TLS：`-tls-cert` / `-tls-key`。Compose 已传入证书，不需要 nginx/caddy 反代。
 
 ## 2. 生成 secret 与 .env
 
@@ -39,16 +39,15 @@ SNET_RELAY_SECRET=<32-byte-hex>
 SNET_RELAY_V2_ENDPOINTS=snet.uizhi.eu.org:8092
 SNETSERV_PUBLIC_URL=https://snet.uizhi.eu.org:8090
 SNET_INTERNAL_ADMIN_TOKEN=<32-byte-hex>
-SNET_ADMIN_USER=admin
-SNET_ADMIN_PASSWORD=<strong-password>
+SNET_INTERNAL_BIND_IP=10.88.0.1
 ```
 
-relay 和 snetserv 必须使用**同一个** `SNET_RELAY_SECRET`；snetserv 和 admin-server
-必须使用**同一个** `SNET_INTERNAL_ADMIN_TOKEN`。
+relay 和 snetserv 必须使用**同一个** `SNET_RELAY_SECRET`；管理台主机上的
+`admin-server` 必须使用与 snetserv 相同的 `SNET_INTERNAL_ADMIN_TOKEN`。
 
 ## 3. 构建与启动
 
-Dockerfile 使用 **COPY 预编译二进制**（`dist-deploy/linux-${BIN_ARCH}/{snetserv,admin-server,relay}`），不在 VPS 上运行 Go 构建。默认 `BIN_ARCH=amd64`；`uname -m` 为 `aarch64` 时在 `.env` 设置 `BIN_ARCH=arm64`。
+Dockerfile 使用 **COPY 预编译二进制**（`dist-deploy/linux-${BIN_ARCH}/{snetserv,relay}`），不在 VPS 上运行 Go 构建。`admin-server` 镜像在管理台主机或 CI 单独构建/拉取。默认 `BIN_ARCH=amd64`；`uname -m` 为 `aarch64` 时在 `.env` 设置 `BIN_ARCH=arm64`。
 
 ```bash
 cd deploy-prod/docker-server
@@ -59,8 +58,7 @@ docker compose --env-file .env up -d --build
 
 1. `relay` 先启动并通过 `/healthz` 健康检查；
 2. `server`（snetserv）等 `relay` healthy 后启动；
-3. `admin-server` 等 `server` 启动后连接内部 RPC；
-4. `server` 读取 `SNET_RELAY_V2_ENDPOINTS` + `SNET_RELAY_SECRET`，签发 Relay v2 ticket。
+3. `server` 读取 `SNET_RELAY_V2_ENDPOINTS` + `SNET_RELAY_SECRET`，签发 Relay v2 ticket。
 
 查看状态：
 
@@ -77,8 +75,7 @@ docker compose logs -f relay server
 | 8091 | UDP | 公网 | public-IP probe |
 | 8092 | UDP | 公网 | Relay v2 |
 | 8094 | TCP | **仅容器网络/本机** | relay metrics/healthz，不映射 |
-| 8095 | TCP | **仅 127.0.0.1** | admin-server 管理台（SSH 隧道访问） |
-| 8096 | TCP | **仅 127.0.0.1** | snetserv 内部 Admin RPC |
+| 8096 | TCP | **仅 SNET 虚拟 IP** | snetserv 内部 Admin RPC，iptables 限制 10.88.0.0/16 + loopback |
 
 8094 只用于 Compose healthcheck 和容器内排障；不要发布到公网。
 
@@ -87,7 +84,8 @@ docker compose logs -f relay server
 ```bash
 curl -fsS https://snet.uizhi.eu.org:8090/healthz
 curl -fsS -o /dev/null -w '%{http_code}\n' https://snet.uizhi.eu.org:8090/admin   # 404
-curl -fsS -o /dev/null -w '%{http_code}\n' https://127.0.0.1:8095/admin   # 200（在 VPS 上或 SSH 隧道内）
+# 从 SNET 成员主机调用内部 RPC（需要服务令牌）
+curl -fsS -H "X-Internal-Admin-Token: $SNET_INTERNAL_ADMIN_TOKEN" http://10.88.0.1:8096/internal/admin/health
 docker compose ps
 docker compose exec relay wget -qO- http://127.0.0.1:8094/healthz
 ```
@@ -95,8 +93,8 @@ docker compose exec relay wget -qO- http://127.0.0.1:8094/healthz
 预期：
 
 - `/healthz` 返回 `serverVersion` 和 `status:"ok"`；
-- `relay`、`server`、`admin-server` 都是 running/healthy；
-- 公网 `:8090/admin` 返回 404；`:8095/admin` 只在 VPS 回环/SSH 隧道内可访问；
+- `relay`、`server` 都是 running/healthy；
+- 公网 `:8090/admin` 返回 404；公网 8095/8096 不可达；
 - server 日志包含 Relay v2 ticket 配置；
 - 客户端 `/ctl/status` 能看到 `relayPath`，`/peers` 返回 `RelayV2.Enabled=true` 和 endpoint `snet.uizhi.eu.org:8092`。
 

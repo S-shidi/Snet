@@ -61,12 +61,10 @@ read_env() {
 
 SECRET="${SNET_RELAY_SECRET:-$(read_env SNET_RELAY_SECRET)}"
 INTERNAL_TOKEN="${SNET_INTERNAL_ADMIN_TOKEN:-$(read_env SNET_INTERNAL_ADMIN_TOKEN)}"
-ADMIN_USER="${SNET_ADMIN_USER:-$(read_env SNET_ADMIN_USER)}"
-ADMIN_PASSWORD="${SNET_ADMIN_PASSWORD:-$(read_env SNET_ADMIN_PASSWORD)}"
+INTERNAL_BIND_IP="${SNET_INTERNAL_BIND_IP:-$(read_env SNET_INTERNAL_BIND_IP)}"
 [[ -n "${SECRET}" ]] || SECRET="$(openssl rand -hex 32)"
 [[ -n "${INTERNAL_TOKEN}" ]] || INTERNAL_TOKEN="$(openssl rand -hex 32)"
-[[ -n "${ADMIN_USER}" ]] || ADMIN_USER="admin"
-[[ -n "${ADMIN_PASSWORD}" ]] || ADMIN_PASSWORD="$(openssl rand -hex 16)"
+[[ -n "${INTERNAL_BIND_IP}" ]] || INTERNAL_BIND_IP="127.0.0.1"
 
 mkdir -p "${DIR}"
 chmod 700 "${DIR}"
@@ -76,20 +74,13 @@ SNET_RELAY_SECRET=${SECRET}
 SNET_RELAY_V2_ENDPOINTS=${RELAY_ENDPOINT}
 SNETSERV_PUBLIC_URL=${PUBLIC_URL}
 SNET_INTERNAL_ADMIN_TOKEN=${INTERNAL_TOKEN}
-SNET_ADMIN_USER=${ADMIN_USER}
-SNET_ADMIN_PASSWORD=${ADMIN_PASSWORD}
+SNET_INTERNAL_BIND_IP=${INTERNAL_BIND_IP}
+SNET_INTERNAL_ADMIN_ALLOW_CIDR=10.88.0.0/16
 SNET_HUB_NODE_ID=${SNET_HUB_NODE_ID:-}
 SNET_HUB_PUBLIC_KEY=${SNET_HUB_PUBLIC_KEY:-}
 SNET_HUB_ENDPOINT=${SNET_HUB_ENDPOINT:-}
 ENV
 chmod 600 "${DIR}/.env"
-umask 077
-cat > "${DIR}/admin-credentials.txt" <<CREDS
-URL=${SCHEME}://127.0.0.1:8095/admin
-USERNAME=${ADMIN_USER}
-PASSWORD=${ADMIN_PASSWORD}
-CREDS
-chmod 600 "${DIR}/admin-credentials.txt"
 
 cat > "${DIR}/compose.yaml" <<YAML
 services:
@@ -136,34 +127,14 @@ services:
       - "-internal-token"
       - "\${SNET_INTERNAL_ADMIN_TOKEN}"
       - "-internal-allow-cidr"
-      - "\${SNET_INTERNAL_ADMIN_ALLOW_CIDR:-172.16.0.0/12}"
+      - "\${SNET_INTERNAL_ADMIN_ALLOW_CIDR:-10.88.0.0/16}"
 $(printf '%s\n' "${TLS_ARGS}")
     ports:
       - "8090:8090/tcp"
       - "8091:8091/udp"
-      - "127.0.0.1:8096:8096/tcp"
+      - "\${SNET_INTERNAL_BIND_IP:-127.0.0.1}:8096:8096/tcp"
     volumes:
       - snet-data:/data
-$(printf '%s\n' "${TLS_MOUNT}")
-
-  admin-server:
-    image: ${ACR}/snet-admin-server:${VERSION}
-    container_name: snet-admin-server
-    restart: unless-stopped
-    depends_on:
-      - server
-    environment:
-      SNET_INTERNAL_ADMIN_TOKEN: \${SNET_INTERNAL_ADMIN_TOKEN}
-      SNET_ADMIN_USER: \${SNET_ADMIN_USER}
-      SNET_ADMIN_PASSWORD: \${SNET_ADMIN_PASSWORD}
-    command:
-      - "-addr"
-      - "0.0.0.0:8095"
-      - "-snet-server"
-      - "http://snet-server:8096"
-$(printf '%s\n' "${TLS_ARGS}")
-    ports:
-      - "127.0.0.1:8095:8095/tcp"
 $(printf '%s\n' "${TLS_MOUNT}")
 
 volumes:
@@ -186,15 +157,14 @@ cat <<INFO
 
 SNET ${VERSION} is running.
 
-  Admin console : ${SCHEME}://127.0.0.1:8095/admin (SSH tunnel: ssh -L 8095:127.0.0.1:8095 root@${DOMAIN})
-  Admin login   : ${DIR}/admin-credentials.txt
   Health        : ${SCHEME}://${DOMAIN}:8090/healthz
   Relay         : ${RELAY_ENDPOINT}
-  Internal RPC  : http://127.0.0.1:8096/internal/admin/health (loopback only)
+  Internal RPC  : ${INTERNAL_BIND_IP}:8096/internal/admin/health (service token required)
   Install dir   : ${DIR}
 
 Next:
-  1. Open the admin console and log in with the generated credentials.
+  1. Deploy `admin-server` on a SNET member host:
+     deploy-prod/sdserver-admin/README.md
   2. Deploy a client: https://github.com/S-shidi/Snet#-quick-start
   3. In the client, set the SnetServ address to ${SCHEME}://${DOMAIN}:8090
 

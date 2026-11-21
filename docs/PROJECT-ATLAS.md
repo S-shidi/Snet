@@ -37,14 +37,14 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 - 每个网络绑定一个 SnetServ；客户端按网络路由请求，不假设全局唯一服务器。
 - 数据面端到端由 WireGuard 加密；协调面不接触业务明文。
 - Android 为单网络模式；桌面端支持多网络并行。
-- 平台管理走独立的 `admin-server` + 内部 Admin RPC；公网 API 不暴露 `/admin`。
+- 平台管理走部署在 SNET 成员主机的 `admin-server`，经 SNET 虚拟网络访问内部 Admin RPC；公网 API 不暴露 `/admin`。
 
 ## 2. 组件地图
 
 | 组件 | 入口 | 职责 | 权威文件 |
 |---|---|---|---|
 | SnetServ | `cmd/snetserv` | 公网 API `:8090`、probe `:8091`、Relay v2 票据、可选 legacy relay、内部 Admin RPC `:8096` | `internal/server/` |
-| Admin Server | `cmd/admin-server` | 管理台 `:8095`、登录 session、转发内部 Admin RPC | `internal/adminclient/`、`internal/adminui/` |
+| Admin Server | `cmd/admin-server` | 部署在 SNET 成员主机（sdserver），管理台 `:8095`，经 SNET 转发内部 Admin RPC | `internal/adminclient/`、`internal/adminui/` |
 | Relay v2 | `cmd/relay` | 无状态 UDP session relay `:8092`、metrics `:8094` | `internal/relay/` |
 | 客户端守护进程 | `cmd/client/snetd` | 隧道、peer 轮询、NAT、路径管理、密钥轮换、`/ctl/*` | `internal/client/` |
 | 客户端 CLI | `cmd/client/snetctl` | 调用本地 `/ctl/*` | `cmd/client/snetctl/` |
@@ -58,7 +58,7 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 ## 3. 目录地图
 
 ```text
-cmd/                 Go 入口：snetserv、admin-server、server、relay、snetd、snetctl
+cmd/                 Go 入口：snetserv、admin-server、relay、snetd、snetctl
 internal/            Go 实现：server、relay、client、protocol、adminclient、adminui、buildinfo
 shared/web/          共享 Web UI（桌面、Docker、Android WebView）
 snetbind/            Android gomobile 绑定
@@ -125,7 +125,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 1. **每网络 SnetServ**：网络请求必须使用该网络的 `SnetServURL`；不要恢复全局服务器假设。
 2. **端口规划**：`8090` HTTPS、`8091` UDP probe、`8092/udp` Relay v2、`8094` metrics、
    `51820-52075` legacy relay、`52100+` 成员 Docker WG、`19432` 本地 ctl、
-   `8095` admin-server（仅 loopback）、`8096` 内部 Admin RPC。
+   `8095` admin-server（仅管理员主机内网）、`8096` 内部 Admin RPC（仅 VPS SNET IP）。
 3. **锁规则**：`Daemon.mu` / `Store.mu` 保护状态；持锁禁止网络 I/O、文件写入、进程 spawn；
    持 `d.mu` 时用 `hostnameLocked()` 而不是 `hostname()`。
 4. **持久化**：新增需要重启保留的字段必须同时更新内存与 bbolt `persist*`。
@@ -144,7 +144,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 - 入口：`cmd/snetserv/`、`cmd/admin-server/`、`cmd/relay/`、
   `cmd/client/snetd/`、`cmd/client/snetctl/`。
 - 服务端路由：`internal/server/server.go`（约 34 个 `/api/v1/*` + 27 个 legacy `/admin/*`）。
-- 内部 Admin RPC：`internal/server/admin_rpc.go`（loopback 或私有 CIDR + 服务令牌）。
+- 内部 Admin RPC：`internal/server/admin_rpc.go`（loopback 或 SNET CIDR + 服务令牌）。
 - 客户端 `/ctl`：`internal/client/ctl.go`（约 39 条注册）。
 - 服务端存储：`internal/server/store.go`；legacy relay：`internal/server/relay.go`；
   probe：`internal/server/probe.go`；Hub/WireGuard 导出：`internal/server/hub.go`、`wgconfig.go`。
@@ -163,7 +163,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 | 静态检查 | `go vet ./...` | 无输出即通过 |
 | Web 类型检查 | `cd shared/web && npx --yes -p typescript@5.9.3 tsc --noEmit -p tsconfig.json` | CI 同款 |
 | Web 资产 | `./scripts/build-web.sh` 或 `./desktop-windows/frontend/build-frontend.sh` | 改 `shared/web` 后必须执行 |
-| 发布产物 | `./scripts/build-release.sh` | 输出 `dist/`，含 server/relay/snetd/snetctl/snetserv/admin-server |
+| 发布产物 | `./scripts/build-release.sh` | 输出 `dist/`，含 snetserv/admin-server/relay/snetd/snetctl |
 | 交叉编译 | `GOOS=darwin GOARCH=arm64 go build ./...`；`GOOS=windows GOARCH=amd64 go build ./...` | 验证平台文件齐全 |
 
 ## 8. 记忆维护协议
@@ -220,6 +220,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 
 | 日期 | 变更 | 验证 |
 |---|---|---|
+| 2026-11-21 | 管理台迁移到 sdserver：VPS 只保留 snetserv+relay；8096 只绑定 SNET IP `10.88.0.1`，iptables 仅允许 `10.88.0.0/16`；admin-server 通过 `http://10.88.0.1:8096` 访问 | `curl 10.88.0.1:8096` from sdserver、公网 8096 拒绝、admin 登录/网络列表 |
 | 2026-11-21 | 退役 `cmd/server`：主服务端统一 `cmd/snetserv`，管理台独立 `cmd/admin-server`；Compose 增加 8095/内部 RPC，公网 `:8090/admin` 返回 404 | `go build ./...`、`go test ./...`、VPS 8090/8095/8096 验证 |
 | 2026-11-21 | Phase 0 联邦化地基：SnetServ 持久化 `serverId`（`meta` bucket）、网络回填 `snetServId`、新增 `/internal/admin/health`、客户端 `/ctl/status` 暴露 `snetServId` | `go build ./...`、`go test ./...`、`tsc --noEmit` |
 | 2026-11-21 | 文档与目录整理：重写 `DESIGN.md` / `PROJECT-ATLAS.md`；新增 `docs/README.md`、`archive/README.md`、`docs/archive/`；归档旧 Tauri 客户端与快照文档；更新发布脚本与 macOS CI 缓存路径 | `go build ./...`、`go test ./...`、`go vet ./...`、`tsc --noEmit` |

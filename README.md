@@ -49,18 +49,18 @@ curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install
 
 - 安装到 `/opt/snet`
 - 生成 Relay 密钥
-- 启动 `snetserv` + `admin-server` + `snet-relay`
-- 生成管理后台账号并把凭据写入 `/opt/snet/admin-credentials.txt`
-- 输出管理控制台和健康检查地址
+- 启动 `snetserv` + `snet-relay`
+- 输出健康检查、Relay 和内部 RPC 地址
+- 管理台需在 SNET 成员主机单独部署（见下方）
 
 生产环境建议配置域名和 TLS，并阅读 [服务端部署文档](deploy-prod/docker-server/README.md)。
 
-管理控制台（仅绑定 VPS 回环地址，公网 API 不暴露 `/admin`）：
+管理控制台运行在 SNET 成员主机（例如 sdserver），通过 SNET 虚拟网络访问
+VPS 的内部 RPC；VPS 不暴露 8095/8096 到公网。部署见
+[`deploy-prod/sdserver-admin/README.md`](deploy-prod/sdserver-admin/README.md)。
 
-```bash
-ssh -L 8095:127.0.0.1:8095 root@<VPS_IP>
-# 然后在本机打开
-https://127.0.0.1:8095/admin
+```text
+http://<管理员主机内网IP>:8095/admin
 ```
 
 ### 2. 安装客户端
@@ -180,7 +180,7 @@ flowchart LR
     B["Home NAS<br/>Docker client"]
     C["Remote laptop<br/>Windows / macOS"]
     S["SnetServ<br/>HTTPS :8090 / UDP :8091"]
-    M["Admin Server<br/>:8095"]
+    M["Admin Server<br/>sdserver :8095"]
     R["Relay v2<br/>UDP :8092"]
     H["Official Hub<br/>public endpoint"]
     L["Home LAN<br/>10.7.86.0/24"]
@@ -192,7 +192,7 @@ flowchart LR
     C ---|"control"| S
     B ---|"control"| S
     A ---|"control"| S
-    M -->|"loopback admin RPC"| S
+    M -->|"SNET 10.88.0.1:8096"| S
     H <-->|"WireGuard / relay"| A
     H <-->|"LAN gateway"| L
     H ---|"network member"| S
@@ -202,7 +202,7 @@ flowchart LR
 - **Client ↔ Relay**：直连失败时自动回退，Relay 不读取业务明文。
 - **Client ↔ Hub ↔ LAN**：手机或外部 WireGuard 客户端通过 Hub 接入私有网段。
 - **每个网络绑定一个 SnetServ**：邀请链接携带该网络的协调服务器；不再假设全局唯一服务器。
-- **管理面独立**：`admin-server` 通过 loopback 内部 RPC 管理数据，公网 API 不暴露 `/admin`。
+- **管理面独立**：`admin-server` 部署在 SNET 成员主机，经 SNET 虚拟网络访问内部 RPC；公网 API 不暴露 `/admin`。
 
 ## 🛠 技术栈
 
@@ -210,7 +210,7 @@ flowchart LR
 |---|---|
 | 数据面 | WireGuard（wireguard-go） |
 | 协调面 | Go + HTTPS + bbolt；`cmd/snetserv` |
-| 管理面 | `cmd/admin-server` + admin.html；loopback 内部 RPC |
+| 管理面 | `cmd/admin-server` + admin.html；部署在 SNET 成员主机，经 SNET 访问内部 RPC |
 | 中继 | Relay v2，signed ticket，多实例候选；legacy relay 兼容 |
 | 桌面客户端 | Wails v3（macOS / Windows）+ 共享 Web UI |
 | Docker / NAS | snetd + Nginx + 共享 Web UI |

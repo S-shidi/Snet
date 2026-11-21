@@ -8,8 +8,8 @@
 | 角色 | 位置 | 地址 / 网段 | 版本 | 当前状态 |
 |---|---|---|---|---|
 | 协调服务端 + Relay v2 | VPS `66.187.6.46` | `snet.uizhi.eu.org:8090` / `:8092` | `v1.2.1` | 正常，Relay 会话稳定 |
-| VPS Hub 容器 | VPS `/opt/snet-hub` | `snet-hub` | `v1.2.1` | 容器在线；当前未加入业务网络 |
-| sdserver | Docker 主机 | `10.10.11.11`，`10.10.11.0/24` 网关 | `v1.2.1` | 在线，member，与 SDNAS/MacBook 直连 |
+| VPS Hub 容器 | VPS `/opt/snet-hub` | HomeNET `10.88.0.1` | `v1.2.1` | 容器在线，作为 VPS 的 SNET 入口 |
+| sdserver | Docker 主机 | `10.10.11.11`，HomeNET `10.88.0.44` | `v1.2.1` | 在线，owner；运行 admin-server `10.10.11.11:8095` |
 | SDNAS | 群晖 NAS | `10.7.86.111`，`10.7.86.0/24` 网关 | `v1.2.1` | 在线，`natType=cone`，与 sdserver 直连 |
 | MacBook | 家庭 LAN | `10.88.0.75` | `v1.1.16`，待升级 `v1.2.1` | 在线，owner；尚未升级 |
 | SHIDI-PC | Windows | `10.88.0.77` | `v1.1.16`，待升级 `v1.2.1` | 当前离线 |
@@ -19,17 +19,19 @@
 
 - 当前在线节点均通过 Relay v2 建链；`sdserver`、`SDNAS`、`MacBook` 之间的 `peerDirect`
   显示 `path=direct`，其余离线节点上线后会按同一策略探测直连。
-- VPS Hub 容器保持 `v1.2.1`，但截至本记录未加入 `ARF38UYW`；业务中继由
-  VPS 上的 `snet-relay` 承担。
+- VPS Hub 容器已加入 `ARF38UYW`，地址 `10.88.0.1`，作为 VPS 的 SNET 入口；
+  sdserver 上的 admin-server 通过该地址访问 VPS 内部 RPC。
+- 业务中继仍由 VPS 上的 `snet-relay` 承担。
 - 群晖 NAS 通过 `10.7.86.0/24` 网关向网络暴露家庭 LAN；sdserver 通过
   `10.10.11.0/24` 暴露其所在 LAN。
 
 ## 服务端入口
 
 - Compose 只运行 `cmd/snetserv`（公网 API `8090`、probe `8091`、内部 Admin RPC `8096`）。
-- 管理台是独立的 `cmd/admin-server`（`8095`），通过内部 RPC 访问 SnetServ；公网 API `:8090` 不暴露 `/admin`。
+- 管理台独立部署在 SNET 成员主机 sdserver（`10.10.11.11:8095`），通过 SNET 虚拟网络访问 VPS 的 `10.88.0.1:8096`；公网 API `:8090` 不暴露 `/admin`。
 - Relay v2 是独立进程 `cmd/relay`（`8092/udp`，metrics 仅 `127.0.0.1:8094`）。
-- 管理后台：仅绑定 `127.0.0.1:8095`，通过 SSH 隧道访问 `https://127.0.0.1:8095/admin`；凭据保存在服务器的 0600 文件中。
+- 管理后台：`http://10.10.11.11:8095/admin`（sdserver 内网）；凭据保存在 sdserver 的 `/opt/stacks/snet-admin/admin-credentials.txt`。
+- VPS `8096` 只绑定 SNET 虚拟 IP `10.88.0.1`，公网不可达；iptables 只允许 `10.88.0.0/16` 与 loopback。
 - `admin-server` v1.2.1 只管理一个 SnetServ；多服务端联邦管理计划在 v1.3。
 
 ## 标准路径

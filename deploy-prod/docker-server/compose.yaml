@@ -57,7 +57,7 @@ services:
       - "-internal-token"
       - "${SNET_INTERNAL_ADMIN_TOKEN:?set SNET_INTERNAL_ADMIN_TOKEN in deploy-prod/docker-server/.env}"
       - "-internal-allow-cidr"
-      - "${SNET_INTERNAL_ADMIN_ALLOW_CIDR:-172.16.0.0/12}"
+      - "${SNET_INTERNAL_ADMIN_ALLOW_CIDR:-10.88.0.0/16}"
       - "-tls-cert"
       - "${TLS_CERT_PATH:-/etc/letsencrypt/live/snet.uizhi.eu.org/fullchain.pem}"
       - "-tls-key"
@@ -65,40 +65,12 @@ services:
     ports:
       - "8090:8090/tcp"
       - "8091:8091/udp"
-      # Host-loopback only: used by `curl`/admin tooling on the VPS itself.
-      - "127.0.0.1:8096:8096/tcp"
+      # Bind to 127.0.0.1 by default; set SNET_INTERNAL_BIND_IP=10.88.0.1
+      # when admin-server runs on another SNET member.
+      - "${SNET_INTERNAL_BIND_IP:-127.0.0.1}:8096:8096/tcp"
     volumes:
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - snet-data:/data
-
-  admin-server:
-    build:
-      context: ../..
-      dockerfile: deploy-prod/docker-server/Dockerfile.admin-server
-      args:
-        BIN_ARCH: ${BIN_ARCH:-amd64}
-    image: snet-admin-server:local
-    container_name: snet-admin-server
-    restart: unless-stopped
-    depends_on:
-      - server
-    environment:
-      SNET_INTERNAL_ADMIN_TOKEN: ${SNET_INTERNAL_ADMIN_TOKEN:?set SNET_INTERNAL_ADMIN_TOKEN in deploy-prod/docker-server/.env}
-      SNET_ADMIN_USER: ${SNET_ADMIN_USER:?set SNET_ADMIN_USER in deploy-prod/docker-server/.env}
-      SNET_ADMIN_PASSWORD: ${SNET_ADMIN_PASSWORD:?set SNET_ADMIN_PASSWORD in deploy-prod/docker-server/.env}
-    command:
-      - "-addr"
-      - "0.0.0.0:8095"
-      - "-snet-server"
-      - "http://snet-server:8096"
-      - "-tls-cert"
-      - "${TLS_CERT_PATH:-/etc/letsencrypt/live/snet.uizhi.eu.org/fullchain.pem}"
-      - "-tls-key"
-      - "${TLS_KEY_PATH:-/etc/letsencrypt/live/snet.uizhi.eu.org/privkey.pem}"
-    ports:
-      - "127.0.0.1:8095:8095/tcp"
-    volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
 
 volumes:
   snet-data:

@@ -1,0 +1,14 @@
+services:
+  admin-server:
+    image: crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-admin-server:${SNET_VERSION:-v1.2.1}
+    container_name: snet-admin
+    restart: unless-stopped
+    # Host networking lets the container use the host's SNET tun interface.
+    network_mode: host
+    env_file:
+      - .env
+    command:
+      - "-addr"
+      - "${SNET_ADMIN_BIND:-10.10.11.11:8095}"
+      - "-snet-server"
+      - "${SNETSERV_INTERNAL_URL:-http://10.88.0.1:8096}"
