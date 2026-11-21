@@ -29,6 +29,11 @@ type Options struct {
 	AdminPass  string        // session-login password (requires AdminUser)
 	ZombieTTL  time.Duration // networks idle longer than this are considered zombies (admin view)
 	TrustProxy bool          // read X-Forwarded-For when behind a reverse proxy
+	// InternalAdminAllowCIDRs lets a separate admin-server container reach the
+	// internal Admin RPC over a private network. Loopback is always allowed;
+	// non-loopback peers must match one of these CIDRs and still present the
+	// service token. Empty means loopback-only.
+	InternalAdminAllowCIDRs []string
 
 	// CreatePerHour and JoinPerMinute rate-limit the two expensive endpoints
 	// per client IP. Zero values use generous self-hosted defaults.

@@ -135,6 +135,8 @@ services:
       - "0.0.0.0:8096"
       - "-internal-token"
       - "\${SNET_INTERNAL_ADMIN_TOKEN}"
+      - "-internal-allow-cidr"
+      - "\${SNET_INTERNAL_ADMIN_ALLOW_CIDR:-172.16.0.0/12}"
 $(printf '%s\n' "${TLS_ARGS}")
     ports:
       - "8090:8090/tcp"

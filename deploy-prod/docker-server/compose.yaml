@@ -56,6 +56,8 @@ services:
       - "0.0.0.0:8096"
       - "-internal-token"
       - "${SNET_INTERNAL_ADMIN_TOKEN:?set SNET_INTERNAL_ADMIN_TOKEN in deploy-prod/docker-server/.env}"
+      - "-internal-allow-cidr"
+      - "${SNET_INTERNAL_ADMIN_ALLOW_CIDR:-172.16.0.0/12}"
       - "-tls-cert"
       - "${TLS_CERT_PATH:-/etc/letsencrypt/live/snet.uizhi.eu.org/fullchain.pem}"
       - "-tls-key"

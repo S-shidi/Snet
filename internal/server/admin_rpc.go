@@ -41,7 +41,7 @@ func NewInternalAdminHandler(s *Store, opts Options, token string) http.Handler 
 	opts.AdminToken = token
 	base := NewHandler(s, opts)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !loopbackRemote(r.RemoteAddr) {
+		if !internalAdminRemoteAllowed(r.RemoteAddr, opts.InternalAdminAllowCIDRs) {
 			writeErr(w, http.StatusForbidden, errInternalAdminLoopbackOnly)
 			return
 		}
@@ -89,10 +89,30 @@ func NewInternalAdminHandler(s *Store, opts Options, token string) http.Handler 
 }
 
 func loopbackRemote(remoteAddr string) bool {
+	return internalAdminRemoteAllowed(remoteAddr, nil)
+}
+
+// internalAdminRemoteAllowed accepts loopback unconditionally, plus any peer
+// inside one of the configured private CIDRs. The service token is still
+// required by the caller, so this only widens the transport boundary to a
+// trusted private network (e.g. a Compose network).
+func internalAdminRemoteAllowed(remoteAddr string, allowCIDRs []string) bool {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
 		host = remoteAddr
 	}
 	ip := net.ParseIP(strings.Trim(host, "[]"))
-	return ip != nil && ip.IsLoopback()
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	for _, raw := range allowCIDRs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

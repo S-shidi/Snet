@@ -43,7 +43,7 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 
 | 组件 | 入口 | 职责 | 权威文件 |
 |---|---|---|---|
-| SnetServ | `cmd/snetserv` | 公网 API `:8090`、probe `:8091`、Relay v2 票据、可选 legacy relay、loopback Admin RPC `:8096` | `internal/server/` |
+| SnetServ | `cmd/snetserv` | 公网 API `:8090`、probe `:8091`、Relay v2 票据、可选 legacy relay、内部 Admin RPC `:8096` | `internal/server/` |
 | Admin Server | `cmd/admin-server` | 管理台 `:8095`、登录 session、转发内部 Admin RPC | `internal/adminclient/`、`internal/adminui/` |
 | Relay v2 | `cmd/relay` | 无状态 UDP session relay `:8092`、metrics `:8094` | `internal/relay/` |
 | 客户端守护进程 | `cmd/client/snetd` | 隧道、peer 轮询、NAT、路径管理、密钥轮换、`/ctl/*` | `internal/client/` |
@@ -125,7 +125,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 1. **每网络 SnetServ**：网络请求必须使用该网络的 `SnetServURL`；不要恢复全局服务器假设。
 2. **端口规划**：`8090` HTTPS、`8091` UDP probe、`8092/udp` Relay v2、`8094` metrics、
    `51820-52075` legacy relay、`52100+` 成员 Docker WG、`19432` 本地 ctl、
-   `8095` admin-server、`8096` loopback Admin RPC。
+   `8095` admin-server、`8096` 内部 Admin RPC。
 3. **锁规则**：`Daemon.mu` / `Store.mu` 保护状态；持锁禁止网络 I/O、文件写入、进程 spawn；
    持 `d.mu` 时用 `hostnameLocked()` 而不是 `hostname()`。
 4. **持久化**：新增需要重启保留的字段必须同时更新内存与 bbolt `persist*`。
@@ -144,7 +144,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 - 入口：`cmd/snetserv/`、`cmd/admin-server/`、`cmd/relay/`、
   `cmd/client/snetd/`、`cmd/client/snetctl/`。
 - 服务端路由：`internal/server/server.go`（约 34 个 `/api/v1/*` + 27 个 legacy `/admin/*`）。
-- 内部 Admin RPC：`internal/server/admin_rpc.go`（仅 loopback + 服务令牌）。
+- 内部 Admin RPC：`internal/server/admin_rpc.go`（loopback 或私有 CIDR + 服务令牌）。
 - 客户端 `/ctl`：`internal/client/ctl.go`（约 39 条注册）。
 - 服务端存储：`internal/server/store.go`；legacy relay：`internal/server/relay.go`；
   probe：`internal/server/probe.go`；Hub/WireGuard 导出：`internal/server/hub.go`、`wgconfig.go`。

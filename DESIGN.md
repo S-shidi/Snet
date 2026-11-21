@@ -36,8 +36,8 @@ SNET 是面向个人、家庭和小团队的 WireGuard 虚拟组网工具：
 
 | 组件 | 入口 | 职责 |
 |---|---|---|
-| SnetServ | `cmd/snetserv` | 公网 API `:8090`、UDP probe `:8091`、可选 legacy relay、Relay v2 票据、loopback Admin RPC `:8096` |
-| Admin Server | `cmd/admin-server` | 管理台 `:8095`、登录 session、把请求转发到 loopback Admin RPC |
+| SnetServ | `cmd/snetserv` | 公网 API `:8090`、UDP probe `:8091`、可选 legacy relay、Relay v2 票据、内部 Admin RPC `:8096` |
+| Admin Server | `cmd/admin-server` | 管理台 `:8095`、登录 session、把请求转发到内部 Admin RPC |
 | Relay v2 | `cmd/relay` | 独立 UDP relay `:8092`，metrics 默认 `127.0.0.1:8094` |
 | 客户端守护进程 | `cmd/client/snetd` | WireGuard 隧道、peer 轮询、NAT 探测/映射、路径管理、密钥轮换、`/ctl/*` |
 | 客户端 CLI | `cmd/client/snetctl` | 调用本地 `/ctl/*` |
@@ -76,7 +76,7 @@ flowchart LR
 
 ```text
 cmd/
-  snetserv/                公网协调服务 + loopback Admin RPC
+  snetserv/                公网协调服务 + 内部 Admin RPC
   admin-server/            独立管理台
   server/                  兼容单进程入口（含内置 /admin）
   relay/                   Relay v2
@@ -274,7 +274,7 @@ type Node struct {
 
 `admin-server` 只转发白名单数据端点，登录/初始化/改密不会经内部 RPC 暴露。
 
-内部健康端点：`GET /internal/admin/health`（仅 loopback + `X-Internal-Admin-Token`）
+内部健康端点：`GET /internal/admin/health`（loopback 或私有 CIDR + `X-Internal-Admin-Token`）
 返回 `serverId`、`snetServUrl`、`version`、`apiVersion`、`startedAt` 与网络/设备/节点计数。
 
 ## 7. 前端与平台
@@ -312,7 +312,7 @@ type Node struct {
 | Relay v2 | `8092/udp` | 无状态转发 |
 | Relay metrics | `8094/tcp` | 默认仅 loopback |
 | Admin UI | `8095/tcp` | `admin-server` |
-| 内部 Admin RPC | `8096/tcp` | 仅 loopback + 服务令牌 |
+| 内部 Admin RPC | `8096/tcp` | 仅 loopback/私有 CIDR + 服务令牌 |
 | Legacy relay | `51820-52075/udp` | 每网络懒绑定 |
 | 本地控制 | `19432/tcp` | `/ctl/*`，仅本机 |
 | Docker Web | `8081/tcp` | nginx |

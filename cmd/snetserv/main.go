@@ -26,6 +26,7 @@ func main() {
 	serverID := flag.String("server-id", os.Getenv("SNETSERV_ID"), "stable federation server identity (auto-generated and persisted when empty)")
 	internalAddr := flag.String("internal-addr", "127.0.0.1:8096", "loopback-only internal admin RPC listen address")
 	internalToken := flag.String("internal-token", os.Getenv("SNET_INTERNAL_ADMIN_TOKEN"), "internal admin service token (env SNET_INTERNAL_ADMIN_TOKEN)")
+	internalAllowCIDR := flag.String("internal-allow-cidr", os.Getenv("SNET_INTERNAL_ADMIN_ALLOW_CIDR"), "comma-separated private CIDRs allowed to reach the internal Admin RPC (loopback is always allowed)")
 	zombieTTL := flag.Duration("zombie-ttl", 72*time.Hour, "delete networks idle for this long; 0 disables reaping")
 	trustProxy := flag.Bool("behind-proxy", false, "read client IP from X-Forwarded-For (reverse proxy deployments)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM); enables HTTPS when set with -tls-key")
@@ -143,7 +144,7 @@ func main() {
 	}
 	internalSrv := &http.Server{
 		Addr:              *internalAddr,
-		Handler:           server.NewInternalAdminHandler(store, server.Options{ZombieTTL: *zombieTTL, TrustProxy: *trustProxy}, *internalToken),
+		Handler:           server.NewInternalAdminHandler(store, server.Options{ZombieTTL: *zombieTTL, TrustProxy: *trustProxy, InternalAdminAllowCIDRs: splitCSV(*internalAllowCIDR)}, *internalToken),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

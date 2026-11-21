@@ -232,3 +232,43 @@ func TestInternalAdminHealthRequiresToken(t *testing.T) {
 		t.Fatalf("status = %d, want 403", rr.Code)
 	}
 }
+
+func TestInternalAdminAllowsConfiguredPrivateCIDR(t *testing.T) {
+	s, err := NewStoreAt("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	h := NewInternalAdminHandler(s, Options{
+		InternalAdminAllowCIDRs: []string{"172.16.0.0/12"},
+	}, "service-token")
+	req := httptest.NewRequest(http.MethodGet, "/internal/admin/health", nil)
+	req.RemoteAddr = "172.18.0.5:34567"
+	req.Header.Set("X-Internal-Admin-Token", "service-token")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestInternalAdminRejectsOutsideConfiguredCIDR(t *testing.T) {
+	s, err := NewStoreAt("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	h := NewInternalAdminHandler(s, Options{
+		InternalAdminAllowCIDRs: []string{"172.16.0.0/12"},
+	}, "service-token")
+	req := httptest.NewRequest(http.MethodGet, "/internal/admin/health", nil)
+	req.RemoteAddr = "203.0.113.4:34567"
+	req.Header.Set("X-Internal-Admin-Token", "service-token")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+}
