@@ -44,7 +44,7 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 | 组件 | 入口 | 职责 | 权威文件 |
 |---|---|---|---|
 | SnetServ | `cmd/snetserv` | 公网 API `:8090`、probe `:8091`、Relay v2 票据、可选 legacy relay、loopback Admin RPC `:8096` | `internal/server/` |
-| 兼容服务端 | `cmd/server` | 单进程：公网 API + 内置 `/admin` + legacy relay + probe | `internal/server/` |
+| 兼容服务端 | `cmd/server` | 单进程：公网 API + 内置 `/admin` + legacy relay + probe；同样生成/回填 serverId | `internal/server/` |
 | Admin Server | `cmd/admin-server` | 管理台 `:8095`、登录 session、转发内部 Admin RPC | `internal/adminclient/`、`internal/adminui/` |
 | Relay v2 | `cmd/relay` | 无状态 UDP session relay `:8092`、metrics `:8094` | `internal/relay/` |
 | 客户端守护进程 | `cmd/client/snetd` | 隧道、peer 轮询、NAT、路径管理、密钥轮换、`/ctl/*` | `internal/client/` |
