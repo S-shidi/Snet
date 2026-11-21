@@ -18,29 +18,26 @@ let status: DaemonStatus | null = null;
 
 /* ── Settings (localStorage) ──────────────────────────────────── */
 const SETTINGS_KEY = "snet.settings";
-const DEFAULT_SETTINGS = { server: DEFAULT_SERVER, wgport: 51820 };
+const DEFAULT_SETTINGS = { wgport: 51820 };
 type Settings = typeof DEFAULT_SETTINGS;
 
 function loadSettings(): Settings {
-  let s: Settings;
+  let wgport = DEFAULT_SETTINGS.wgport;
   try {
-    s = { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") };
+    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    const parsed = Number(raw?.wgport);
+    if (Number.isFinite(parsed) && parsed > 0) wgport = parsed;
   } catch {
-    s = { ...DEFAULT_SETTINGS };
+    wgport = DEFAULT_SETTINGS.wgport;
   }
+  const s = { wgport };
+  // Drop stale settings from older builds, including the removed global server.
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* storage unavailable */ }
   return s;
-}
-function saveSettings(s: Settings) {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
 }
 function isOfficialServer(addr: string): boolean {
   const v = String(addr || "").trim().replace(/\/+$/, "");
   return !v || v === DEFAULT_SERVER.replace(/\/+$/, "");
-}
-
-function currentServer(): string {
-  const configured = String(status?.serverAddr || loadSettings().server || "").trim();
-  return isOfficialServer(configured) ? "" : configured;
 }
 
 /* ── Refresh ──────────────────────────────────────────────────── */
@@ -1274,14 +1271,13 @@ async function showMembers(nid: string) {
 function openCreateModal() {
   const s = loadSettings();
   const hasOwner = (status?.networks ?? []).some((n) => n.owner && n.serverState !== "gone");
-  const srv = currentServer();
   const hint = hasOwner
     ? `<div class="form-warning">你已创建网络，不支持再创建。请先删除当前网络。</div>`
     : "";
   const serverHint = `<div class="form-field">
     <label for="m-server">协调服务地址</label>
-    <input id="m-server" class="form-control" type="url" placeholder="${srv ? esc(srv) : "留空使用官方 SnetServ"}" autocomplete="off" />
-    <p class="hint">可选。留空使用当前默认 SnetServ；填写后该网络固定绑定到该地址。</p>
+    <input id="m-server" class="form-control" type="url" placeholder="留空使用官方 SnetServ" autocomplete="off" />
+    <p class="hint">可选。留空使用官方 SnetServ；填写后该网络固定绑定到该地址。</p>
   </div>`;
   openModal({
     title: "创建网络",
@@ -1313,7 +1309,7 @@ function openCreateModal() {
           const chk = subnetWidget.check();
           if (!chk.ok) throw new Error(`网段无效：${chk.error}`);
           const subnet = chk.value;
-          const server = (body.querySelector("#m-server") as HTMLInputElement)?.value.trim() || currentServer();
+          const server = (body.querySelector("#m-server") as HTMLInputElement)?.value.trim() || "";
           if (!name) throw new Error("请输入网络名称");
           if (!(await confirmAndroidSingleNetwork("创建新网络"))) {
             submit.disabled = false;
@@ -1360,16 +1356,6 @@ function openCreateModal() {
 }
 
 /* ── Join modal ───────────────────────────────────────────────── */
-function linkServerOf(link: string): string | undefined {
-  try {
-    const u = new URL(link);
-    if (u.protocol === "snet:" || u.protocol === "http:" || u.protocol === "https:") {
-      return u.searchParams.get("server") || undefined;
-    }
-  } catch { /* not a URL */ }
-  return undefined;
-}
-
 function openJoinModal() {
   const s = loadSettings();
   openModal({
@@ -1450,13 +1436,12 @@ function openJoinModal() {
           if (inviteNID && (status?.pendingJoins ?? []).some((p) => p.networkId === inviteNID && p.status !== "denied")) {
             throw new Error("已向该网络发起申请，请勿重复请求！");
           }
-          const server = linkServerOf(link) || currentServer();
           if (!(await confirmAndroidSingleNetwork("加入新网络"))) {
             submit.disabled = false;
             submit.innerHTML = "加入";
             return;
           }
-          const r: JoinResp = await backend.join({ server, port: s.wgport, link });
+          const r: JoinResp = await backend.join({ port: s.wgport, link });
           result.className = "msg ok";
           if (r.status === "pending") {
             result.innerHTML = `<p>已提交加入请求，等待网络创建者批准。</p><p class="hint">批准后本机会自动加入并连接；也可在上方「待批准 · 加入请求」卡片中取消。</p>`;
@@ -1491,9 +1476,6 @@ function natViaLabel(via: string): string {
 }
 
 function openSettingsModal() {
-  const s = loadSettings();
-  const server = (status?.serverAddr || s.server || "").trim();
-  const isOfficial = !server || server.replace(/\/+$/, "") === DEFAULT_SERVER.replace(/\/+$/, "");
   const nat = status?.natMapping;
   const natEnabled = nat?.enabled !== false;
   const natLines = (nat?.mappings ?? []).map(m =>
@@ -1529,26 +1511,8 @@ function openSettingsModal() {
       </section>
 
       <section class="settings-group">
-        <div class="settings-group-head"><h3>连接</h3><span>协调服务与网络发现</span></div>
+        <div class="settings-group-head"><h3>连接</h3><span>网络发现与端口映射</span></div>
         <div class="settings-card">
-          <div class="settings-row">
-            <div class="settings-row-main">
-              <div class="settings-row-title">协调服务</div>
-              <div class="settings-row-desc" id="s-server-label">${isOfficial ? "官方 (SnetServ)" : esc(server)}</div>
-            </div>
-            <div class="settings-row-actions" id="s-server-view">
-              <button type="button" id="s-server-edit" class="btn icon sm" title="修改协调服务" aria-label="修改协调服务">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-              </button>
-              ${isOfficial ? "" : '<button type="button" id="s-server-reset" class="btn ghost sm">恢复默认</button>'}
-            </div>
-          </div>
-          <div id="s-server-editor" class="settings-editor" hidden>
-            <input id="s-server" type="url" value="${isOfficial ? "" : esc(server)}" placeholder="https://my-vps:8090" autocomplete="off" />
-            <p class="hint">留空则使用官方 SnetServ，或填入自托管地址。</p>
-            <div class="settings-actions"><button id="s-server-save" class="btn">保存</button><button id="s-server-cancel" class="btn ghost">取消</button></div>
-            <p class="msg" id="s-server-result"></p>
-          </div>
           <div class="settings-row">
             <div class="settings-row-main">
               <div class="settings-row-title">自动端口映射</div>
@@ -1653,53 +1617,6 @@ function openSettingsModal() {
             updateState.textContent = "无法检查更新，请在 GitHub 查看最新版本";
           });
       }
-      const serverView = body.querySelector<HTMLElement>("#s-server-view")!;
-      const serverEditor = body.querySelector<HTMLElement>("#s-server-editor")!;
-      const serverInput = body.querySelector<HTMLInputElement>("#s-server")!;
-      const serverResult = body.querySelector<HTMLElement>("#s-server-result")!;
-      const serverBtn = body.querySelector<HTMLButtonElement>("#s-server-save")!;
-      const serverEdit = body.querySelector<HTMLButtonElement>("#s-server-edit");
-      const serverCancel = body.querySelector<HTMLButtonElement>("#s-server-cancel");
-      const serverReset = body.querySelector<HTMLButtonElement>("#s-server-reset");
-      const showEditor = () => {
-        serverView.hidden = true;
-        serverEditor.hidden = false;
-        serverResult.textContent = "";
-        serverInput.focus();
-      };
-      serverEdit?.addEventListener("click", showEditor);
-      serverCancel?.addEventListener("click", () => {
-        serverEditor.hidden = true;
-        serverView.hidden = false;
-        serverResult.textContent = "";
-      });
-
-      const saveServer = async (value: string) => {
-        serverBtn.disabled = true;
-        serverResult.className = "msg";
-        serverResult.textContent = "正在校验并保存…";
-        try {
-          if (value) {
-            await backend.checkServer(value);
-          }
-          await backend.setServer(value);
-          saveSettings({ ...loadSettings(), server: value || DEFAULT_SERVER });
-          serverResult.className = "msg ok";
-          serverResult.textContent = "已保存，正在使用新的 SnetServ";
-          toast("SnetServ 已更新");
-          await refresh();
-          closeModal();
-        } catch (e) {
-          serverResult.className = "msg";
-          serverResult.textContent = "无法连接该服务端，请检查地址";
-          toast("无法连接该服务端，请检查地址", "err");
-        } finally {
-          serverBtn.disabled = false;
-        }
-      };
-
-      serverBtn.addEventListener("click", () => saveServer(serverInput.value.trim()));
-      serverReset?.addEventListener("click", () => saveServer(""));
       body.querySelector("#s-copy-device")?.addEventListener("click", async (e) => {
         await copyText(status?.deviceId || "", e.currentTarget as HTMLButtonElement);
       });
@@ -3057,8 +2974,7 @@ function renderStatus() {
     svcNat.textContent = types.length ? types.join(" / ") : "未知";
   }
   if (statusJson) {
-    const display = { ...status, serverAddr: isOfficialServer(status.serverAddr || "") ? "SnetServ" : status.serverAddr };
-    statusJson.textContent = JSON.stringify(display, null, 2);
+    statusJson.textContent = JSON.stringify(status, null, 2);
   }
 }
 

@@ -118,18 +118,10 @@ const backend: Backend = {
     return { ...r, link: r.link || "" };
   },
 
-  async join(params: { server: string; port: number; link: string }): Promise<JoinResp> {
+  async join(params: { port: number; link: string }): Promise<JoinResp> {
     return api("/join", jsonPost("/join", {
       link: params.link, port: params.port,
     }));
-  },
-
-  async checkServer(serverAddr: string): Promise<void> {
-    await api("/check-server", jsonPost("/check-server", { serverAddr }));
-  },
-
-  async setServer(serverAddr: string): Promise<void> {
-    await api("/config", jsonPost("/config", { serverAddr }));
   },
 
   async rejoin(nid: string): Promise<void> { await api("/rejoin", jsonPost("/rejoin", { nid })); },

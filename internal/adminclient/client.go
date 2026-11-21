@@ -228,6 +228,9 @@ func (c *Client) AdminAddExternalNode(ctx context.Context, nid, publicKey string
 	return out, err
 }
 
+// AdminInviteLink asks snetserv for the canonical invite link. The link is
+// built server-side from the network's SnetServ binding, never from the
+// admin-server request host.
 func (c *Client) AdminInviteLink(ctx context.Context, nid string) (string, error) {
 	var out struct {
 		Link string `json:"link"`

@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"testing"
+
+	"snet/internal/constants"
 )
 
 func TestAPIManagerCachesByNormalizedServer(t *testing.T) {
@@ -29,7 +31,6 @@ func TestAPIManagerCachesByNormalizedServer(t *testing.T) {
 
 func TestDaemonAPIClientUsesAPIManager(t *testing.T) {
 	cfg := &Config{
-		ServerAddr: "https://legacy.example:8090/",
 		Networks: map[string]*NetworkCfg{
 			"NET1": {NodeID: "node-1", Token: "tok", Active: true},
 		},
@@ -54,7 +55,6 @@ func TestDaemonAPIClientUsesAPIManager(t *testing.T) {
 
 func TestAPIManagerWithMixedMigratedNetworkConfigs(t *testing.T) {
 	cfg := &Config{
-		ServerAddr: "https://legacy.example:8090",
 		Networks: map[string]*NetworkCfg{
 			"NEW": {NodeID: "node-new", Token: "tok-new", Active: true, SnetServURL: "https://new.example:8090"},
 			"OLD": {NodeID: "node-old", Token: "tok-old", Active: true},
@@ -64,7 +64,7 @@ func TestAPIManagerWithMixedMigratedNetworkConfigs(t *testing.T) {
 	if cfg.Networks["NEW"].SnetServURL != "https://new.example:8090" {
 		t.Fatalf("explicit network server changed: %q", cfg.Networks["NEW"].SnetServURL)
 	}
-	if cfg.Networks["OLD"].SnetServURL != "https://legacy.example:8090" {
+	if cfg.Networks["OLD"].SnetServURL != constants.DefaultServer {
 		t.Fatalf("legacy network server = %q", cfg.Networks["OLD"].SnetServURL)
 	}
 	m := NewAPIManager(context.Background())

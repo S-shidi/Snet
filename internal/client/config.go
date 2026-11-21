@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"snet/internal/constants"
 	"snet/internal/protocol"
@@ -25,7 +24,7 @@ type PendingJoin struct {
 	Status    string `json:"status,omitempty"` // pending | denied
 	Err       string `json:"err,omitempty"`
 	// SnetServURL is the coordination server this pending join belongs to.
-	// Empty on legacy records; migrated to the legacy/default server.
+	// Empty on legacy records; migrated to the official default.
 	SnetServURL string `json:"snetServUrl,omitempty"`
 }
 
@@ -47,7 +46,7 @@ type NetworkCfg struct {
 	PublicIP string `json:"publicIP,omitempty"`
 	JoinedAt string `json:"joinedAt,omitempty"`
 	// SnetServURL is the coordination server this network is bound to.
-	// Empty on legacy records; migrated to the legacy/default server.
+	// Empty on legacy records; migrated to the official default.
 	SnetServURL string `json:"snetServUrl,omitempty"`
 	// SnetServID is the stable identity of that coordination server.
 	SnetServID string `json:"snetServId,omitempty"`
@@ -70,19 +69,12 @@ type WireGuardExport struct {
 }
 
 type Config struct {
-	// SchemaVersion is the persisted client config schema version. Version 1
-	// adds per-network SnetServ binding fields while retaining legacy fields.
-	SchemaVersion int `json:"schemaVersion,omitempty"`
-	// ServerAddr is retained as the legacy/default coordination server. New
-	// code uses each network's SnetServURL when one is available.
-	ServerAddr string `json:"serverAddr"`
-	// DefaultSnetServURL is the default server for newly created networks and
-	// for legacy records that have no per-network binding.
-	DefaultSnetServURL string `json:"defaultSnetServUrl,omitempty"`
-	WireguardPort      int    `json:"wireguardPort"`
-	PrivateKey         string `json:"privateKey"`
-	DeviceID           string `json:"deviceId,omitempty"`
-	DeviceName         string `json:"deviceName,omitempty"`
+	// SchemaVersion is the persisted client config schema version.
+	SchemaVersion int    `json:"schemaVersion,omitempty"`
+	WireguardPort int    `json:"wireguardPort"`
+	PrivateKey    string `json:"privateKey"`
+	DeviceID      string `json:"deviceId,omitempty"`
+	DeviceName    string `json:"deviceName,omitempty"`
 	// RecoveryToken is the legacy single-server recovery token. It is kept
 	// for compatibility; RecoveryTokens holds one token per SnetServ.
 	RecoveryToken string `json:"recoveryToken,omitempty"`
@@ -181,8 +173,8 @@ func ConfigPath() (string, error) {
 	return filepath.Join(dir, "config.json"), nil
 }
 
-// migrateConfig fills the stage-0 compatibility fields without changing any
-// existing routing behavior. It is idempotent and safe to run on every load.
+// migrateConfig fills per-record compatibility fields without reading or
+// preserving any legacy global default server. It is idempotent.
 func migrateConfig(c *Config) {
 	if c == nil {
 		return
@@ -190,28 +182,18 @@ func migrateConfig(c *Config) {
 	if c.SchemaVersion == 0 {
 		c.SchemaVersion = 1
 	}
-	serverURL := normalizeServer(strings.TrimSpace(c.ServerAddr))
-	if serverURL == "" {
-		serverURL = normalizeServer(strings.TrimSpace(c.DefaultSnetServURL))
-	}
-	if serverURL == "" {
-		serverURL = constants.DefaultServer
-	}
-	if c.DefaultSnetServURL == "" && strings.TrimSpace(c.ServerAddr) != "" {
-		c.DefaultSnetServURL = serverURL
-	}
 	for _, nc := range c.Networks {
 		if nc != nil && nc.SnetServURL == "" {
-			nc.SnetServURL = serverURL
+			nc.SnetServURL = constants.DefaultServer
 		}
 	}
 	for _, pj := range c.PendingJoins {
 		if pj != nil && pj.SnetServURL == "" {
-			pj.SnetServURL = serverURL
+			pj.SnetServURL = constants.DefaultServer
 		}
 	}
 	if c.RecoveryToken != "" && len(c.RecoveryTokens) == 0 {
-		c.RecoveryTokens = map[string]string{serverURL: c.RecoveryToken}
+		c.RecoveryTokens = map[string]string{constants.DefaultServer: c.RecoveryToken}
 	}
 }
 
@@ -231,7 +213,28 @@ func LoadConfigAt(path string) (*Config, error) {
 		}
 		return nil, err
 	}
-	return parseConfig(data)
+	cfg, err := parseConfig(data)
+	if err != nil {
+		return nil, err
+	}
+	if hasLegacyGlobalServerFields(data) {
+		// Ignore and remove the old global server fields on load; they must
+		// never participate in routing again.
+		_ = cfg.SaveAt(path)
+	}
+	return cfg, nil
+}
+
+func hasLegacyGlobalServerFields(data []byte) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	if _, ok := raw["serverAddr"]; ok {
+		return true
+	}
+	_, ok := raw["defaultSnetServUrl"]
+	return ok
 }
 
 func parseConfig(data []byte) (*Config, error) {

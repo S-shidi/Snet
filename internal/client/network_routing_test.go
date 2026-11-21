@@ -150,7 +150,6 @@ func TestNetworksRoutePeersAndPingsToBoundServer(t *testing.T) {
 func TestInviteUsesBoundNetworkServer(t *testing.T) {
 	d, _ := newTestDaemon(t)
 	d.mu.Lock()
-	d.cfg.ServerAddr = "https://global.example:8090"
 	d.cfg.Networks = map[string]*NetworkCfg{
 		"NET-A": {SnetServURL: "https://a.example:8090", NodeID: "a", Token: "ta", Active: true},
 		"NET-B": {SnetServURL: "https://b.example:8090", NodeID: "b", Token: "tb", Active: true},

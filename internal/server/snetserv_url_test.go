@@ -1,10 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"snet/internal/constants"
 	"snet/internal/protocol"
 )
 
@@ -58,5 +60,38 @@ func TestNetworkInviteUsesStoredSnetServURL(t *testing.T) {
 	}
 	if serverURL != "https://coordinator.example:8090" {
 		t.Fatalf("rotated invite server = %q", serverURL)
+	}
+}
+
+func TestAdminInviteIgnoresRequestHostAndFallsBackOfficial(t *testing.T) {
+	store := NewStore()
+	created, err := store.CreateNetwork(testKey(71), "device-invite-host", "invite-host", "10.97.1.0/24", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.NetworkInviteServer(created.NetworkID); got != constants.DefaultServer {
+		t.Fatalf("legacy invite server = %q, want %q", got, constants.DefaultServer)
+	}
+	h := NewHandler(store, Options{AdminToken: "admin-token"})
+	req := httptest.NewRequest(http.MethodGet, "/admin/networks/"+created.NetworkID+"/invite-link", nil)
+	req.Host = "admin.internal:8095"
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin invite = %d: %s", rec.Code, rec.Body.String())
+	}
+	var invite struct {
+		Link string `json:"link"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &invite); err != nil {
+		t.Fatal(err)
+	}
+	_, _, serverURL, _, err := protocol.ParseInviteLink(invite.Link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serverURL != constants.DefaultServer {
+		t.Fatalf("admin invite server = %q, want official default", serverURL)
 	}
 }

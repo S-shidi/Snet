@@ -83,8 +83,6 @@ export type RelayRoute = {
 export type DaemonStatus = {
   deviceId?: string;
   deviceName?: string;
-  /** @deprecated legacy global default for old UI; use networks[].snetServUrl. */
-  serverAddr?: string;
   wgPort?: number;
   rxSpeed?: number;
   txSpeed?: number;
@@ -142,11 +140,7 @@ export interface Backend {
   /** Create a network */
   create(params: { server: string; port: number; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp>;
   /** Join a network */
-  join(params: { server: string; port: number; link: string }): Promise<JoinResp>;
-  /** Validate the target SnetServ before saving */
-  checkServer(serverAddr: string): Promise<void>;
-  /** Save the SnetServ address and reconnect */
-  setServer(serverAddr: string): Promise<void>;
+  join(params: { port: number; link: string }): Promise<JoinResp>;
   /** Rejoin (connect) a network */
   rejoin(nid: string): Promise<void>;
   /** Leave (disconnect) a network */

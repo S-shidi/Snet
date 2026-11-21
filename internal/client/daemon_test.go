@@ -54,7 +54,10 @@ func TestConfigMigrationFromV1(t *testing.T) {
 	if nc.Subnet != defaultSubnet || !nc.Active || nc.Port != 51820 {
 		t.Fatalf("migrated defaults wrong: %+v", nc)
 	}
-	if cfg.PrivateKey != "aa" || cfg.ServerAddr != "https://snet.test" {
+	if nc.SnetServURL != constants.DefaultServer {
+		t.Fatalf("legacy network server = %q, want %q", nc.SnetServURL, constants.DefaultServer)
+	}
+	if cfg.PrivateKey != "aa" {
 		t.Fatalf("top-level fields lost: %+v", cfg)
 	}
 }
@@ -74,6 +77,9 @@ func TestNetworkErrorSurfacedInStatus(t *testing.T) {
 	st, err := d.Status()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, ok := st["serverAddr"]; ok {
+		t.Fatal("status must not expose a global serverAddr")
 	}
 	nets, _ := st["networks"].([]map[string]any)
 	if len(nets) != 1 {
@@ -137,7 +143,6 @@ func TestRetryScheduling(t *testing.T) {
 func TestConfigRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	c := &Config{
-		ServerAddr: "https://snet.test",
 		Networks: map[string]*NetworkCfg{
 			"a": {NodeID: "n1", IP: "10.0.0.2", Token: "t", Subnet: "10.0.0.0/24", Active: true},
 		},
@@ -157,31 +162,6 @@ func TestConfigRoundTrip(t *testing.T) {
 // TestConfigStaleServerCleared verifies the load-time cleanup: a legacy device
 // with no binding, no networks and no pending joins has no meaningful server
 // address and gets it dropped.
-
-func TestSetServerSupportsCustomAndEmptyDefault(t *testing.T) {
-	d, _ := newTestDaemon(t)
-	if got := d.defaultServerLocked(); got != constants.DefaultServer {
-		t.Fatalf("empty ServerAddr default = %q, want %q", got, constants.DefaultServer)
-	}
-	if err := d.SetServer("https://custom.example:8090/"); err != nil {
-		t.Fatal(err)
-	}
-	if d.cfg.ServerAddr != "https://custom.example:8090" {
-		t.Fatalf("custom server = %q", d.cfg.ServerAddr)
-	}
-	if got := d.serverAddrLocked(); got != "https://custom.example:8090" {
-		t.Fatalf("effective custom server = %q", got)
-	}
-	if err := d.SetServer(""); err != nil {
-		t.Fatal(err)
-	}
-	if d.cfg.ServerAddr != "" {
-		t.Fatalf("empty server should stay empty, got %q", d.cfg.ServerAddr)
-	}
-	if got := d.serverAddrLocked(); got != constants.DefaultServer {
-		t.Fatalf("fallback server = %q, want %q", got, constants.DefaultServer)
-	}
-}
 
 func TestNormalizeServer(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -1052,9 +1032,8 @@ func TestRotateKeysAbortsOnBadToken(t *testing.T) {
 
 	d, _ := newTestDaemon(t)
 	oldKey := d.cfg.PrivateKey
-	d.cfg.ServerAddr = ts.URL
 	d.cfg.Networks = map[string]*NetworkCfg{
-		created.NetworkID: {NodeID: "node-does-not-exist", Token: "WRONGTOKEN", Active: true},
+		created.NetworkID: {NodeID: "node-does-not-exist", Token: "WRONGTOKEN", Active: true, SnetServURL: ts.URL},
 	}
 	if err := d.RotateKeys(); err == nil {
 		t.Fatal("RotateKeys succeeded with a bad token, want error")
@@ -1560,9 +1539,8 @@ func TestPingServerStateRetriesRotatedToken(t *testing.T) {
 
 	d, _ := newTestDaemon(t)
 	d.mu.Lock()
-	d.cfg.ServerAddr = ts.URL
 	d.cfg.Networks = map[string]*NetworkCfg{
-		"n1": {NodeID: "node1", IP: "10.88.1.5", Token: "old", Subnet: "10.88.1.0/24", Active: true},
+		"n1": {NodeID: "node1", IP: "10.88.1.5", Token: "old", Subnet: "10.88.1.0/24", Active: true, SnetServURL: ts.URL},
 	}
 	d.mu.Unlock()
 
@@ -1598,9 +1576,8 @@ func TestPingServerStateRemovesRevokedNetwork(t *testing.T) {
 
 	d, _ := newTestDaemon(t)
 	d.mu.Lock()
-	d.cfg.ServerAddr = ts.URL
 	d.cfg.Networks = map[string]*NetworkCfg{
-		"n1": {NodeID: "node1", IP: "10.88.1.5", Token: "revoked", Subnet: "10.88.1.0/24", Active: true},
+		"n1": {NodeID: "node1", IP: "10.88.1.5", Token: "revoked", Subnet: "10.88.1.0/24", Active: true, SnetServURL: ts.URL},
 	}
 	d.mu.Unlock()
 
@@ -1644,9 +1621,8 @@ func TestSetRoutesDistinguishesMissingEndpointFromDeletedNetwork(t *testing.T) {
 
 			d, _ := newTestDaemon(t)
 			d.mu.Lock()
-			d.cfg.ServerAddr = ts.URL
 			d.cfg.Networks = map[string]*NetworkCfg{
-				"n1": {NodeID: "node1", Token: "tok", Subnet: "10.88.1.0/24", Owner: true},
+				"n1": {NodeID: "node1", Token: "tok", Subnet: "10.88.1.0/24", Owner: true, SnetServURL: ts.URL},
 			}
 			d.mu.Unlock()
 
@@ -1769,12 +1745,12 @@ func TestSyncNetworksRestoresConfig(t *testing.T) {
 	defer ts.Close()
 
 	d, _ := newTestDaemon(t)
-	if err := d.ensureKeys(ts.URL, 0); err != nil {
+	if err := d.ensureKeys(0); err != nil {
 		t.Fatal(err)
 	}
 	d.mu.Lock()
 	d.cfg.DeviceID = deviceID
-	d.cfg.RecoveryToken = "recovery-token"
+	d.cfg.RecoveryTokens = map[string]string{normalizeServer(ts.URL): "recovery-token"}
 	d.mu.Unlock()
 
 	if err := d.SyncNetworks(); err != nil {
@@ -1819,7 +1795,7 @@ func TestDeviceIDSurvivesConfigLossAndRestart(t *testing.T) {
 	}
 	d1 := NewDaemonAt(first, cfgPath)
 	d1.SetDeviceIDFile(idFile)
-	if err := d1.ensureKeys("https://snet.invalid", 0); err != nil {
+	if err := d1.ensureKeys(0); err != nil {
 		t.Fatal(err)
 	}
 	wantID := d1.cfg.DeviceID
@@ -1835,7 +1811,7 @@ func TestDeviceIDSurvivesConfigLossAndRestart(t *testing.T) {
 	}
 	d2 := NewDaemonAt(second, cfgPath)
 	d2.SetDeviceIDFile(idFile)
-	if err := d2.ensureKeys("https://snet.invalid", 0); err != nil {
+	if err := d2.ensureKeys(0); err != nil {
 		t.Fatal(err)
 	}
 	if d2.cfg.DeviceID != wantID {
@@ -1876,10 +1852,9 @@ func TestInfoClearsStaleOwnerAfterTransfer(t *testing.T) {
 
 	d, _ := newTestDaemon(t)
 	d.mu.Lock()
-	d.cfg.ServerAddr = ts.URL
 	d.cfg.DeviceID = deviceID
 	d.cfg.Networks = map[string]*NetworkCfg{
-		"n1": {NodeID: "n1", Token: "tok", Subnet: "10.88.0.0/24", Owner: true},
+		"n1": {NodeID: "n1", Token: "tok", Subnet: "10.88.0.0/24", Owner: true, SnetServURL: ts.URL},
 	}
 	d.mu.Unlock()
 
@@ -1927,15 +1902,14 @@ func TestSyncNetworksOnlyRemovesOnConfirmed404(t *testing.T) {
 	defer ts.Close()
 
 	d, _ := newTestDaemon(t)
-	if err := d.ensureKeys(ts.URL, 0); err != nil {
+	if err := d.ensureKeys(0); err != nil {
 		t.Fatal(err)
 	}
 	d.mu.Lock()
-	d.cfg.ServerAddr = ts.URL
 	d.cfg.DeviceID = deviceID
-	d.cfg.RecoveryToken = "rec-tok"
+	d.cfg.RecoveryTokens = map[string]string{normalizeServer(ts.URL): "rec-tok"}
 	d.cfg.Networks = map[string]*NetworkCfg{
-		nid: {Name: "HomeNET", NodeID: "node-1", Token: "tok-1", Subnet: "10.88.0.0/24"},
+		nid: {Name: "HomeNET", NodeID: "node-1", Token: "tok-1", Subnet: "10.88.0.0/24", SnetServURL: ts.URL},
 	}
 	d.mu.Unlock()
 
@@ -2030,15 +2004,14 @@ func TestSyncNetworksReconcilesExistingOwnerFlag(t *testing.T) {
 	defer ts.Close()
 
 	d, _ := newTestDaemon(t)
-	if err := d.ensureKeys(ts.URL, 0); err != nil {
+	if err := d.ensureKeys(0); err != nil {
 		t.Fatal(err)
 	}
 	d.mu.Lock()
-	d.cfg.ServerAddr = ts.URL
 	d.cfg.DeviceID = deviceID
-	d.cfg.RecoveryToken = "rec-tok"
+	d.cfg.RecoveryTokens = map[string]string{normalizeServer(ts.URL): "rec-tok"}
 	d.cfg.Networks = map[string]*NetworkCfg{
-		nid: {Name: "HomeNET", NodeID: "node-1", Token: "tok-1", Subnet: "10.88.0.0/24", Active: false, Owner: false},
+		nid: {Name: "HomeNET", NodeID: "node-1", Token: "tok-1", Subnet: "10.88.0.0/24", Active: false, Owner: false, SnetServURL: ts.URL},
 	}
 	d.mu.Unlock()
 

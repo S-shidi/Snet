@@ -17,7 +17,6 @@ import (
 
 	"snet/internal/adminui"
 	"snet/internal/buildinfo"
-	"snet/internal/constants"
 	"snet/internal/protocol"
 )
 
@@ -572,11 +571,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		}
 		// Keep the API response consistent with client/admin-generated links:
 		// always carry the network's canonical SnetServ reference, encrypted.
-		inviteServer := s.NetworkInviteServer(resp.NetworkID)
-		if inviteServer == "" {
-			inviteServer = constants.DefaultServer
-		}
-		resp.Link = protocol.BuildLink(resp.NetworkID, resp.PairingCode, inviteServer, resp.Name)
+		resp.Link = protocol.BuildLink(resp.NetworkID, resp.PairingCode, s.NetworkInviteServer(resp.NetworkID), resp.Name)
 		writeJSON(w, http.StatusOK, resp)
 	}))
 
@@ -766,15 +761,8 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusConflict, errors.New("邀请链接已失效，请重置邀请链接"))
 			return
 		}
-		inviteServer := info.SnetServURL
-		if inviteServer == "" {
-			inviteServer = s.SnetServURL()
-		}
-		if inviteServer == "" {
-			inviteServer = constants.DefaultServer
-		}
 		writeJSON(w, http.StatusOK, map[string]string{
-			"link": protocol.BuildLink(info.ID, info.PairingCode, inviteServer, info.Name),
+			"link": protocol.BuildLink(info.ID, info.PairingCode, s.NetworkInviteServer(info.ID), info.Name),
 		})
 	}))
 	mux.HandleFunc("DELETE /admin/networks/{nid}/routes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {

@@ -216,7 +216,7 @@ func TestNatManagerEnabled(t *testing.T) {
 }
 
 func TestStoreMappingOnlyWhileClaimed(t *testing.T) {
-	cfg := &Config{ServerAddr: "host.example.com:8090", WireguardPort: 51820}
+	cfg := &Config{WireguardPort: 51820}
 	n := newNatManager(cfg, context.Background())
 	res := natResult{externalIP: "203.0.113.1", externalPort: 51820, via: "upnp"}
 
@@ -237,7 +237,7 @@ func TestStoreMappingOnlyWhileClaimed(t *testing.T) {
 }
 
 func TestNatManagerBookkeeping(t *testing.T) {
-	cfg := &Config{ServerAddr: "host.example.com:8090", WireguardPort: 51820}
+	cfg := &Config{WireguardPort: 51820}
 	n := newNatManager(cfg, context.Background())
 	n.claim(51820, "https://test.example:8090")
 	n.claim(51821, "https://test.example:8090")
@@ -259,7 +259,7 @@ func TestNatManagerBookkeeping(t *testing.T) {
 }
 
 func TestNatManagerStatusAndErrorThrottle(t *testing.T) {
-	cfg := &Config{ServerAddr: "host.example.com:8090", WireguardPort: 51820}
+	cfg := &Config{WireguardPort: 51820}
 	n := newNatManager(cfg, context.Background())
 	n.claim(51821, "https://test.example:8090")
 	n.setPort(51820, natResult{

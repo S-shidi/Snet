@@ -528,48 +528,27 @@ func (d *Daemon) Config() *Config {
 	return d.cfg
 }
 
-// serverAddrLocked returns the legacy global default server for compatibility
-// status output and local-subnet discovery.
-//
-// Deprecated: network routing must use serverForNetworkLocked. This value is
-// not a fallback for requests belonging to an existing network.
-func (d *Daemon) serverAddrLocked() string {
-	return d.defaultServerLocked()
-}
-
-// defaultServerLocked resolves the legacy/default server for networks that do
-// not have their own SnetServ binding yet.
-func (d *Daemon) defaultServerLocked() string {
-	if strings.TrimSpace(d.cfg.DefaultSnetServURL) != "" {
-		return normalizeServer(d.cfg.DefaultSnetServURL)
-	}
-	if strings.TrimSpace(d.cfg.ServerAddr) != "" {
-		return normalizeServer(d.cfg.ServerAddr)
-	}
-	return constants.DefaultServer
-}
-
-// serverForNetworkLocked returns the coordination server bound to nid. It
-// falls back through the new default field, the legacy ServerAddr field and
-// the official server so stage-0 configs keep working.
+// serverForNetworkLocked returns the coordination server bound to nid.
+// Legacy records without a binding use the official default.
 func (d *Daemon) serverForNetworkLocked(nid string) (string, error) {
 	nc := d.cfg.Networks[nid]
 	if nc == nil {
 		return "", fmt.Errorf("网络 %s 未找到", nid)
 	}
-	if strings.TrimSpace(nc.SnetServURL) != "" {
-		return normalizeServer(nc.SnetServURL), nil
-	}
-	return d.defaultServerLocked(), nil
+	return serverForConfig(nc), nil
 }
 
-// serverForConfigLocked resolves a network's server, using the default only
-// for legacy records that predate per-network SnetServ binding.
-func (d *Daemon) serverForConfigLocked(nc *NetworkCfg) string {
+// serverForConfig resolves a network's server. Legacy records without a
+// binding use the official default, never a configurable global default.
+func serverForConfig(nc *NetworkCfg) string {
 	if nc != nil && strings.TrimSpace(nc.SnetServURL) != "" {
 		return normalizeServer(nc.SnetServURL)
 	}
-	return d.defaultServerLocked()
+	return constants.DefaultServer
+}
+
+func (d *Daemon) serverForConfigLocked(nc *NetworkCfg) string {
+	return serverForConfig(nc)
 }
 
 // apiForNetworkLocked returns the API client and resolved server for nid.
@@ -595,54 +574,6 @@ func (d *Daemon) apiForServerLocked(server string) (*apiClient, error) {
 		return d.apiManager.Get(server), nil
 	}
 	return newAPIClient(server, d.ctx), nil
-}
-
-// CheckServer verifies that the target SnetServ is reachable and healthy.
-func (d *Daemon) CheckServer(serverAddr string) error {
-	addr := normalizeServer(strings.TrimSpace(serverAddr))
-	if addr == "" {
-		addr = constants.DefaultServer
-	}
-	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, addr+"/healthz", nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("服务端返回 HTTP %d", resp.StatusCode)
-	}
-	var body struct {
-		Status string `json:"status"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return err
-	}
-	if body.Status != "ok" {
-		return fmt.Errorf("服务端健康检查失败")
-	}
-	return nil
-}
-
-// SetServer updates the default SnetServ used by newly created/legacy
-// networks. It does not rewrite or remove existing per-network bindings.
-func (d *Daemon) SetServer(serverAddr string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	serverAddr = strings.TrimSpace(serverAddr)
-	if serverAddr != "" {
-		serverAddr = normalizeServer(serverAddr)
-	}
-	d.cfg.DefaultSnetServURL = serverAddr
-	// Keep the legacy field aligned for old config readers and for networks
-	// that still have no explicit SnetServURL.
-	d.cfg.ServerAddr = serverAddr
-	return d.save()
 }
 
 func (d *Daemon) publicKeyLocked() string {
@@ -673,14 +604,7 @@ func (d *Daemon) SetHostname(name string) {
 
 // ensureKeys guarantees a private key and device ID exist. Server selection
 // belongs to the network being attached, not to the daemon as a whole.
-func (d *Daemon) ensureKeys(serverAddr string, port int) error {
-	serverAddr = normalizeServer(strings.TrimSpace(serverAddr))
-	if strings.TrimSpace(d.cfg.ServerAddr) == "" {
-		d.cfg.ServerAddr = serverAddr
-	}
-	if strings.TrimSpace(d.cfg.DefaultSnetServURL) == "" {
-		d.cfg.DefaultSnetServURL = serverAddr
-	}
+func (d *Daemon) ensureKeys(port int) error {
 	if port != 0 {
 		d.cfg.WireguardPort = port
 	}
@@ -941,7 +865,7 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	}
 
 	if strings.TrimSpace(serverAddr) == "" {
-		serverAddr = d.defaultServerLocked()
+		serverAddr = constants.DefaultServer
 	} else {
 		serverAddr = normalizeServer(serverAddr)
 	}
@@ -950,7 +874,7 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 			return protocol.CreateNetworkResp{}, errors.New("该 SnetServ 上本设备已创建网络（每个服务器仅能创建一个）")
 		}
 	}
-	if err := d.ensureKeys(serverAddr, port); err != nil {
+	if err := d.ensureKeys(port); err != nil {
 		return protocol.CreateNetworkResp{}, err
 	}
 	api, err := d.apiForServerLocked(serverAddr)
@@ -1011,11 +935,11 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 	defer d.mu.Unlock()
 
 	if strings.TrimSpace(serverAddr) == "" {
-		serverAddr = d.defaultServerLocked()
+		serverAddr = constants.DefaultServer
 	} else {
 		serverAddr = normalizeServer(serverAddr)
 	}
-	if err := d.ensureKeys(serverAddr, port); err != nil {
+	if err := d.ensureKeys(port); err != nil {
 		return protocol.JoinResp{}, err
 	}
 	api, err := d.apiForServerLocked(serverAddr)
@@ -1103,7 +1027,7 @@ func (d *Daemon) pendingLoop(pendingID string, stop chan struct{}) {
 		}
 		server := pj.SnetServURL
 		if strings.TrimSpace(server) == "" {
-			server = d.defaultServerLocked()
+			server = constants.DefaultServer
 		}
 		api, apiErr := d.apiForServerLocked(server)
 		d.mu.Unlock()
@@ -1171,7 +1095,7 @@ func (d *Daemon) CancelPending(pendingID string) error {
 	}
 	server := pj.SnetServURL
 	if strings.TrimSpace(server) == "" {
-		server = d.defaultServerLocked()
+		server = constants.DefaultServer
 	}
 	api, apiErr := d.apiForServerLocked(server)
 	if apiErr != nil {
@@ -1445,7 +1369,6 @@ func (d *Daemon) SyncNetworks() error {
 
 	d.mu.Lock()
 	deviceID := d.cfg.DeviceID
-	defaultServer := d.defaultServerLocked()
 	localBefore := make(map[string]struct{}, len(d.cfg.Networks))
 	groups := make(map[string][]string)
 	localServers := make(map[string]string)
@@ -1454,8 +1377,8 @@ func (d *Daemon) SyncNetworks() error {
 		tokens[normalizeServer(server)] = token
 	}
 	if d.cfg.RecoveryToken != "" {
-		if _, ok := tokens[defaultServer]; !ok {
-			tokens[defaultServer] = d.cfg.RecoveryToken
+		if _, ok := tokens[constants.DefaultServer]; !ok {
+			tokens[constants.DefaultServer] = d.cfg.RecoveryToken
 		}
 	}
 	for nid, nc := range d.cfg.Networks {
@@ -1464,10 +1387,12 @@ func (d *Daemon) SyncNetworks() error {
 		localServers[nid] = server
 		groups[server] = append(groups[server], nid)
 	}
-	// Even with no local networks, the default server can still restore
-	// memberships after a config loss.
+	// Even with no local networks, every server with a recovery token can
+	// still restore memberships after a config loss.
 	if len(groups) == 0 {
-		groups[defaultServer] = nil
+		for server := range tokens {
+			groups[server] = nil
+		}
 	}
 	d.mu.Unlock()
 	if deviceID == "" {
@@ -1607,7 +1532,7 @@ func (d *Daemon) SyncNetworks() error {
 		}
 		server := localServers[nid]
 		if server == "" {
-			server = defaultServer
+			server = constants.DefaultServer
 		}
 		removeCandidates = append(removeCandidates, struct {
 			nid, server, token, nodeID string
@@ -3910,7 +3835,7 @@ func (d *Daemon) logRelayGatewayRolesLocked(nc *NetworkCfg, served []string) {
 // used for routing. Per-network code must call DetectLocalSubnetsForServer with
 // that network's SnetServ.
 func (d *Daemon) DetectLocalSubnets() []string {
-	return d.DetectLocalSubnetsForServer(d.serverAddrLocked())
+	return d.DetectLocalSubnetsForServer(constants.DefaultServer)
 }
 
 func (d *Daemon) DetectLocalSubnetsForServer(serverAddr string) []string {
@@ -4125,9 +4050,9 @@ var ErrInviteExpired = errors.New("邀请链接已失效，请重置邀请链接
 // coordination server reference is always embedded (encrypted by protocol),
 // so a joiner always reaches the network's server. Callers must hold d.mu.
 func (d *Daemon) inviteLinkLocked(nid, code, name string) string {
-	server := d.defaultServerLocked()
+	server := constants.DefaultServer
 	if nc := d.cfg.Networks[nid]; nc != nil {
-		server = d.serverForConfigLocked(nc)
+		server = serverForConfig(nc)
 	}
 	return protocol.BuildLink(nid, code, server, name)
 }
@@ -4588,16 +4513,12 @@ func (d *Daemon) Status() (map[string]any, error) {
 			"error":     pj.Err,
 		})
 	}
-	// Deprecated: legacy global default for old UI; route by
-	// networks[].snetServUrl instead.
-	legacyServerAddr := d.serverAddrLocked()
 	return map[string]any{
 		"version":      buildinfo.Version,
 		"commit":       buildinfo.Commit,
 		"buildDate":    buildinfo.BuildDate,
 		"deviceId":     d.cfg.DeviceID,
 		"deviceName":   d.cfg.DeviceName,
-		"serverAddr":   legacyServerAddr,
 		"wgPort":       d.cfg.WireguardPort,
 		"rxSpeed":      rxSpeed,
 		"txSpeed":      txSpeed,

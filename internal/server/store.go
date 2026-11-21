@@ -21,6 +21,7 @@ import (
 
 	"go.etcd.io/bbolt"
 	"golang.org/x/crypto/bcrypt"
+	"snet/internal/constants"
 	"snet/internal/protocol"
 	"snet/internal/relay"
 )
@@ -1052,15 +1053,15 @@ func (s *Store) SnetServURL() string {
 }
 
 // NetworkInviteServer returns the server URL embedded in a network invite.
-// Per-network binding wins; the instance URL covers records created before
-// the binding field existed.
+// Per-network binding wins; legacy records without one use the official
+// default, never the HTTP request host or a configurable global default.
 func (s *Store) NetworkInviteServer(nid string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if ns := s.networks[nid]; ns != nil && ns.n.SnetServURL != "" {
 		return ns.n.SnetServURL
 	}
-	return s.snetServURL
+	return constants.DefaultServer
 }
 
 func (s *Store) SetRelay(relayHost string, relayBase, relayCount int) {

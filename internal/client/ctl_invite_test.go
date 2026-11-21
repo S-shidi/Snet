@@ -11,7 +11,9 @@ import (
 // coordination server reference, encrypted, so the joiner reaches the right
 // network server without exposing its URL as plaintext.
 func TestInviteLinkEmbedsCustomServer(t *testing.T) {
-	custom := &Daemon{cfg: &Config{ServerAddr: "https://custom.example:8090"}}
+	custom := &Daemon{cfg: &Config{Networks: map[string]*NetworkCfg{
+		"ABCDEFGH": {SnetServURL: "https://custom.example:8090"},
+	}}}
 	link := custom.inviteLinkLocked("ABCDEFGH", "abcd1234", "office")
 	nid, code, server, name, err := protocol.ParseInviteLink(link)
 	if err != nil {

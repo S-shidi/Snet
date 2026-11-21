@@ -26,9 +26,8 @@ import (
 	"snet/internal/protocol"
 )
 
-// resolveServer returns the configured SnetServ address, falling back to the
-// official server when the caller leaves it empty. Custom self-hosted servers
-// are accepted.
+// resolveServer returns a normalized SnetServ address, falling back to the
+// official server when the caller leaves it empty.
 func resolveServer(server string) string {
 	if strings.TrimSpace(server) == "" {
 		return constants.DefaultServer
@@ -130,9 +129,8 @@ type CtlReq struct {
 // server all travel inside the link, so nothing can be tampered with one by
 // one.
 type CtlJoinReq struct {
-	Server string `json:"server"`
-	Port   int    `json:"port"`
-	Link   string `json:"link"`
+	Port int    `json:"port"`
+	Link string `json:"link"`
 }
 
 // ServeCtl exposes the local control API for snetctl and the Tauri UI.
@@ -204,13 +202,10 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			writeCtlErr(w, 400, fmt.Errorf("邀请链接无效: %w", err))
 			return
 		}
-		// An invite link that carries its own server address wins over the
-		// request field: the join targets the network's own server. Both must
-		// point at the fixed coordination server.
-		server := resolveServer(req.Server)
-		if linkServer != "" {
-			server = resolveServer(linkServer)
-		}
+		// The encrypted server reference in the invite is the only server
+		// selection for a join. A link without one falls back to the official
+		// default, never to a configurable global default.
+		server := resolveServer(linkServer)
 		resp, err := d.Join(server, req.Port, nid, code)
 		if err != nil {
 			writeCtlErr(w, 500, err)
@@ -327,36 +322,6 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="snet-diagnostic.log"`)
 		_, _ = io.WriteString(w, d.logText(200))
-	})
-
-	mux.HandleFunc("POST /ctl/check-server", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			ServerAddr string `json:"serverAddr"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeCtlErr(w, 400, err)
-			return
-		}
-		if err := d.CheckServer(req.ServerAddr); err != nil {
-			writeCtlErr(w, 400, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	mux.HandleFunc("POST /ctl/config", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			ServerAddr string `json:"serverAddr"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeCtlErr(w, 400, err)
-			return
-		}
-		if err := d.SetServer(req.ServerAddr); err != nil {
-			writeCtlErr(w, 500, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("POST /ctl/leave", func(w http.ResponseWriter, r *http.Request) {

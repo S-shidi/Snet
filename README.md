@@ -127,7 +127,6 @@ open /Applications/Snet.app
 sudo install -d -m 0700 /opt/snet-gateway
 sudo tee /opt/snet-gateway/config.json >/dev/null <<'JSON'
 {
-  "serverAddr": "https://<你的服务端>:8090",
   "wireguardPort": 51820,
   "networks": {},
   "keyRotationDays": 30,

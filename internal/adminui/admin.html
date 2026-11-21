@@ -4017,6 +4017,8 @@ function renderQR(container, text) {
   container.innerHTML = svg;
 }
 
+const OFFICIAL_SNET_SERV = 'https://snet.uizhi.eu.org:8090';
+
 async function adminInviteLink(nid) {
   const info = await api('GET', '/admin/networks/' + nid);
   if (!info.pairingCode) {
@@ -4024,7 +4026,7 @@ async function adminInviteLink(nid) {
     toast('原配对码不可用，已生成新码（旧码作废）');
   }
   const r = await api('GET', `/admin/networks/${nid}/invite-link`);
-  return { link: r.link, name: info.name || '' };
+  return { link: r.link, name: info.name || '', server: info.snetServUrl || '' };
 }
 
 async function inviteNet(nid) {
@@ -4034,8 +4036,13 @@ async function inviteNet(nid) {
   } catch (e) { handleErr(e, '获取邀请链接失败'); return; }
   const link = invite.link;
   const name = invite.name || (netData.find(n => n.network && n.network.id === nid) || {}).network?.name || nid;
+  const customServer = String(invite.server || '').trim().replace(/\/+$/, '');
+  const customHint = customServer && customServer !== OFFICIAL_SNET_SERV
+    ? `<p class="hint">此链接将引导客户端连接至 ${esc(customServer)} 服务器</p>`
+    : '';
   setModal('邀请加入 · ' + name, `
     <p class="hint mt0">被邀请设备扫描下方二维码，或在客户端选择「加入网络」粘贴邀请链接即可加入。</p>
+    ${customHint}
     <div class="qr" id="invite-qr"></div>
     <div class="fresh-code">
       <span class="code" id="invite-link" style="flex:1">${esc(link)}</span>
