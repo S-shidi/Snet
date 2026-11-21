@@ -25,7 +25,7 @@
 - [`../deploy-prod/docker-server/README.md`](../deploy-prod/docker-server/README.md)：VPS 服务端 + Relay v2
 - [`../deploy-prod/docker-client/README.md`](../deploy-prod/docker-client/README.md)：Docker / NAS 客户端
 - [`../deploy-prod/manual-client/README.md`](../deploy-prod/manual-client/README.md)：二进制 + systemd 客户端
-- [`../deploy/README.md`](../deploy/README.md)：传统 systemd 部署（历史，当前推荐 `deploy-prod/`）
+- [`../deploy/archive/README-systemd.md`](../deploy/archive/README-systemd.md)：传统 systemd 部署（历史，已废弃）
 - [`../deploy/archive/`](../deploy/archive/)：旧 NAS/Docker/排障文档
 
 ## 历史文档（已归档）

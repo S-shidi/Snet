@@ -1,7 +1,0 @@
-# Prebuilt binary image: no Go toolchain on the 1GB VPS.
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
-ARG BIN_ARCH=amd64
-COPY dist-deploy/linux-${BIN_ARCH}/server /usr/local/bin/server
-EXPOSE 8090/tcp 8091/udp
-ENTRYPOINT ["/usr/local/bin/server"]

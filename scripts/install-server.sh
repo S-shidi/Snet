@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Minimal SNET coordinator + relay installer for a fresh Linux host.
+# Minimal SNET coordinator + relay + admin installer for a fresh Linux host.
 # Production guide: https://github.com/S-shidi/Snet/blob/master/deploy-prod/docker-server/README.md
 set -euo pipefail
 
@@ -38,13 +38,35 @@ fi
 
 DOMAIN="${SNET_DOMAIN:-${PUBLIC_IP}}"
 RELAY_ENDPOINT="${DOMAIN}:8092"
-SECRET=""
-if [[ -f "${DIR}/.env" ]]; then
-  SECRET="$(sed -n 's/^SNET_RELAY_SECRET=//p' "${DIR}/.env" | head -n1)"
+
+TLS_ARGS=""
+TLS_MOUNT=""
+SCHEME="http"
+if [[ -n "${SNET_TLS_CERT:-}" && -n "${SNET_TLS_KEY:-}" ]]; then
+  SCHEME="https"
+  TLS_ARGS="      - \"-tls-cert\"
+      - \"${SNET_TLS_CERT}\"
+      - \"-tls-key\"
+      - \"${SNET_TLS_KEY}\""
+  TLS_MOUNT="      - /etc/letsencrypt:/etc/letsencrypt:ro"
 fi
-if [[ -z "${SECRET}" ]]; then
-  SECRET="$(openssl rand -hex 32)"
-fi
+PUBLIC_URL="${SNET_PUBLIC_URL:-${SCHEME}://${DOMAIN}:8090}"
+
+read_env() {
+  local key="$1"
+  if [[ -f "${DIR}/.env" ]]; then
+    sed -n "s/^${key}=//p" "${DIR}/.env" | head -n1
+  fi
+}
+
+SECRET="${SNET_RELAY_SECRET:-$(read_env SNET_RELAY_SECRET)}"
+INTERNAL_TOKEN="${SNET_INTERNAL_ADMIN_TOKEN:-$(read_env SNET_INTERNAL_ADMIN_TOKEN)}"
+ADMIN_USER="${SNET_ADMIN_USER:-$(read_env SNET_ADMIN_USER)}"
+ADMIN_PASSWORD="${SNET_ADMIN_PASSWORD:-$(read_env SNET_ADMIN_PASSWORD)}"
+[[ -n "${SECRET}" ]] || SECRET="$(openssl rand -hex 32)"
+[[ -n "${INTERNAL_TOKEN}" ]] || INTERNAL_TOKEN="$(openssl rand -hex 32)"
+[[ -n "${ADMIN_USER}" ]] || ADMIN_USER="admin"
+[[ -n "${ADMIN_PASSWORD}" ]] || ADMIN_PASSWORD="$(openssl rand -hex 16)"
 
 mkdir -p "${DIR}"
 chmod 700 "${DIR}"
@@ -52,18 +74,22 @@ cat > "${DIR}/.env" <<ENV
 SNET_VERSION=${VERSION}
 SNET_RELAY_SECRET=${SECRET}
 SNET_RELAY_V2_ENDPOINTS=${RELAY_ENDPOINT}
+SNETSERV_PUBLIC_URL=${PUBLIC_URL}
+SNET_INTERNAL_ADMIN_TOKEN=${INTERNAL_TOKEN}
+SNET_ADMIN_USER=${ADMIN_USER}
+SNET_ADMIN_PASSWORD=${ADMIN_PASSWORD}
 SNET_HUB_NODE_ID=${SNET_HUB_NODE_ID:-}
 SNET_HUB_PUBLIC_KEY=${SNET_HUB_PUBLIC_KEY:-}
 SNET_HUB_ENDPOINT=${SNET_HUB_ENDPOINT:-}
 ENV
 chmod 600 "${DIR}/.env"
-
-TLS_ARGS=""
-TLS_MOUNT=""
-if [[ -n "${SNET_TLS_CERT:-}" && -n "${SNET_TLS_KEY:-}" ]]; then
-  TLS_ARGS="      - \"-tls-cert\"\n      - \"${SNET_TLS_CERT}\"\n      - \"-tls-key\"\n      - \"${SNET_TLS_KEY}\""
-  TLS_MOUNT="      - /etc/letsencrypt:/etc/letsencrypt:ro"
-fi
+umask 077
+cat > "${DIR}/admin-credentials.txt" <<CREDS
+URL=${SCHEME}://${DOMAIN}:8095/admin
+USERNAME=${ADMIN_USER}
+PASSWORD=${ADMIN_PASSWORD}
+CREDS
+chmod 600 "${DIR}/admin-credentials.txt"
 
 cat > "${DIR}/compose.yaml" <<YAML
 services:
@@ -83,7 +109,7 @@ services:
       retries: 5
 
   server:
-    image: ${ACR}/snet-server:${VERSION}
+    image: ${ACR}/snet-snetserv:${VERSION}
     container_name: snet-server
     restart: unless-stopped
     depends_on:
@@ -95,6 +121,7 @@ services:
       SNET_HUB_NODE_ID: \${SNET_HUB_NODE_ID:-}
       SNET_HUB_PUBLIC_KEY: \${SNET_HUB_PUBLIC_KEY:-}
       SNET_HUB_ENDPOINT: \${SNET_HUB_ENDPOINT:-}
+      SNET_INTERNAL_ADMIN_TOKEN: \${SNET_INTERNAL_ADMIN_TOKEN}
     command:
       - "-addr"
       - "0.0.0.0:8090"
@@ -102,12 +129,39 @@ services:
       - "0.0.0.0:8091"
       - "-db"
       - "/data/snet.db"
-$(printf '%b\n' "${TLS_ARGS}")
+      - "-public-url"
+      - "\${SNETSERV_PUBLIC_URL}"
+      - "-internal-addr"
+      - "0.0.0.0:8096"
+      - "-internal-token"
+      - "\${SNET_INTERNAL_ADMIN_TOKEN}"
+$(printf '%s\n' "${TLS_ARGS}")
     ports:
       - "8090:8090/tcp"
       - "8091:8091/udp"
+      - "127.0.0.1:8096:8096/tcp"
     volumes:
       - snet-data:/data
+$(printf '%s\n' "${TLS_MOUNT}")
+
+  admin-server:
+    image: ${ACR}/snet-admin-server:${VERSION}
+    container_name: snet-admin-server
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      SNET_INTERNAL_ADMIN_TOKEN: \${SNET_INTERNAL_ADMIN_TOKEN}
+      SNET_ADMIN_USER: \${SNET_ADMIN_USER}
+      SNET_ADMIN_PASSWORD: \${SNET_ADMIN_PASSWORD}
+    command:
+      - "-addr"
+      - "0.0.0.0:8095"
+      - "-snet-server"
+      - "http://snet-server:8096"
+$(printf '%s\n' "${TLS_ARGS}")
+    ports:
+      - "8095:8095/tcp"
 $(printf '%s\n' "${TLS_MOUNT}")
 
 volumes:
@@ -118,9 +172,6 @@ chmod 600 "${DIR}/compose.yaml"
 cd "${DIR}"
 docker compose pull
 docker compose up -d
-
-SCHEME="http"
-if [[ -n "${TLS_ARGS}" ]]; then SCHEME="https"; fi
 
 echo "Waiting for SNET server..."
 for _ in $(seq 1 30); do
@@ -133,13 +184,15 @@ cat <<INFO
 
 SNET ${VERSION} is running.
 
-  Admin console : ${SCHEME}://${DOMAIN}:8090/admin
+  Admin console : ${SCHEME}://${DOMAIN}:8095/admin
+  Admin login   : ${DIR}/admin-credentials.txt
   Health        : ${SCHEME}://${DOMAIN}:8090/healthz
   Relay         : ${RELAY_ENDPOINT}
+  Internal RPC  : http://127.0.0.1:8096/internal/admin/health (loopback only)
   Install dir   : ${DIR}
 
 Next:
-  1. Open the admin console and initialize the admin account.
+  1. Open the admin console and log in with the generated credentials.
   2. Deploy a client: https://github.com/S-shidi/Snet#-quick-start
   3. In the client, set the SnetServ address to ${SCHEME}://${DOMAIN}:8090
 

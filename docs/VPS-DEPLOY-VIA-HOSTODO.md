@@ -1,3 +1,5 @@
+> 历史记录：本文描述 v1.2.x 之前的部署过程，`cmd/server` 与 `Dockerfile.server` 已删除。当前部署见 `deploy-prod/docker-server/`。
+
 # VPS 部署路径：Hostodo MCP 能力与自动化边界
 
 > 状态：已配置 Hostodo MCP，`vms:exec` token 验证成功，并完成只读 `exec_vm_command` 探测。

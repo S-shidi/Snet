@@ -23,7 +23,6 @@ build_one() {
 
 for os in linux darwin; do
   for arch in amd64 arm64; do
-    build_one "${os}" "${arch}" server ./cmd/server
     build_one "${os}" "${arch}" snetserv ./cmd/snetserv
     build_one "${os}" "${arch}" admin-server ./cmd/admin-server
     build_one "${os}" "${arch}" relay ./cmd/relay

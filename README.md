@@ -49,15 +49,16 @@ curl -fsSL https://raw.githubusercontent.com/S-shidi/Snet/master/scripts/install
 
 - 安装到 `/opt/snet`
 - 生成 Relay 密钥
-- 启动 `snet-server` + `snet-relay`
+- 启动 `snetserv` + `admin-server` + `snet-relay`
+- 生成管理后台账号并把凭据写入 `/opt/snet/admin-credentials.txt`
 - 输出管理控制台和健康检查地址
 
 生产环境建议配置域名和 TLS，并阅读 [服务端部署文档](deploy-prod/docker-server/README.md)。
 
-管理控制台：
+管理控制台（独立端口，公网 API 不暴露 `/admin`）：
 
 ```text
-http://<VPS_IP>:8090/admin
+http://<VPS_IP>:8095/admin
 ```
 
 ### 2. 安装客户端
@@ -206,7 +207,7 @@ flowchart LR
 | 层 | 实现 |
 |---|---|
 | 数据面 | WireGuard（wireguard-go） |
-| 协调面 | Go + HTTPS + bbolt；`cmd/snetserv`（或兼容入口 `cmd/server`） |
+| 协调面 | Go + HTTPS + bbolt；`cmd/snetserv` |
 | 管理面 | `cmd/admin-server` + admin.html；loopback 内部 RPC |
 | 中继 | Relay v2，signed ticket，多实例候选；legacy relay 兼容 |
 | 桌面客户端 | Wails v3（macOS / Windows）+ 共享 Web UI |
@@ -220,13 +221,14 @@ flowchart LR
 服务端、Relay 和客户端镜像：
 
 ```text
-crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-server:v1.2.1
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-snetserv:v1.2.1
+crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-admin-server:v1.2.1
 crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-relay:v1.2.1
 crpi-0ro5v5xbjp4autp9.cn-hangzhou.personal.cr.aliyuncs.com/snet/snet-client:v1.2.1
 ```
 
-> `cmd/server` 仍作为单进程兼容入口；新部署可使用拆分的 `cmd/snetserv` +
-> `cmd/admin-server`。拆分入口的管理台是独立进程，公网 API 不再暴露 `/admin`。
+> 服务端只运行 `cmd/snetserv`；管理台是独立的 `cmd/admin-server`，通过内部 RPC
+> 管理数据，公网 API 不再暴露 `/admin`。
 
 ## 🔐 安全
 

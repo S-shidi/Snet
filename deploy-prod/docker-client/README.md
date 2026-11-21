@@ -79,9 +79,18 @@ docker buildx build \
   --platform linux/amd64 \
   --provenance=false \
   --sbom=false \
-  -f deploy-prod/docker-server/Dockerfile.server \
-  -t "$ACR/snet-server:v$VERSION" \
-  -t "$ACR/snet-server:latest" \
+  -f deploy-prod/docker-server/Dockerfile.snetserv \
+  -t "$ACR/snet-snetserv:v$VERSION" \
+  -t "$ACR/snet-snetserv:latest" \
+  --push .
+
+docker buildx build \
+  --platform linux/amd64 \
+  --provenance=false \
+  --sbom=false \
+  -f deploy-prod/docker-server/Dockerfile.admin-server \
+  -t "$ACR/snet-admin-server:v$VERSION" \
+  -t "$ACR/snet-admin-server:latest" \
   --push .
 
 docker buildx build \

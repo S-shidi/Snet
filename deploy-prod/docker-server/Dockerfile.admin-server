@@ -1,0 +1,8 @@
+# Prebuilt binary image: admin UI only forwards to snetserv over the private
+# Compose network; it never stores network data.
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+ARG BIN_ARCH=amd64
+COPY dist-deploy/linux-${BIN_ARCH}/admin-server /usr/local/bin/admin-server
+EXPOSE 8095/tcp
+ENTRYPOINT ["/usr/local/bin/admin-server"]

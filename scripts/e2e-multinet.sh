@@ -12,7 +12,7 @@ SRV_PORT=8090
 mkdir -p "$BUILD" "$TEST"
 
 echo "== verifying prebuilt binaries =="
-for bin in server snetd snetctl; do
+for bin in snetserv snetd snetctl; do
     if [ ! -x "$BUILD/$bin" ]; then
         echo "missing $BUILD/$bin — run 'go build -o $BUILD/... ' first (as normal user)"
         exit 2
@@ -20,10 +20,10 @@ for bin in server snetd snetctl; do
 done
 
 pkill -f "snet-build/snetd" 2>/dev/null || true
-pkill -f "snet-build/server" 2>/dev/null || true
+pkill -f "snet-build/snetserv" 2>/dev/null || true
 sleep 0.5
 
-"$BUILD/server" -addr "127.0.0.1:$SRV_PORT" -probe-addr "127.0.0.1:8091" >"$TEST/server.log" 2>&1 &
+"$BUILD/snetserv" -addr "127.0.0.1:$SRV_PORT" -probe-addr "127.0.0.1:8091" >"$TEST/server.log" 2>&1 &
 SRV=$!
 "$BUILD/snetd" -ctl "127.0.0.1:$CTLA" -config "$TEST/a.json" >"$TEST/a.log" 2>&1 &
 DA=$!

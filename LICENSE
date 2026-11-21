@@ -18,7 +18,6 @@ This repository is split-licensed by component:
 
 * Server components are licensed under the GNU Affero General Public
   License, version 3 only (AGPL-3.0-only):
-  - cmd/server/
   - cmd/snetserv/
   - cmd/admin-server/
   - cmd/relay/

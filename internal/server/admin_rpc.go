@@ -13,9 +13,9 @@ import (
 
 const internalAdminPrefix = "/internal/admin"
 
-// NewCoordinationHandler serves the coordination API only. The legacy admin
-// routes stay available through NewHandler for cmd/server, but are not mounted
-// here.
+// NewCoordinationHandler serves the coordination API only. Admin routes stay
+// private on NewHandler and are reached through NewInternalAdminHandler; they
+// are not mounted on the public coordination listener.
 func NewCoordinationHandler(s *Store, opts Options) http.Handler {
 	base := NewHandler(s, opts)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

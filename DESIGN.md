@@ -25,7 +25,7 @@ SNET 是面向个人、家庭和小团队的 WireGuard 虚拟组网工具：
 
 | 面 | 组成 | 职责 |
 |---|---|---|
-| 协调控制面 | SnetServ（`cmd/snetserv` 或兼容入口 `cmd/server`） | 网络/节点/设备注册、邀请与审批、peer 列表、Relay v2 票据、probe |
+| 协调控制面 | SnetServ（`cmd/snetserv`） | 网络/节点/设备注册、邀请与审批、peer 列表、Relay v2 票据、probe |
 | 本地控制面 | `snetd` 的 `/ctl/*`（`127.0.0.1:19432`） | 客户端 UI 管理隧道、网络、NAT、路由、日志 |
 | 平台管理面 | `admin-server` + 内部 Admin RPC | 管理员登录、网络/设备/审批/统计；不把服务令牌暴露给浏览器 |
 | 数据面 | WireGuard（wireguard-go） | 节点间加密隧道；直连优先，Relay v2 兜底 |
@@ -37,7 +37,6 @@ SNET 是面向个人、家庭和小团队的 WireGuard 虚拟组网工具：
 | 组件 | 入口 | 职责 |
 |---|---|---|
 | SnetServ | `cmd/snetserv` | 公网 API `:8090`、UDP probe `:8091`、可选 legacy relay、Relay v2 票据、loopback Admin RPC `:8096` |
-| 兼容服务端 | `cmd/server` | 单进程兼容入口：公网 API + 内置 `/admin` + legacy relay + probe；同样生成/回填 serverId |
 | Admin Server | `cmd/admin-server` | 管理台 `:8095`、登录 session、把请求转发到 loopback Admin RPC |
 | Relay v2 | `cmd/relay` | 独立 UDP relay `:8092`，metrics 默认 `127.0.0.1:8094` |
 | 客户端守护进程 | `cmd/client/snetd` | WireGuard 隧道、peer 轮询、NAT 探测/映射、路径管理、密钥轮换、`/ctl/*` |
@@ -268,9 +267,10 @@ type Node struct {
 
 | 形态 | 入口 | 鉴权 |
 |---|---|---|
-| 兼容入口 | `cmd/server` 的 `/admin/*`（约 27 条） | bcrypt 登录 session 或静态 token |
-| 拆分入口 | `cmd/admin-server` `:8095` | 环境变量账号密码登录 session |
-| 内部 RPC | SnetServ `127.0.0.1:8096/internal/admin/*` | `X-Internal-Admin-Token` + 仅 loopback |
+| 管理台 | `cmd/admin-server` `:8095` | 环境变量账号密码登录 session |
+| 内部 RPC | SnetServ `127.0.0.1:8096/internal/admin/*` | `X-Internal-Admin-Token` + loopback 或私有 Compose 网络 |
+
+公网 API `:8090` 不挂载 `/admin`；访问 `https://<host>:8090/admin` 返回 404。
 
 `admin-server` 只转发白名单数据端点，登录/初始化/改密不会经内部 RPC 暴露。
 
@@ -368,6 +368,7 @@ cd shared/web && npx --yes -p typescript@5.9.3 tsc --noEmit -p tsconfig.json
 
 | 版本 | 内容 |
 |---|---|
+| v1.2.2-dev | 退役 `cmd/server`：主服务端统一 `cmd/snetserv`，管理台独立 `cmd/admin-server`；公网 API 不再挂载 `/admin`；发布产物为 `snetserv` + `admin-server` + `relay` + 客户端。 |
 | v1.2.0 | 每网络绑定 SnetServ（`snetServUrl` / `snetServId`）；邀请链接加密服务器字段；客户端 `APIManager` 按服务器路由；owner 配额按 SnetServ；拆分 `cmd/snetserv` 与 `cmd/admin-server`；客户端升级到 Wails v3；Android 恢复为交付目标（单网络）；管理台邀请链接修复。 |
 | v1.2.1 | 管理台邀请链接改用网络绑定 SnetServ；移除全局默认协调服务配置；修复多网络 WireGuard UDP 端口冲突与启动加载态；Windows/macOS 托盘多网络直列与状态图标统一；修复节点心跳写入与删除竞态。 |
 | v1.1.x | Windows 多网络、加密邀请、客户端刷新、VPN 生命周期与 LAN fallback；打包与签名修复。 |

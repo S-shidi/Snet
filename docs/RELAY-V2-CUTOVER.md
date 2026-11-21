@@ -36,7 +36,7 @@
 
 ```bash
 # VPS 服务端 / Relay
-docker exec snet-server /usr/local/bin/server -version
+docker exec snet-server /usr/local/bin/snetserv -version
 docker exec snet-relay /usr/local/bin/relay -version
 
 # NAS / sdserver

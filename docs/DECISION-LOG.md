@@ -147,3 +147,11 @@
 - 选择：B。
 - 理由：减少误导性事实；当前文档只描述可验证的代码行为；历史内容仍可追溯。
 - 影响：新增 `docs/README.md`、`docs/archive/`、`archive/`；旧 Tauri 客户端移至 `archive/desktop-mac-tauri/`；发布脚本补充 `snetserv` / `admin-server`。
+
+## 17. 2026-11-21：删除 cmd/server，主服务端统一为 snetserv + admin-server
+
+- 背景：v1.2.x 保留 `cmd/server` 作为单进程兼容入口，导致管理面与公网 API 仍可能混在一起，联邦化 Phase 0 后主 VPS 仍运行旧入口。
+- 选项：A. 继续保留兼容入口；B. 删除 `cmd/server`，主服务端只运行 `cmd/snetserv`，管理台独立为 `cmd/admin-server`。
+- 选择：B。
+- 理由：管理面彻底剥离，公网 `:8090/admin` 返回 404；TLS、内部 RPC、健康接口统一由 snetserv 提供；发布产物和维护面收敛。
+- 影响：`cmd/server/` 删除；Compose 改为 `snetserv + admin-server + relay`；管理台迁移到 `:8095`；旧 systemd 文档移入 `deploy/archive/`。

@@ -37,14 +37,13 @@ SNET 是面向个人/家庭/小团队的 WireGuard 虚拟组网工具。Go 服�
 - 每个网络绑定一个 SnetServ；客户端按网络路由请求，不假设全局唯一服务器。
 - 数据面端到端由 WireGuard 加密；协调面不接触业务明文。
 - Android 为单网络模式；桌面端支持多网络并行。
-- 平台管理走 `admin-server` + loopback Admin RPC，或兼容入口 `cmd/server` 的内置 `/admin`。
+- 平台管理走独立的 `admin-server` + 内部 Admin RPC；公网 API 不暴露 `/admin`。
 
 ## 2. 组件地图
 
 | 组件 | 入口 | 职责 | 权威文件 |
 |---|---|---|---|
 | SnetServ | `cmd/snetserv` | 公网 API `:8090`、probe `:8091`、Relay v2 票据、可选 legacy relay、loopback Admin RPC `:8096` | `internal/server/` |
-| 兼容服务端 | `cmd/server` | 单进程：公网 API + 内置 `/admin` + legacy relay + probe；同样生成/回填 serverId | `internal/server/` |
 | Admin Server | `cmd/admin-server` | 管理台 `:8095`、登录 session、转发内部 Admin RPC | `internal/adminclient/`、`internal/adminui/` |
 | Relay v2 | `cmd/relay` | 无状态 UDP session relay `:8092`、metrics `:8094` | `internal/relay/` |
 | 客户端守护进程 | `cmd/client/snetd` | 隧道、peer 轮询、NAT、路径管理、密钥轮换、`/ctl/*` | `internal/client/` |
@@ -142,7 +141,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 
 ## 6. 存储、API 与代码入口
 
-- 入口：`cmd/snetserv/`、`cmd/admin-server/`、`cmd/server/`、`cmd/relay/`、
+- 入口：`cmd/snetserv/`、`cmd/admin-server/`、`cmd/relay/`、
   `cmd/client/snetd/`、`cmd/client/snetctl/`。
 - 服务端路由：`internal/server/server.go`（约 34 个 `/api/v1/*` + 27 个 legacy `/admin/*`）。
 - 内部 Admin RPC：`internal/server/admin_rpc.go`（仅 loopback + 服务令牌）。
@@ -221,6 +220,7 @@ owner 委派 CIDR → 目标节点 allowRelay + 网关配置成功
 
 | 日期 | 变更 | 验证 |
 |---|---|---|
+| 2026-11-21 | 退役 `cmd/server`：主服务端统一 `cmd/snetserv`，管理台独立 `cmd/admin-server`；Compose 增加 8095/内部 RPC，公网 `:8090/admin` 返回 404 | `go build ./...`、`go test ./...`、VPS 8090/8095/8096 验证 |
 | 2026-11-21 | Phase 0 联邦化地基：SnetServ 持久化 `serverId`（`meta` bucket）、网络回填 `snetServId`、新增 `/internal/admin/health`、客户端 `/ctl/status` 暴露 `snetServId` | `go build ./...`、`go test ./...`、`tsc --noEmit` |
 | 2026-11-21 | 文档与目录整理：重写 `DESIGN.md` / `PROJECT-ATLAS.md`；新增 `docs/README.md`、`archive/README.md`、`docs/archive/`；归档旧 Tauri 客户端与快照文档；更新发布脚本与 macOS CI 缓存路径 | `go build ./...`、`go test ./...`、`go vet ./...`、`tsc --noEmit` |
 | 2026-11-08 | 四条线闭环收口：relay T12、NAT P0/P1、pathmanager #1-#10、server 鉴权/路由矩阵/probe | `go test ./... -count=1`、`go test -race ./...`、`go vet ./...` |

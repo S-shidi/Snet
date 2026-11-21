@@ -37,6 +37,8 @@ func main() {
 	internalToken := flag.String("internal-token", os.Getenv("SNET_INTERNAL_ADMIN_TOKEN"), "internal admin service token")
 	adminUser := flag.String("admin-user", os.Getenv("SNET_ADMIN_USER"), "admin login username")
 	adminPass := flag.String("admin-pass", os.Getenv("SNET_ADMIN_PASSWORD"), "admin login password")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM); enables HTTPS when set with -tls-key")
+	tlsKey := flag.String("tls-key", "", "TLS key file (PEM)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -69,8 +71,18 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("admin-server listening on %s (snetserv: %s)", *addr, strings.TrimRight(*snetServer, "/"))
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		scheme := "http"
+		if *tlsCert != "" && *tlsKey != "" {
+			scheme = "https"
+		}
+		log.Printf("admin-server listening on %s://%s (snetserv: %s)", scheme, *addr, strings.TrimRight(*snetServer, "/"))
+		var err error
+		if *tlsCert != "" && *tlsKey != "" {
+			err = httpSrv.ListenAndServeTLS(*tlsCert, *tlsKey)
+		} else {
+			err = httpSrv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	}()

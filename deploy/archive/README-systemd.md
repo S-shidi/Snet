@@ -1,7 +1,7 @@
-# Snet 传统 systemd 部署（历史记录）
+# Snet 传统 systemd 部署（历史记录，已废弃）
 
-> 当前推荐部署方式：`deploy-prod/docker-server/`（Docker Compose + `cmd/server` 兼容入口）。
-> 本文保留 systemd 手工部署流程，部分脚本/路径可能已过时；旧 NAS/Docker 文档见 `deploy/archive/`。
+> `cmd/server` 已删除。当前推荐部署方式：`deploy-prod/docker-server/`（Docker Compose + `cmd/snetserv` + `cmd/admin-server`）。
+> 本文保留 systemd 手工部署流程，命令和路径已过时，仅作历史参考；旧 NAS/Docker 文档见同目录。
 
 已部署：Hostodo VPS `us-tpa01-8304f360`（66.187.6.46，Debian 13 x86_64，root + systemd）。
 对外服务：`https://snet.uizhi.eu.org:8090`（HTTPS 协调）+ `udp://snet.uizhi.eu.org:51820..52075`（旧版 relay 池）+ `udp://snet.uizhi.eu.org:8092`（Relay v2，可选启用）。

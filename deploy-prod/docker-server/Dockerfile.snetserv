@@ -1,0 +1,7 @@
+# Prebuilt binary image: no Go toolchain on the 1GB VPS.
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+ARG BIN_ARCH=amd64
+COPY dist-deploy/linux-${BIN_ARCH}/snetserv /usr/local/bin/snetserv
+EXPOSE 8090/tcp 8091/udp 8096/tcp
+ENTRYPOINT ["/usr/local/bin/snetserv"]

@@ -22,7 +22,7 @@ SRV_PORT=8099
 mkdir -p "$BUILD" "$TEST"
 
 echo "== verifying prebuilt binaries =="
-for bin in server snetd snetctl; do
+for bin in snetserv snetd snetctl; do
     if [ ! -x "$BUILD/$bin" ]; then
         echo "missing $BUILD/$bin — run 'go build -o $BUILD/... ' first (as normal user)"
         exit 2
@@ -30,14 +30,14 @@ for bin in server snetd snetctl; do
 done
 
 pkill -f "snet-build/snetd" 2>/dev/null || true
-pkill -f "snet-build/server" 2>/dev/null || true
+pkill -f "snet-build/snetserv" 2>/dev/null || true
 sleep 0.5
 # Clear stale daemon state from any previous run so enrollment/gate
 # assertions start from a clean, unbound device.
 rm -f "$TEST/a.json" "$TEST/b.json" "$TEST/c.json" "$TEST/c-gate.err" \
     "$TEST/device-a.id" "$TEST/device-b.id" "$TEST/device-c.id"
 
-"$BUILD/server" -addr "127.0.0.1:$SRV_PORT" -probe-addr "127.0.0.1:8101" >"$TEST/server.log" 2>&1 &
+"$BUILD/snetserv" -addr "127.0.0.1:$SRV_PORT" -probe-addr "127.0.0.1:8101" >"$TEST/server.log" 2>&1 &
 SRV=$!
 "$BUILD/snetd" -ctl "127.0.0.1:$CTLA" -config "$TEST/a.json" -device-id-file "$TEST/device-a.id" >"$TEST/a.log" 2>&1 &
 DA=$!
