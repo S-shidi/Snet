@@ -83,6 +83,7 @@ export type RelayRoute = {
 export type DaemonStatus = {
   deviceId?: string;
   deviceName?: string;
+  /** @deprecated legacy global default for old UI; use networks[].snetServUrl. */
   serverAddr?: string;
   wgPort?: number;
   rxSpeed?: number;
@@ -195,7 +196,6 @@ export interface Backend {
   /** Rotate the invite link of a network (owner only); old links stop working */
   rotateInvite(nid: string): Promise<RotateInviteResp>;
   /** Detect local subnets */
-  detectLocalSubnets(): Promise<string[]>;
   /** Ping a peer IP and return loss percentage and average RTT */
   ping(target: string): Promise<{ loss: number; avgRtt: number }>;
   /** Send a short UDP probe through the tunnel to wake a peer */

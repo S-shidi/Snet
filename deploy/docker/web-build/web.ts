@@ -226,11 +226,6 @@ const backend: Backend = {
     return api("/rotate-invite", jsonPost("/rotate-invite", { nid }));
   },
 
-  async detectLocalSubnets(): Promise<string[]> {
-    const resp = await api("/local-subnets");
-    return resp?.subnets ?? (Array.isArray(resp) ? resp : []);
-  },
-
   async ping(target: string): Promise<{ loss: number; avgRtt: number }> {
     return api("/ping", jsonPost("/ping", { target }));
   },

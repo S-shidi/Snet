@@ -22,9 +22,12 @@ func TestAPIManagerCachesByNormalizedServer(t *testing.T) {
 	if other == a {
 		t.Fatal("different server must not reuse the client")
 	}
+	if m.Get("") != nil {
+		t.Fatal("empty server must not fall back to the official server")
+	}
 }
 
-func TestDaemonAPILockedUsesAPIManager(t *testing.T) {
+func TestDaemonAPIClientUsesAPIManager(t *testing.T) {
 	cfg := &Config{
 		ServerAddr: "https://legacy.example:8090/",
 		Networks: map[string]*NetworkCfg{
@@ -36,10 +39,16 @@ func TestDaemonAPILockedUsesAPIManager(t *testing.T) {
 	if d.apiManager == nil {
 		t.Fatal("NewDaemonAt did not initialize APIManager")
 	}
-	got := d.apiLocked()
-	want := d.apiManager.Get(cfg.EffectiveServerAddr())
+	got, err := d.apiForServerLocked("https://legacy.example:8090/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := d.apiManager.Get("https://legacy.example:8090")
 	if got != want {
-		t.Fatal("apiLocked did not use the APIManager client")
+		t.Fatal("apiForServerLocked did not use the APIManager client")
+	}
+	if _, err := d.apiForServerLocked(""); err == nil {
+		t.Fatal("apiForServerLocked must reject an empty server")
 	}
 }
 

@@ -272,14 +272,11 @@ type Daemon struct {
 	nets map[string]*netRuntime
 	// pendingRuns tracks the poll goroutines of pending join requests.
 	pendingRuns map[string]chan struct{}
-	// api caches the HTTP client so TCP/TLS connections are reused across
-	// poll ticks instead of paying a full handshake every PollIntervalSeconds.
-	// Rebuilt whenever the server address or pinned CA path changes.
-	api        *apiClient
-	apiServer  string
+	// apiManager owns one reusable HTTP client per coordination server so
+	// TCP/TLS connections are reused without a global-server fallback.
 	apiManager *APIManager
 	// ctx/cancel scope the Daemon's lifetime; cancelling ctx aborts all
-	// in-flight HTTP requests made through api.
+	// in-flight HTTP requests made through apiManager.
 	ctx    context.Context
 	cancel context.CancelFunc
 	// configPath is where Save persists state; empty falls back to the user
@@ -531,8 +528,13 @@ func (d *Daemon) Config() *Config {
 	return d.cfg
 }
 
+// serverAddrLocked returns the legacy global default server for compatibility
+// status output and local-subnet discovery.
+//
+// Deprecated: network routing must use serverForNetworkLocked. This value is
+// not a fallback for requests belonging to an existing network.
 func (d *Daemon) serverAddrLocked() string {
-	return normalizeServer(d.cfg.EffectiveServerAddr())
+	return d.defaultServerLocked()
 }
 
 // defaultServerLocked resolves the legacy/default server for networks that do
@@ -561,6 +563,8 @@ func (d *Daemon) serverForNetworkLocked(nid string) (string, error) {
 	return d.defaultServerLocked(), nil
 }
 
+// serverForConfigLocked resolves a network's server, using the default only
+// for legacy records that predate per-network SnetServ binding.
 func (d *Daemon) serverForConfigLocked(nc *NetworkCfg) string {
 	if nc != nil && strings.TrimSpace(nc.SnetServURL) != "" {
 		return normalizeServer(nc.SnetServURL)
@@ -580,31 +584,17 @@ func (d *Daemon) apiForNetworkLocked(nid string) (*apiClient, string, error) {
 	return newAPIClient(server, d.ctx), server, nil
 }
 
-func (d *Daemon) apiForServerLocked(server string) *apiClient {
+// apiForServerLocked returns an API client for an explicitly resolved server.
+// An empty address is an error; there is no global-server fallback here.
+func (d *Daemon) apiForServerLocked(server string) (*apiClient, error) {
 	server = normalizeServer(strings.TrimSpace(server))
 	if server == "" {
-		server = d.defaultServerLocked()
+		return nil, fmt.Errorf("API 请求缺少 SnetServ 地址")
 	}
 	if d.apiManager != nil {
-		return d.apiManager.Get(server)
+		return d.apiManager.Get(server), nil
 	}
-	return newAPIClient(server, d.ctx)
-}
-
-func (d *Daemon) apiLocked() *apiClient {
-	log.Printf("WARNING: apiLocked() called; this is a legacy fallback and may break multi-SnetServ routing")
-	server := d.serverAddrLocked()
-	if d.apiManager != nil {
-		d.api = d.apiManager.Get(server)
-		d.apiServer = server
-		return d.api
-	}
-	if d.api != nil && d.apiServer == server {
-		return d.api
-	}
-	d.api = newAPIClient(server, d.ctx)
-	d.apiServer = server
-	return d.api
+	return newAPIClient(server, d.ctx), nil
 }
 
 // CheckServer verifies that the target SnetServ is reachable and healthy.
@@ -652,8 +642,6 @@ func (d *Daemon) SetServer(serverAddr string) error {
 	// Keep the legacy field aligned for old config readers and for networks
 	// that still have no explicit SnetServURL.
 	d.cfg.ServerAddr = serverAddr
-	d.api = nil
-	d.apiServer = ""
 	return d.save()
 }
 
@@ -866,13 +854,21 @@ func (d *Daemon) RotateKeys() error {
 
 	updated := make([]target, 0, len(targets))
 	for _, t := range targets {
-		api := d.apiForServerLocked(t.server)
+		api, err := d.apiForServerLocked(t.server)
+		if err != nil {
+			return fmt.Errorf("rotate %s (%s): %w", t.nid, t.name, err)
+		}
 		if err := api.UpdateNodePublicKeyByToken(t.nid, t.nodeID, t.token, pub); err != nil {
 			// Best-effort rollback of servers already updated so the device
 			// keeps one consistent public key across every server.
 			for i := len(updated) - 1; i >= 0; i-- {
 				prev := updated[i]
-				if rbErr := d.apiForServerLocked(prev.server).UpdateNodePublicKeyByToken(prev.nid, prev.nodeID, prev.token, oldPub); rbErr != nil {
+				rbAPI, rbErr := d.apiForServerLocked(prev.server)
+				if rbErr != nil {
+					log.Printf("key rotation rollback %s: %v", prev.nid, rbErr)
+					continue
+				}
+				if rbErr := rbAPI.UpdateNodePublicKeyByToken(prev.nid, prev.nodeID, prev.token, oldPub); rbErr != nil {
 					log.Printf("key rotation rollback %s on %s: %v", prev.nid, prev.server, rbErr)
 				}
 			}
@@ -957,7 +953,11 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	if err := d.ensureKeys(serverAddr, port); err != nil {
 		return protocol.CreateNetworkResp{}, err
 	}
-	if err := d.ensureDeviceIDUniqueLocked(d.apiForServerLocked(serverAddr)); err != nil {
+	api, err := d.apiForServerLocked(serverAddr)
+	if err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	if err := d.ensureDeviceIDUniqueLocked(api); err != nil {
 		return protocol.CreateNetworkResp{}, err
 	}
 	// Reject an explicitly chosen subnet that collides with this machine's real
@@ -968,7 +968,6 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 			return protocol.CreateNetworkResp{}, err
 		}
 	}
-	api := d.apiForServerLocked(serverAddr)
 	desc, vis := "", ""
 	if so.description != nil {
 		desc = *so.description
@@ -1019,10 +1018,13 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 	if err := d.ensureKeys(serverAddr, port); err != nil {
 		return protocol.JoinResp{}, err
 	}
-	if err := d.ensureDeviceIDUniqueLocked(d.apiForServerLocked(serverAddr)); err != nil {
+	api, err := d.apiForServerLocked(serverAddr)
+	if err != nil {
 		return protocol.JoinResp{}, err
 	}
-	api := d.apiForServerLocked(serverAddr)
+	if err := d.ensureDeviceIDUniqueLocked(api); err != nil {
+		return protocol.JoinResp{}, err
+	}
 	resp, err := api.Join(nid, code, d.publicKeyLocked(), d.cfg.DeviceID)
 	if err != nil {
 		return resp, err
@@ -1103,8 +1105,12 @@ func (d *Daemon) pendingLoop(pendingID string, stop chan struct{}) {
 		if strings.TrimSpace(server) == "" {
 			server = d.defaultServerLocked()
 		}
-		api := d.apiForServerLocked(server)
+		api, apiErr := d.apiForServerLocked(server)
 		d.mu.Unlock()
+		if apiErr != nil {
+			log.Printf("pending %s: %v", pendingID, apiErr)
+			continue
+		}
 
 		// Poll without holding d.mu so a slow server never stalls the UI.
 		status, err := api.PendingJoinStatus(pendingID)
@@ -1167,7 +1173,11 @@ func (d *Daemon) CancelPending(pendingID string) error {
 	if strings.TrimSpace(server) == "" {
 		server = d.defaultServerLocked()
 	}
-	if err := d.apiForServerLocked(server).CancelPending(pendingID, d.cfg.DeviceID); err != nil {
+	api, apiErr := d.apiForServerLocked(server)
+	if apiErr != nil {
+		return fmt.Errorf("取消加入请求失败: %w", apiErr)
+	}
+	if err := api.CancelPending(pendingID, d.cfg.DeviceID); err != nil {
 		var se *httpStatusErr
 		// 404 means the server already removed/approved it; local cleanup can
 		// still proceed. Any other error must be surfaced so the user can retry.
@@ -1270,7 +1280,12 @@ func (d *Daemon) ensureRecoveryTokenLocked(nc *NetworkCfg) {
 	if d.cfg.RecoveryTokens != nil && d.cfg.RecoveryTokens[server] != "" {
 		return
 	}
-	token, err := d.apiForServerLocked(server).EnsureRecoveryToken(d.cfg.DeviceID, nc.Token)
+	api, err := d.apiForServerLocked(server)
+	if err != nil {
+		log.Printf("ensure recovery token: %v", err)
+		return
+	}
+	token, err := api.EnsureRecoveryToken(d.cfg.DeviceID, nc.Token)
 	if err != nil {
 		log.Printf("ensure recovery token: %v", err)
 		return
@@ -1469,8 +1484,9 @@ func (d *Daemon) SyncNetworks() error {
 		if recoveryToken == "" {
 			continue
 		}
-		api := d.apiForServerLocked(server)
-		if api == nil {
+		api, err := d.apiForServerLocked(server)
+		if err != nil {
+			log.Printf("sync networks: %v", err)
 			continue
 		}
 		details, err := api.DeviceNetworks(deviceID, recoveryToken)
@@ -1501,8 +1517,9 @@ func (d *Daemon) SyncNetworks() error {
 	}
 
 	for _, result := range results {
-		api := d.apiForServerLocked(result.server)
-		if api == nil {
+		api, err := d.apiForServerLocked(result.server)
+		if err != nil {
+			log.Printf("sync networks: %v", err)
 			continue
 		}
 		for _, detail := range result.details {
@@ -1602,8 +1619,9 @@ func (d *Daemon) SyncNetworks() error {
 	d.mu.Unlock()
 	removed := 0
 	for _, candidate := range removeCandidates {
-		api := d.apiForServerLocked(candidate.server)
-		if api == nil {
+		api, err := d.apiForServerLocked(candidate.server)
+		if err != nil {
+			log.Printf("sync networks: %v", err)
 			continue
 		}
 		_, checkErr := api.NetworkExists(candidate.nid, candidate.token)
@@ -1849,10 +1867,6 @@ func (d *Daemon) pickPortLocked() (int, error) {
 	return 0, fmt.Errorf("no free UDP port in range %d-%d", base, base+bands*band-1)
 }
 
-func (d *Daemon) localEndpointLocked(port int) (string, error) {
-	return d.localEndpointForServerLocked(d.serverAddrLocked(), port)
-}
-
 func (d *Daemon) localEndpointForNetworkLocked(nid string, port int) (string, error) {
 	server, err := d.serverForNetworkLocked(nid)
 	if err != nil {
@@ -1862,6 +1876,10 @@ func (d *Daemon) localEndpointForNetworkLocked(nid string, port int) (string, er
 }
 
 func (d *Daemon) localEndpointForServerLocked(serverAddr string, port int) (string, error) {
+	serverAddr = normalizeServer(strings.TrimSpace(serverAddr))
+	if serverAddr == "" {
+		return "", fmt.Errorf("本地端点缺少 SnetServ 地址")
+	}
 	ip := strings.TrimSpace(os.Getenv("SNET_LOCAL_IP"))
 	if ip != "" {
 		// Container deployments publish the WireGuard port on the host, so the
@@ -3517,7 +3535,12 @@ func (d *Daemon) publishRelayCapabilityAsync() {
 		}
 		d.mu.Unlock()
 		for _, t := range targets {
-			if err := d.apiForServerLocked(t.server).SetRelayCapability(t.nid, t.token, allow, relayErr); err != nil {
+			api, err := d.apiForServerLocked(t.server)
+			if err != nil {
+				log.Printf("report relay capability %s: %v", t.nid, err)
+				continue
+			}
+			if err := api.SetRelayCapability(t.nid, t.token, allow, relayErr); err != nil {
 				log.Printf("report relay capability %s: %v", t.nid, err)
 			}
 		}
@@ -3606,7 +3629,14 @@ func (d *Daemon) SetDeviceName(name string) error {
 	d.mu.Unlock()
 	var firstErr error
 	for _, t := range targets {
-		if err := d.apiForServerLocked(t.server).RenameDevice(t.nid, t.token, name); err != nil && firstErr == nil {
+		api, err := d.apiForServerLocked(t.server)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("更新设备名称失败: %w", err)
+			}
+			continue
+		}
+		if err := api.RenameDevice(t.nid, t.token, name); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("更新设备名称失败: %w", err)
 		}
 	}
@@ -3873,9 +3903,12 @@ func (d *Daemon) logRelayGatewayRolesLocked(nc *NetworkCfg, served []string) {
 	log.Printf("relay gateway %s: forwarding %s towards the LAN", nc.NodeID, key)
 }
 
-// DetectLocalSubnets enumerates network interfaces and returns the private
-// IPv4 CIDR subnets (e.g. "192.168.1.0/24") this device is directly on.
-// Virtual / tunnel interfaces are excluded.
+// DetectLocalSubnets enumerates interfaces for the legacy global
+// /ctl/local-subnets endpoint.
+//
+// Deprecated: this is a UI/diagnostic compatibility wrapper only and is not
+// used for routing. Per-network code must call DetectLocalSubnetsForServer with
+// that network's SnetServ.
 func (d *Daemon) DetectLocalSubnets() []string {
 	return d.DetectLocalSubnetsForServer(d.serverAddrLocked())
 }
@@ -4555,13 +4588,16 @@ func (d *Daemon) Status() (map[string]any, error) {
 			"error":     pj.Err,
 		})
 	}
+	// Deprecated: legacy global default for old UI; route by
+	// networks[].snetServUrl instead.
+	legacyServerAddr := d.serverAddrLocked()
 	return map[string]any{
 		"version":      buildinfo.Version,
 		"commit":       buildinfo.Commit,
 		"buildDate":    buildinfo.BuildDate,
 		"deviceId":     d.cfg.DeviceID,
 		"deviceName":   d.cfg.DeviceName,
-		"serverAddr":   d.serverAddrLocked(),
+		"serverAddr":   legacyServerAddr,
 		"wgPort":       d.cfg.WireguardPort,
 		"rxSpeed":      rxSpeed,
 		"txSpeed":      txSpeed,

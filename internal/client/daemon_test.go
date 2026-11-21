@@ -160,8 +160,8 @@ func TestConfigRoundTrip(t *testing.T) {
 
 func TestSetServerSupportsCustomAndEmptyDefault(t *testing.T) {
 	d, _ := newTestDaemon(t)
-	if got := d.cfg.EffectiveServerAddr(); got != constants.DefaultServer {
-		t.Fatalf("empty ServerAddr effective = %q, want %q", got, constants.DefaultServer)
+	if got := d.defaultServerLocked(); got != constants.DefaultServer {
+		t.Fatalf("empty ServerAddr default = %q, want %q", got, constants.DefaultServer)
 	}
 	if err := d.SetServer("https://custom.example:8090/"); err != nil {
 		t.Fatal(err)
@@ -1661,12 +1661,22 @@ func TestSetRoutesDistinguishesMissingEndpointFromDeletedNetwork(t *testing.T) {
 // TestSyncNetworksRefreshesExistingToken covers the reinstall/startup path:
 // DeviceNetworkDetails rotates the node token, and the client must persist it
 // even when the network itself is already in the local config.
+func TestLocalEndpointRequiresServer(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	if _, err := d.localEndpointForServerLocked("", 52100); err == nil {
+		t.Fatal("local endpoint without server must return an error")
+	}
+	if _, err := LocalIPForServer(""); err == nil {
+		t.Fatal("LocalIPForServer without server must return an error")
+	}
+}
+
 func TestLocalEndpointOverride(t *testing.T) {
 	d, _ := newTestDaemon(t)
 	t.Setenv("SNET_LOCAL_IP", "10.7.86.222")
-	got, err := d.localEndpointLocked(52100)
+	got, err := d.localEndpointForServerLocked("https://snet.test:8090", 52100)
 	if err != nil {
-		t.Fatalf("localEndpointLocked: %v", err)
+		t.Fatalf("localEndpointForServerLocked: %v", err)
 	}
 	if want := "10.7.86.222:52100"; got != want {
 		t.Fatalf("local endpoint = %q, want %q", got, want)

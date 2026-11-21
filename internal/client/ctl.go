@@ -675,6 +675,8 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		writeCtlJSON(w, 200, peers)
 	})
 
+	// Legacy UI/diagnostic endpoint. It uses the global default server only for
+	// display and never participates in network routing.
 	mux.HandleFunc("GET /ctl/local-subnets", func(w http.ResponseWriter, r *http.Request) {
 		subnets := d.DetectLocalSubnets()
 		writeCtlJSON(w, 200, map[string]any{"subnets": subnets})

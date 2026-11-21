@@ -922,7 +922,7 @@ func TestMapNATPortWith(t *testing.T) {
 
 func TestNATClaimRequiresServer(t *testing.T) {
 	n := newNatManager(&Config{}, context.Background())
-	if err := n.claim(51820); err == nil {
+	if err := n.claim(51820, ""); err == nil {
 		t.Fatal("claim without server must return an error")
 	}
 	if n.claimedPort(51820) {

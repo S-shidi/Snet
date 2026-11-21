@@ -4,13 +4,11 @@ import (
 	"context"
 	"strings"
 	"sync"
-
-	"snet/internal/constants"
 )
 
-// APIManager owns one reusable API client per coordination server. Stage 0
-// only prepares this routing base; existing callers still select the server
-// through Daemon.serverAddrLocked().
+// APIManager owns one reusable API client per coordination server. Callers
+// that know a network's server must pass it explicitly; network routing never
+// resolves its server through this type.
 type APIManager struct {
 	ctx     context.Context
 	mu      sync.Mutex
@@ -29,16 +27,15 @@ func NewAPIManager(ctx context.Context) *APIManager {
 
 // Get returns the cached client for serverURL, creating it on first use.
 // Server URLs are normalized so trailing slashes and scheme-less hosts share
-// the same client.
+// the same client. An empty server returns nil; callers must supply a server.
 func (m *APIManager) Get(serverURL string) *apiClient {
 	if m == nil {
 		return nil
 	}
-	serverURL = strings.TrimSpace(serverURL)
+	serverURL = normalizeServer(strings.TrimSpace(serverURL))
 	if serverURL == "" {
-		serverURL = constants.DefaultServer
+		return nil
 	}
-	serverURL = normalizeServer(serverURL)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

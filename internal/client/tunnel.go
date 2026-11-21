@@ -374,6 +374,10 @@ func runCmd(name string, args ...string) error {
 // LocalIPForServer returns the source IP that routes to the given server,
 // used as the local endpoint candidate.
 func LocalIPForServer(serverAddr string) (string, error) {
+	serverAddr = strings.TrimSpace(serverAddr)
+	if serverAddr == "" {
+		return "", errors.New("server address required")
+	}
 	host := serverAddr
 	if strings.HasPrefix(host, "http://") {
 		host = strings.TrimPrefix(host, "http://")
@@ -389,6 +393,9 @@ func LocalIPForServer(serverAddr string) (string, error) {
 	}
 	if host == "localhost" {
 		host = "127.0.0.1"
+	}
+	if strings.TrimSpace(host) == "" {
+		return "", fmt.Errorf("server address %q has no host", serverAddr)
 	}
 	conn, err := net.Dial("udp", net.JoinHostPort(host, "9"))
 	if err != nil {

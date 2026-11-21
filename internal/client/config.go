@@ -190,9 +190,15 @@ func migrateConfig(c *Config) {
 	if c.SchemaVersion == 0 {
 		c.SchemaVersion = 1
 	}
-	serverURL := c.EffectiveServerAddr()
+	serverURL := normalizeServer(strings.TrimSpace(c.ServerAddr))
+	if serverURL == "" {
+		serverURL = normalizeServer(strings.TrimSpace(c.DefaultSnetServURL))
+	}
+	if serverURL == "" {
+		serverURL = constants.DefaultServer
+	}
 	if c.DefaultSnetServURL == "" && strings.TrimSpace(c.ServerAddr) != "" {
-		c.DefaultSnetServURL = normalizeServer(strings.TrimSpace(c.ServerAddr))
+		c.DefaultSnetServURL = serverURL
 	}
 	for _, nc := range c.Networks {
 		if nc != nil && nc.SnetServURL == "" {
@@ -269,15 +275,6 @@ func LoadConfig() (*Config, error) {
 		return nil, err
 	}
 	return LoadConfigAt(path)
-}
-
-// EffectiveServerAddr returns the configured SnetServ address, falling back
-// to the official server when the user leaves it empty.
-func (c *Config) EffectiveServerAddr() string {
-	if strings.TrimSpace(c.ServerAddr) == "" {
-		return constants.DefaultServer
-	}
-	return strings.TrimRight(c.ServerAddr, "/")
 }
 
 func (c *Config) Save() error {

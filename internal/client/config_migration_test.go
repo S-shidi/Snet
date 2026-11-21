@@ -83,6 +83,24 @@ func TestLegacyConfigWithoutServerUsesDefault(t *testing.T) {
 	}
 }
 
+func TestLegacyNetworkUsesDefaultSnetServURL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	legacy := `{
+		"defaultSnetServUrl": "https://default.example:8090/",
+		"networks": {"NET1": {"nodeId": "node-1", "token": "tok", "active": true}}
+	}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfigAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Networks["NET1"].SnetServURL; got != "https://default.example:8090" {
+		t.Fatalf("network SnetServURL = %q", got)
+	}
+}
+
 func TestConfigMigrationIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	legacy := `{

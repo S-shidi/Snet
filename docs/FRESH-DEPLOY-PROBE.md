@@ -112,7 +112,7 @@ grep -r 'snet.uizhi' /etc/nginx /etc/caddy /etc/systemd
 ### 硬编码地址
 
 ```text
-internal/constants/constants.go: DefaultServerAddr = "https://snet.uizhi.eu.org:8090"
+internal/constants/constants.go: DefaultServer = "https://snet.uizhi.eu.org:8090"
 shared/web/types.ts: FIXED_SERVER = "https://snet.uizhi.eu.org:8090"
 ```
 

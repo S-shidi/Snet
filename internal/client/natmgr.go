@@ -141,13 +141,11 @@ func (n *natManager) start() {
 }
 
 // claim requests an inbound mapping for a WireGuard port. Called whenever a
-// network tunnel comes up on that port. The optional server is the network's
-// SnetServ URL, used to choose the local source interface for this mapping.
-func (n *natManager) claim(port int, servers ...string) error {
-	server := ""
-	if len(servers) > 0 {
-		server = normalizeServer(strings.TrimSpace(servers[0]))
-	}
+// network tunnel comes up on that port. server is the network's SnetServ URL,
+// required to choose the local source interface; an empty value is an error,
+// never a global-server fallback.
+func (n *natManager) claim(port int, server string) error {
+	server = normalizeServer(strings.TrimSpace(server))
 	if server == "" {
 		err := fmt.Errorf("NAT claim called without server URL")
 		log.Printf("ERROR: %v", err)
