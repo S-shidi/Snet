@@ -57,7 +57,7 @@ This triggers:
 The release must include the expected platform assets and the GHCR image:
 
 ```text
-ghcr.io/s-shidi/snet-client:vX.Y.Z
+ghcr.io/s-shidi/snet-client:X.Y.Z
 ghcr.io/s-shidi/snet-client:latest
 ```
 
