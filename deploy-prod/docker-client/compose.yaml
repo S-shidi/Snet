@@ -1,7 +1,7 @@
 services:
   snet:
     # Combined image: snetd + nginx + shared/web, supervised by supervisord.
-    image: ${SNET_IMAGE:-ghcr.io/s-shidi/snet-client:v1.2.3}
+    image: ${SNET_IMAGE:-ghcr.io/s-shidi/snet-client:1.2.3}
     container_name: snetd
     restart: unless-stopped
     network_mode: host
