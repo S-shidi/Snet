@@ -18,6 +18,8 @@
 
 ## Release rules
 
+Follow `docs/RELEASING.md` for tags, GHCR images, and rollback.
+
 - Client releases publish the Docker image to GHCR before the release is complete:
   - `ghcr.io/s-shidi/snet-client:vX.Y.Z`
   - `ghcr.io/s-shidi/snet-client:latest`

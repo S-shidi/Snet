@@ -20,6 +20,12 @@
 |---|---|
 | [`../scripts/hardware/README.md`](../scripts/hardware/README.md) | OpenWrt Image Builder、设备矩阵、刷机 |
 
+## 发布
+
+| 文档 | 用途 |
+|---|---|
+| [`RELEASING.md`](RELEASING.md) | 客户端与 shared 发布流程、tag、GHCR 与回滚 |
+
 ## 维护规则
 
 - 结构变化（新包、端口、配置字段、平台契约）→ 同步更新 `README.md` 和本索引。

@@ -1,0 +1,5 @@
+# Default owner for the public client repository.
+* @S-shidi
+
+# Shared protocol changes affect both the client and the private server.
+/shared/ @S-shidi
