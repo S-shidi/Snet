@@ -1,0 +1,7 @@
+title = "SNET client secret scanning"
+
+[allowlist]
+description = "Deterministic test-only secrets; not production credentials"
+regexes = [
+  '''0123456789abcdef0123456789abcdef''',
+]

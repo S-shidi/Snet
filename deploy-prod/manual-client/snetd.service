@@ -1,0 +1,16 @@
+[Unit]
+Description=SNET daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/snet/bin/snetd -config /etc/snet/config.json -ctl 127.0.0.1:19432 -device-id-file /etc/snet/device.id
+Restart=on-failure
+RestartSec=3
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

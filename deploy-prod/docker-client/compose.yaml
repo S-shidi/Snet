@@ -1,0 +1,13 @@
+services:
+  snet:
+    # Combined image: snetd + nginx + shared/web, supervised by supervisord.
+    image: ${SNET_IMAGE:-ghcr.io/s-shidi/snet-client:v1.2.2}
+    container_name: snetd
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./data:/etc/snet

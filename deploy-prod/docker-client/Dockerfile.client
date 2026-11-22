@@ -1,0 +1,54 @@
+# Stage 1: build shared/web using the Docker adapter.
+# shared/web has no package.json; deploy/docker/web-build is the build entry.
+FROM node:20-alpine AS webbuild
+WORKDIR /app
+
+COPY deploy/docker/web-build/package.json deploy/docker/web-build/package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY shared/web ./shared/web
+COPY deploy/docker/web-build/web.ts ./deploy/docker/web-build/web.ts
+
+RUN npx --yes esbuild@0.25.12 deploy/docker/web-build/web.ts \
+      --bundle --format=iife --target=es2022 --minify \
+      --outfile=dist/app.js \
+ && cp shared/web/index.html shared/web/styles.css shared/web/snet-logo.svg dist/
+
+# Stage 2: runtime with snetd + nginx + supervisor.
+FROM alpine:3.20
+# iptables is required by the relay gateway mode (NAT masquerading for the
+# delegated subnets). The container runs with NET_ADMIN and host networking,
+# so the rules apply to the host's network namespace. ip6tables covers the
+# IPv6 side of the same rules.
+#
+# iptables-legacy is the fallback backend: the nf_tables backend needs kernel
+# support that older NAS kernels (Synology DSM) lack, and it then fails on
+# every command with "Table does not exist". The legacy xtables backend talks
+# to the same classic ip_tables modules the host firewall uses.
+RUN apk add --no-cache ca-certificates nginx supervisor iptables iptables-legacy ip6tables iputils
+# Alpine keeps the binaries in /sbin while tooling and checklists often look
+# for the Debian-style /usr/sbin path. Expose both so the binary is found
+# regardless of the PATH the daemon inherits.
+RUN ln -sf /sbin/iptables /usr/sbin/iptables \
+ && ln -sf /sbin/iptables-legacy /usr/sbin/iptables-legacy \
+ && ln -sf /sbin/ip6tables /usr/sbin/ip6tables \
+ && ln -sf /sbin/ip6tables-legacy /usr/sbin/ip6tables-legacy
+
+# Never bake a machine-id into the image. Every container built from it would
+# otherwise derive the same device identity. The daemon persists its own ID in
+# the mounted data volume; the entrypoint seeds a random one when missing.
+RUN rm -f /etc/machine-id && touch /etc/machine-id
+
+ARG BIN_ARCH=amd64
+COPY dist-deploy/linux-${BIN_ARCH}/snetd /usr/local/bin/snetd
+COPY --from=webbuild /app/dist /usr/share/nginx/html
+COPY deploy-prod/docker-client/nginx.conf /etc/nginx/snet.conf.template
+COPY deploy-prod/docker-client/nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
+COPY deploy-prod/docker-client/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY deploy-prod/docker-client/supervisord.conf /etc/supervisord.conf
+
+RUN chmod +x /usr/local/bin/snetd /usr/local/bin/nginx-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+EXPOSE 8081
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["supervisord", "-c", "/etc/supervisord.conf"]

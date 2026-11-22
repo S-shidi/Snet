@@ -1,0 +1,164 @@
+name: Build Windows App
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            desktop-windows/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails v3
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+          $wailsBin = Join-Path (go env GOPATH) "bin"
+          $wailsBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:PATH = "$env:PATH;$wailsBin"
+          wails3 version
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          $nsisDir = "C:\Program Files (x86)\NSIS"
+          if (Test-Path "$nsisDir\makensis.exe") {
+            $env:PATH = "$env:PATH;$nsisDir"
+            $nsisDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            throw "makensis not found after NSIS installation"
+          }
+          makensis /VERSION
+
+      - name: Fetch Wintun DLL
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./desktop-windows/scripts/fetch-wintun.ps1
+
+      - name: Get version info
+        id: vars
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $sha = (git rev-parse --short HEAD).Trim()
+          "VERSION=$version" >> $env:GITHUB_OUTPUT
+          "SHORT_SHA=$sha" >> $env:GITHUB_OUTPUT
+
+      - name: Build snetd and snetctl
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ steps.vars.outputs.VERSION }}"
+          $commit = "${{ steps.vars.outputs.SHORT_SHA }}"
+          $date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $ldflags = "-s -w -X github.com/S-shidi/snet/shared/buildinfo.Version=$version -X github.com/S-shidi/snet/shared/buildinfo.Commit=$commit -X github.com/S-shidi/snet/shared/buildinfo.BuildDate=$date"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -trimpath -buildvcs=false -ldflags $ldflags -o dist/snetd.exe ./cmd/client/snetd
+          go build -trimpath -buildvcs=false -ldflags $ldflags -o dist/snetctl.exe ./cmd/client/snetctl
+
+      - name: Build Wails app
+        working-directory: ./desktop-windows
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path bin) { Remove-Item -Recurse -Force bin }
+          wails3 build GOOS=windows GOARCH=amd64
+          if (-not (Test-Path bin/Snet.exe)) { throw "bin/Snet.exe not produced" }
+          Copy-Item ../dist/snetd.exe bin/snetd.exe -Force
+          Copy-Item ../dist/snetctl.exe bin/snetctl.exe -Force
+          Copy-Item assets/wintun.dll bin/wintun.dll -Force
+          wails3 package GOOS=windows GOARCH=amd64
+          $setup = "bin/Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe"
+          if (-not (Test-Path $setup)) { throw "installer not produced: $setup" }
+          Copy-Item $setup ../Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe -Force
+
+      - name: Package Windows app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = "release-win"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          Copy-Item desktop-windows/bin/Snet.exe $stage/
+          Copy-Item dist/snetd.exe $stage/
+          Copy-Item dist/snetctl.exe $stage/
+          Copy-Item desktop-windows/assets/wintun.dll $stage/
+
+          @"
+          SNET Windows client (portable/debug folder)
+          ===========================================
+
+          For normal use, run Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe.
+          The installer registers the SNetDaemon Windows service; this portable
+          folder only works after that service has been installed.
+
+          Logs:
+            C:\ProgramData\SNET\Snet-startup.log
+            C:\ProgramData\SNET\daemon.log
+          "@ | Set-Content -Path "$stage/README.txt" -Encoding utf8
+
+          Compress-Archive -Path "$stage/*" -DestinationPath Snet-v${{ steps.vars.outputs.VERSION }}-win-portable.zip -Force
+
+          # Browsers commonly flag unsigned .exe downloads. A zip gives users a
+          # normal download while keeping the NSIS installer inside.
+          $setup = "Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe"
+          $setupZip = "Snet-v${{ steps.vars.outputs.VERSION }}-win-Setup.zip"
+          Compress-Archive -Path $setup -DestinationPath $setupZip -Force
+          @(
+            (Get-FileHash $setup -Algorithm SHA256).Hash + "  " + $setup,
+            (Get-FileHash $setupZip -Algorithm SHA256).Hash + "  " + $setupZip,
+            (Get-FileHash "Snet-v${{ steps.vars.outputs.VERSION }}-win-portable.zip" -Algorithm SHA256).Hash + "  Snet-v${{ steps.vars.outputs.VERSION }}-win-portable.zip"
+          ) | Set-Content SHA256SUMS-windows-v${{ steps.vars.outputs.VERSION }}.txt -Encoding ascii
+          Get-Content SHA256SUMS-windows-v${{ steps.vars.outputs.VERSION }}.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snet-v${{ steps.vars.outputs.VERSION }}
+          path: |
+            Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe
+            Snet-v${{ steps.vars.outputs.VERSION }}-win-Setup.zip
+            Snet-v${{ steps.vars.outputs.VERSION }}-win-portable.zip
+            SHA256SUMS-windows-v${{ steps.vars.outputs.VERSION }}.txt
+          retention-days: 7
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Snet-Setup-v${{ steps.vars.outputs.VERSION }}.exe
+            Snet-v${{ steps.vars.outputs.VERSION }}-win-Setup.zip
+            SHA256SUMS-windows-v${{ steps.vars.outputs.VERSION }}.txt
+          fail_on_unmatched_files: true

@@ -1,0 +1,4653 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"math"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/S-shidi/snet/shared/buildinfo"
+	"github.com/S-shidi/snet/shared/constants"
+	"github.com/S-shidi/snet/shared/protocol"
+)
+
+// Buffer pools for frequently allocated byte slices to reduce GC pressure.
+var (
+	// smallBufPool for small UDP responses (512 bytes)
+	smallBufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 512)
+		},
+	}
+
+	// largeBufPool for large UDP responses (65535 bytes)
+	largeBufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 65535)
+		},
+	}
+)
+
+// getSmallBuf retrieves a small buffer from the pool.
+func getSmallBuf() []byte {
+	return smallBufPool.Get().([]byte)
+}
+
+// putSmallBuf returns a small buffer to the pool.
+func putSmallBuf(b []byte) {
+	// Reset buffer (optional but recommended)
+	smallBufPool.Put(b)
+}
+
+// getLargeBuf retrieves a large buffer from the pool.
+func getLargeBuf() []byte {
+	return largeBufPool.Get().([]byte)
+}
+
+// putLargeBuf returns a large buffer to the pool.
+func putLargeBuf(b []byte) {
+	largeBufPool.Put(b)
+}
+
+// netGoneErr is returned when the server reports 404 for a network operation,
+// indicating the network no longer exists on the server.
+var netGoneErr = errors.New("该网络在服务端已不存在")
+
+// shareOpt carries optional community-sharing metadata (description, tags,
+// visibility) for network create/settings operations. description and
+// visibility are pointers so "nil = leave unchanged" works for updates.
+type shareOpt struct {
+	description  *string
+	tags         []string
+	visibility   *string
+	allowOverlap bool
+}
+
+// ShareOpt builds a shareOpt for Create/UpdateSettings. Nil description or
+// visibility means "leave unchanged"; an empty-string pointer clears the value.
+func ShareOpt(description *string, tags []string, visibility *string) shareOpt {
+	return shareOpt{description: description, tags: tags, visibility: visibility}
+}
+
+// AllowOverlapOpt lets a create request opt into a subnet that overlaps an
+// existing network. Combine it with ShareOpt; Create merges all options.
+func AllowOverlapOpt(allow bool) shareOpt {
+	return shareOpt{allowOverlap: allow}
+}
+
+// wrapNetGone converts a server 404 error into netGoneErr so callers can
+// present a clear "network gone" message to the user.
+func wrapNetGone(err error) error {
+	var se *httpStatusErr
+	if errors.As(err, &se) && se.code == 404 {
+		return netGoneErr
+	}
+	return err
+}
+
+// retryInterval is the base interval between tunnel re-creation attempts for
+// a network whose initial bring-up failed (e.g. insufficient privileges to
+// create a TUN device). The actual delay grows exponentially with each
+// consecutive failure up to retryIntervalMax, so a server outage or
+// permission fix pending a user action does not flood the log every 30s.
+const (
+	retryInterval    = 30 * time.Second
+	retryIntervalMax = 30 * time.Minute
+)
+
+// nextRetryDelay returns the wait before the next attempt, doubling the
+// previous wait up to retryIntervalMax. Consecutive successes reset the
+// counter.
+func nextRetryDelay(attempts int) time.Duration {
+	if attempts < 0 {
+		attempts = 0
+	}
+	d := retryInterval
+	for i := 0; i < attempts; i++ {
+		d *= 2
+		if d >= retryIntervalMax {
+			return retryIntervalMax
+		}
+	}
+	return d
+}
+
+// directGraceSec is how long the daemon tries a peer's direct endpoint
+// (LAN/LocalEndpoint) before falling back to the network relay endpoint.
+const directGraceSec = 45
+
+// directRetrySec is how long the daemon stays on the relay endpoint for a
+// peer before re-attempting a direct path.
+const directRetrySec = 180
+
+// directLockStaleSec is how long a locked direct path may go without a fresh
+// WireGuard handshake before the lock is discarded and the path falls back to
+// the relay. WireGuard rekeys roughly every 120s on a live session, so a lock
+// idle for this long means the direct path is gone (NAT re-bound, CGNAT hole
+// closed). Without this, one lucky one-shot direct handshake locks a peer
+// onto a dead endpoint forever.
+const directLockStaleSec = 240
+
+// candProbeSec is how long the daemon stays on one direct-endpoint candidate
+// before rotating to the next. Behind a symmetric NAT the observed public port
+// is usually off by a small delta per destination, so probing a small window
+// of candidate ports (buildCandidates) raises the direct-hit rate.
+const candProbeSec = 4
+
+// qualityIntervalSec is how often the per-network health watchdog samples the
+// data plane (handshake age + byte deltas) to detect a silently dead relay
+// path.
+const qualityIntervalSec = 10
+
+// qualityDeadBatches is how many consecutive watchdog samples a peer's relay
+// path may look dead (no traffic and a stale handshake) before the watchdog
+// forces a relay re-evaluation / direct retry. The first dead sample starts a
+// window; the path trips once (qualityDeadBatches-1) further samples pass with
+// no liveness. At 3 batches x 10s that is a 30s tolerance, long enough to
+// absorb a quiet lull yet short enough to rescue a peer from a relay that just
+// died.
+const qualityDeadBatches = 3
+
+// qualityHandshakeStaleSec is how old a peer's last handshake may be before
+// the watchdog counts a zero-traffic sample as "dead". WireGuard rekeys a
+// live session roughly every 120s, so anything beyond that with no traffic is
+// genuinely quiet.
+const qualityHandshakeStaleSec = directLockStaleSec
+
+// directDeadMinBytes is the minimum TX delta in one watchdog interval before
+// a direct path with zero RX is treated as one-way. Keepalive-only traffic is
+// below this threshold, so an idle peer is not mistaken for a broken path.
+const directDeadMinBytes = 512
+
+// parallelProbes is the number of candidates to probe concurrently in a batch.
+// With parallelProbes=5 and 17 total candidates, the worst-case handshake time
+// drops from 68s (sequential) to ~20s (3 batches). Higher values increase
+// success probability at the cost of more simultaneous UDP flows.
+const parallelProbes = 5
+
+// observedRefreshSec throttles how often the daemon asks the relay for the
+// live peer-mapping list. Each refresh restarts the direct candidate window
+// with the peers' current NAT-observed endpoints first (highest hit rate).
+const observedRefreshSec = 8
+
+// relaySelectSec is how often the daemon re-measures latency to every relay
+// candidate and re-selects the best one for the data plane. Selection keeps
+// the current relay when it is within tolerance of the best, so a healthy
+// session is not flapped by noise; a dead primary falls back to the next
+// candidate within this window.
+const relaySelectSec = 30
+
+// netRuntime holds the live tunnel + control loops for one joined network.
+type netRuntime struct {
+	tun *Tunnel
+	// path is the relay-first PathManager when the server advertises Relay
+	// v2. It owns loopback shims and stable WireGuard endpoints; when nil the
+	// legacy direct-first resolver remains in use.
+	path *PathManager
+	// peerDirect tracks the endpoint strategy per peer ("direct" vs
+	// "relay") so the daemon can attempt direct paths and fall back to the
+	// relay when a direct handshake does not complete in time.
+	peerDirect map[string]*peerDirect
+	// peerIDs maps a WireGuard public key to its node ID, so the quality
+	// watchdog can find the peerDirect state (keyed by node ID) for a stats
+	// entry (keyed by public key).
+	peerIDs map[string]string
+	// quality tracks the observed data-plane liveness per peer, fed by the
+	// per-network qualityLoop watchdog. It does not drive the direct/relay
+	// state machine directly — the state machine already reacts to handshake
+	// staleness — but it detects a silently dead relay path (no traffic, no
+	// fresh handshake) and forces the relay to be re-evaluated or a direct
+	// retry to begin, so a dead relay does not hold the peer hostage until a
+	// scheduled re-probe happens.
+	quality map[string]*peerQuality
+	// deadSince tracks when a peer's relay path started being observed dead
+	// (unix seconds); zero means currently live/unknown.
+	deadSince map[string]int64
+}
+
+// shutdown tears down the path manager (if any) and the WireGuard tunnel.
+func (rt *netRuntime) shutdown() {
+	if rt.path != nil {
+		rt.path.Close()
+		rt.path = nil
+	}
+	if rt.tun != nil {
+		rt.tun.Close()
+	}
+}
+
+// peerQuality is the per-peer data-plane liveness snapshot produced by the
+// quality watchdog loop. Active is whether traffic is flowing or the handshake
+// is fresh; HandshakeAge is seconds since the last handshake; RxRate/TxRate
+// are per-interval byte deltas (bytes per qualityIntervalSec).
+type peerQuality struct {
+	Active       bool
+	HandshakeAge int64
+	RxRate       int64
+	TxRate       int64
+}
+
+// peerDirect records the endpoint strategy for a single peer.
+type peerDirect struct {
+	mode      string // "direct" or "relay"
+	dirSince  int64  // unix seconds when the current direct attempt started
+	lastDir   string // direct endpoint last attempted
+	badDirect string // lastDir that proved one-way; do not retry until it changes
+	relay     string // network relay endpoint, for telemetry
+	tried     bool   // a direct attempt has at least one real candidate set
+
+	// Candidates for the current direct attempt: when the observed public
+	// endpoint does not complete a handshake, the daemon rotates through a
+	// small window of nearby ports. Can be empty (LAN peers etc.) meaning
+	// "do not probe".
+	cands     []string
+	candIdx   int
+	candStart int64 // unix second the current candidate attempt began
+	baseHS    int64 // peer handshake second observed when probing started
+	locked    bool  // a handshake succeeded on the current candidate; stop probing
+
+	// Parallel probing: probe multiple candidates concurrently to reduce
+	// handshake latency on symmetric NATs where the correct port may be
+	// far down the candidate list.
+	parallelIdx int // current parallel batch start index
+}
+
+// Daemon coordinates the local tunnels and the coordination server for any
+// number of networks against a single server.
+type Daemon struct {
+	mu   sync.RWMutex
+	cfg  *Config
+	nets map[string]*netRuntime
+	// pendingRuns tracks the poll goroutines of pending join requests.
+	pendingRuns map[string]chan struct{}
+	// apiManager owns one reusable HTTP client per coordination server so
+	// TCP/TLS connections are reused without a global-server fallback.
+	apiManager *APIManager
+	// ctx/cancel scope the Daemon's lifetime; cancelling ctx aborts all
+	// in-flight HTTP requests made through apiManager.
+	ctx    context.Context
+	cancel context.CancelFunc
+	// configPath is where Save persists state; empty falls back to the user
+	// config dir. Explicit path keeps daemons running without $HOME
+	// (e.g. launchd) functional.
+	configPath string
+	// relayEP caches each network's selected relay endpoint (learned from
+	// PeersState and chosen from the candidates by measured latency), so
+	// probeLoop can reuse it for relay-whoami hole punching.
+	relayEP map[string]string
+	// relayCands caches each network's advertised relay candidate list
+	// (RelayEndpoints; falls back to a single [RelayEndpoint]).
+	relayCands map[string][]string
+	// relayRTT caches the last measured RTT per candidate ("relay|ep" -> ms),
+	// so selection can stay put when the current relay stays within tolerance.
+	relayRTT map[string]int64
+	// relaySelAt records the last relay selection time per network (unix ms);
+	// selection is throttled to relaySelectSec.
+	relaySelAt map[string]int64
+	// obsList caches the last good relay peer-mapping list per network; the
+	// candidates are re-resolved into per-peer candidate windows.
+	obsList map[string][]string
+	// obsAt records the last relay group refresh per network (unix seconds).
+	obsAt map[string]int64
+	// peerSeenAt throttles data-plane LastSeen reports per network.
+	peerSeenAt map[string]int64
+	// selfPub records the last observed public IP per network, used to
+	// exclude our own mapping from the relay peer-mapping list.
+	selfPub map[string]string
+	// endV6 caches the last advertised global-IPv6 endpoint per network so
+	// probeLoop only re-advertises on change.
+	endV6 map[string]string
+	// directPub caches the last advertised Relay v2 direct endpoints/NAT type
+	// per network ("v4|v6|nat") to avoid rewriting unchanged node state.
+	directPub map[string]string
+	// deviceIDFile is the on-disk stable device identity; empty disables it
+	// (used in tests / read-only environments).
+	deviceIDFile string
+	// deviceIDFresh is true when this process just generated a new identity
+	// and has not yet confirmed with the server that it is unused. It drives
+	// the collision check before the first network operation.
+	deviceIDFresh bool
+	// syncMu serializes membership recovery so startup and an explicit
+	// refresh cannot rotate node tokens concurrently.
+	syncMu sync.Mutex
+	// netErrs records the last tunnel bring-up failure per network so the
+	// status API can explain why an active-looking network has no tunnel.
+	netErrs map[string]string
+	// relayErr records why the local relay gateway setup failed (empty when
+	// the gateway is healthy or not enabled). It is reported to the
+	// coordination server so delegated routes stay pending with a reason.
+	relayErr string
+	// relayServed caches the subnets this node currently forwards as the
+	// network's relay gateway, per node ID, so the log only reports a
+	// change and not every poll.
+	relayServed map[string]string
+	// serverState records the server-side existence of each joined network.
+	// Values: pointer to "ok"   = network exists on server
+	//         pointer to "gone" = network no longer exists (deleted by owner)
+	//         nil               = unknown (not yet probed)
+	serverState map[string]*string
+	// retryPending tracks networks whose tunnel creation failed; a background
+	// loop retries them so transient failures (or a late privilege fix, e.g.
+	// installing the root LaunchDaemon) self-heal without a daemon restart.
+	retryPending map[string]struct{}
+	// retryAttempts tracks how many consecutive failed retry attempts per
+	// network, used to compute an exponential backoff. Cleared when a retry
+	// succeeds or the network is left/removed.
+	retryAttempts map[string]int
+	// retryStop signals the background retry loop to exit.
+	retryStop chan struct{}
+	// routeWake wakes poll loops to reapply routes after a per-route toggle.
+	routeWake chan struct{}
+	// androidTunFD holds the TUN file descriptor from VpnService on Android.
+	// When non-zero, bringUp uses NewTunnelFromFD instead of NewTunnel.
+	androidTunFD int
+	// singleActiveNetwork is true on Android: one VpnService TUN cannot host
+	// multiple independent WireGuard devices safely.
+	singleActiveNetwork bool
+	// hostnameCache caches the machine hostname for device registration.
+	hostnameCache string
+	// keyRotationStop signals the periodic key-rotation goroutine to exit.
+	keyRotationStop chan struct{}
+	// keyRotating guards against concurrent rotations (loop tick vs manual
+	// trigger). Guarded by d.mu.
+	keyRotating bool
+	// nat manages automatic inbound port mappings for active network ports.
+	nat *natManager
+	// started is true once Start has restored persisted state and launched
+	// the background loops. Later Start calls (Android VPN restarts) only
+	// re-bring-up active tunnels instead of duplicating loops.
+	started bool
+
+	// Last aggregate counters used to derive real-time speeds for /ctl/status.
+	lastStatusAt time.Time
+	lastStatusRx uint64
+	lastStatusTx uint64
+}
+
+func NewDaemonAt(cfg *Config, configPath string) *Daemon {
+	ctx, cancel := context.WithCancel(context.Background())
+	sp := make(map[string]string)
+	for nid, nc := range cfg.Networks {
+		if nc.PublicIP != "" {
+			sp[nid] = nc.PublicIP
+		}
+	}
+	return &Daemon{
+		cfg:           cfg,
+		configPath:    configPath,
+		apiManager:    NewAPIManager(ctx),
+		nets:          make(map[string]*netRuntime),
+		pendingRuns:   make(map[string]chan struct{}),
+		netErrs:       make(map[string]string),
+		relayServed:   make(map[string]string),
+		retryPending:  make(map[string]struct{}),
+		retryAttempts: make(map[string]int),
+		routeWake:     make(chan struct{}, 1),
+		relayEP:       make(map[string]string),
+		relayCands:    make(map[string][]string),
+		relayRTT:      make(map[string]int64),
+		relaySelAt:    make(map[string]int64),
+		obsList:       make(map[string][]string),
+		obsAt:         make(map[string]int64),
+		peerSeenAt:    make(map[string]int64),
+		selfPub:       sp,
+		endV6:         make(map[string]string),
+		directPub:     make(map[string]string),
+		nat:           newNatManager(cfg, ctx),
+		deviceIDFile:  DefaultDeviceIDFile,
+		ctx:           ctx,
+		cancel:        cancel,
+	}
+}
+
+// SetDeviceIDFile overrides the on-disk device identity path.
+func (d *Daemon) SetDeviceIDFile(path string) {
+	d.deviceIDFile = path
+}
+
+// SetAndroidTunFD stores the TUN file descriptor from VpnService so bringUp
+// can use NewTunnelFromFD instead of trying to create a TUN device directly.
+// If running under Android with no fd, tunnel creation returns a clean
+// "VPN TUN 未就绪" error and the retry loop waits for the fd. When the fd is
+// (re)provided, any pending networks are brought up immediately rather than
+// waiting for the next retry tick.
+func (d *Daemon) SetAndroidTunFD(fd int) {
+	d.mu.Lock()
+	oldFD := d.androidTunFD
+	d.androidTunFD = fd
+	d.singleActiveNetwork = true
+	if fd != oldFD {
+		if changed := d.enforceSingleActiveLocked(""); changed {
+			if err := d.save(); err != nil {
+				log.Printf("save single active network: %v", err)
+			}
+		}
+	}
+	// Android replaces the TUN fd whenever VpnService is rebuilt to add new
+	// network addresses/routes. The existing wireguard-go devices still hold
+	// duplicates of the old fd, so rebuild them on the new one. The daemon
+	// itself keeps running: the ctl proxy and WebView requests must not be
+	// interrupted by a route update.
+	if fd != oldFD {
+		d.stopAllNetworksLocked()
+		if fd != 0 && d.started {
+			d.bringUpAllLocked()
+		}
+	}
+	d.mu.Unlock()
+}
+
+// enforceSingleActiveLocked deactivates every active network except keep.
+// An empty keep chooses the most recently joined active network. Android's
+// single VpnService TUN cannot safely back multiple WireGuard devices.
+// Caller must hold d.mu.
+func (d *Daemon) enforceSingleActiveLocked(keep string) bool {
+	if !d.singleActiveNetwork {
+		return false
+	}
+	if keep == "" {
+		for nid, nc := range d.cfg.Networks {
+			if nc == nil || !nc.Active {
+				continue
+			}
+			if keep == "" || nc.JoinedAt > d.cfg.Networks[keep].JoinedAt {
+				keep = nid
+			}
+		}
+	}
+	changed := false
+	for nid, nc := range d.cfg.Networks {
+		if nid == keep || nc == nil || !nc.Active {
+			continue
+		}
+		d.leaveLocked(nid)
+		changed = true
+	}
+	return changed
+}
+
+// bringUpAllLocked brings up tunnels for all active networks that do not yet
+// have a live tunnel. Caller must hold d.mu.
+func (d *Daemon) bringUpAllLocked() {
+	for nid, nc := range d.cfg.Networks {
+		if nc.Active && d.nets[nid] == nil {
+			if err := d.bringUp(nid); err != nil {
+				log.Printf("bring up %s on TUN ready: %v", nid, err)
+			}
+		}
+	}
+}
+
+func (d *Daemon) save() error {
+	if d.configPath != "" {
+		return d.cfg.SaveAt(d.configPath)
+	}
+	return d.cfg.Save()
+}
+
+// SaveConfig persists the current daemon configuration to disk.
+func (d *Daemon) SaveConfig() error {
+	return d.save()
+}
+
+// SetNATMapping enables or disables automatic inbound port mapping and
+// persists the choice. Disabling immediately tears down established rules.
+func (d *Daemon) SetNATMapping(enabled bool) error {
+	d.mu.Lock()
+	prev := d.cfg.NATMapping
+	v := enabled
+	d.cfg.NATMapping = &v
+	err := d.save()
+	if err != nil {
+		d.cfg.NATMapping = prev
+	}
+	d.mu.Unlock()
+	if err == nil {
+		d.nat.setEnabled(enabled)
+	}
+	return err
+}
+
+// Config returns the daemon's current configuration. The caller must not
+// modify the returned pointer; it is a snapshot taken under the lock.
+func (d *Daemon) Config() *Config {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.cfg
+}
+
+// serverForNetworkLocked returns the coordination server bound to nid.
+// Legacy records without a binding use the official default.
+func (d *Daemon) serverForNetworkLocked(nid string) (string, error) {
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return "", fmt.Errorf("网络 %s 未找到", nid)
+	}
+	return serverForConfig(nc), nil
+}
+
+// serverForConfig resolves a network's server. Legacy records without a
+// binding use the official default, never a configurable global default.
+func serverForConfig(nc *NetworkCfg) string {
+	if nc != nil && strings.TrimSpace(nc.SnetServURL) != "" {
+		return normalizeServer(nc.SnetServURL)
+	}
+	return constants.DefaultServer
+}
+
+func (d *Daemon) serverForConfigLocked(nc *NetworkCfg) string {
+	return serverForConfig(nc)
+}
+
+// apiForNetworkLocked returns the API client and resolved server for nid.
+func (d *Daemon) apiForNetworkLocked(nid string) (*apiClient, string, error) {
+	server, err := d.serverForNetworkLocked(nid)
+	if err != nil {
+		return nil, "", err
+	}
+	if d.apiManager != nil {
+		return d.apiManager.Get(server), server, nil
+	}
+	return newAPIClient(server, d.ctx), server, nil
+}
+
+// apiForServerLocked returns an API client for an explicitly resolved server.
+// An empty address is an error; there is no global-server fallback here.
+func (d *Daemon) apiForServerLocked(server string) (*apiClient, error) {
+	server = normalizeServer(strings.TrimSpace(server))
+	if server == "" {
+		return nil, fmt.Errorf("API 请求缺少 SnetServ 地址")
+	}
+	if d.apiManager != nil {
+		return d.apiManager.Get(server), nil
+	}
+	return newAPIClient(server, d.ctx), nil
+}
+
+func (d *Daemon) publicKeyLocked() string {
+	return pubKeyB64FromPrivHex(d.cfg.PrivateKey)
+}
+
+// hostnameLocked returns the hostname assuming the caller already holds d.mu.
+func (d *Daemon) hostnameLocked() string {
+	if d.cfg.DeviceName != "" {
+		return d.cfg.DeviceName
+	}
+	if d.hostnameCache != "" {
+		return d.hostnameCache
+	}
+	h, _ := os.Hostname()
+	d.hostnameCache = h
+	return h
+}
+
+// SetHostname overrides the display name reported during device registration
+// and binding. Intended for embedders (e.g. Android passes Build.MODEL since
+// os.Hostname is generic there). Call before Start or any network activity.
+func (d *Daemon) SetHostname(name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.hostnameCache = strings.TrimSpace(name)
+}
+
+// ensureKeys guarantees a private key and device ID exist. Server selection
+// belongs to the network being attached, not to the daemon as a whole.
+func (d *Daemon) ensureKeys(port int) error {
+	if port != 0 {
+		d.cfg.WireguardPort = port
+	}
+	if d.cfg.PrivateKey == "" {
+		// Try to load the private key from the persistent device ID file
+		// first (survives app reinstalls). Falls back to generating a new one.
+		if _, persisted, err := LoadDeviceKeypair(d.deviceIDFile); err == nil && persisted != "" {
+			d.cfg.PrivateKey = persisted
+		} else {
+			priv, _, err := GenerateKeyPair()
+			if err != nil {
+				return err
+			}
+			d.cfg.PrivateKey = b64ToHex(priv)
+		}
+		if err := d.save(); err != nil {
+			return err
+		}
+	}
+	if err := d.ensureDeviceIdentityLocked(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureDeviceIdentityLocked makes the on-disk identity file and the in-memory
+// config agree, without ever silently deriving an identity from hardware.
+// The device.id file is authoritative when present; a config value is adopted
+// only when the file is missing, and then written back immediately.
+func (d *Daemon) ensureDeviceIdentityLocked() error {
+	changed := false
+	if d.deviceIDFile != "" {
+		storedID, storedKey, storedToken, err := LoadDeviceIdentity(d.deviceIDFile)
+		if err != nil {
+			return err
+		}
+		if storedID != "" && validDeviceID(storedID) {
+			if d.cfg.DeviceID != storedID {
+				d.cfg.DeviceID = storedID
+				changed = true
+			}
+			if d.cfg.PrivateKey == "" && storedKey != "" {
+				d.cfg.PrivateKey = storedKey
+				changed = true
+			}
+			if d.cfg.RecoveryToken == "" && storedToken != "" {
+				d.cfg.RecoveryToken = storedToken
+				changed = true
+			}
+		}
+	}
+	if d.cfg.DeviceID == "" {
+		id, created, err := loadOrCreateDeviceID(d.deviceIDFile, "")
+		if err != nil {
+			return err
+		}
+		d.cfg.DeviceID = id
+		d.deviceIDFresh = d.deviceIDFresh || created
+		changed = true
+	} else if !validDeviceID(d.cfg.DeviceID) {
+		return fmt.Errorf("invalid persisted device id %q", d.cfg.DeviceID)
+	}
+	if changed {
+		if err := d.save(); err != nil {
+			return err
+		}
+	}
+	// Always rewrite the full identity (id + key + recovery token) so the
+	// identity survives even if a previous version wrote only the id line.
+	if d.deviceIDFile != "" {
+		if err := SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey, d.cfg.RecoveryToken); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// startKeyRotationLocked starts the daily key-rotation scheduler when it is
+// not already running. Caller must hold d.mu.
+func (d *Daemon) startKeyRotationLocked() {
+	if d.keyRotationStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	d.keyRotationStop = stop
+	go d.keyRotationLoop(stop)
+}
+
+// keyRotationLoop checks once a day whether the WireGuard keypair is due for
+// rotation and rotates it when so. The anchor (LastKeyRotatedAt) persists, so
+// restarting the daemon does not reset the schedule.
+func (d *Daemon) keyRotationLoop(stop chan struct{}) {
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+		}
+		d.mu.Lock()
+		days := d.cfg.KeyRotationDays
+		last := d.cfg.LastKeyRotatedAt
+		hasKey := d.cfg.PrivateKey != ""
+		d.mu.Unlock()
+		if !hasKey || days <= 0 {
+			continue
+		}
+		if last == 0 {
+			// First daemon run with rotation enabled: anchor the schedule now
+			// so an existing (possibly long-lived) key is not rotated
+			// immediately on upgrade.
+			d.mu.Lock()
+			if d.cfg.LastKeyRotatedAt == 0 {
+				d.cfg.LastKeyRotatedAt = time.Now().Unix()
+				_ = d.save()
+			}
+			d.mu.Unlock()
+			continue
+		}
+		due := time.Now().Unix()-last >= int64(days)*24*3600
+		if !due {
+			continue
+		}
+		if err := d.RotateKeys(); err != nil {
+			log.Printf("key rotation: %v", err)
+		}
+	}
+}
+
+// RotateKeys rotates the daemon's WireGuard keypair and pushes the new public
+// key to every active network's coordination server before switching the local
+// key, so tunnels are rebuilt on the new identity. Rotation is atomic: if any
+// network rejects the new key (stale token, unreachable server, incompatible
+// version), the local key is left unchanged and the error is returned, so no
+// network is ever broken by a half-applied rotation.
+func (d *Daemon) RotateKeys() error {
+	d.mu.Lock()
+	if d.keyRotating {
+		d.mu.Unlock()
+		return fmt.Errorf("key rotation already in progress")
+	}
+	d.keyRotating = true
+	type target struct {
+		nid, nodeID, token, name, server string
+	}
+	var targets []target
+	for nid, nc := range d.cfg.Networks {
+		if nc.Active && nc.Token != "" {
+			targets = append(targets, target{
+				nid: nid, nodeID: nc.NodeID, token: nc.Token, name: nc.Name,
+				server: d.serverForConfigLocked(nc),
+			})
+		}
+	}
+	deviceID := d.cfg.DeviceID
+	oldPub := d.publicKeyLocked()
+	d.mu.Unlock()
+
+	defer func() {
+		d.mu.Lock()
+		d.keyRotating = false
+		d.mu.Unlock()
+	}()
+
+	priv, pub, err := GenerateKeyPair()
+	if err != nil {
+		return fmt.Errorf("generate keypair: %w", err)
+	}
+	newPrivHex := b64ToHex(priv)
+
+	updated := make([]target, 0, len(targets))
+	for _, t := range targets {
+		api, err := d.apiForServerLocked(t.server)
+		if err != nil {
+			return fmt.Errorf("rotate %s (%s): %w", t.nid, t.name, err)
+		}
+		if err := api.UpdateNodePublicKeyByToken(t.nid, t.nodeID, t.token, pub); err != nil {
+			// Best-effort rollback of servers already updated so the device
+			// keeps one consistent public key across every server.
+			for i := len(updated) - 1; i >= 0; i-- {
+				prev := updated[i]
+				rbAPI, rbErr := d.apiForServerLocked(prev.server)
+				if rbErr != nil {
+					log.Printf("key rotation rollback %s: %v", prev.nid, rbErr)
+					continue
+				}
+				if rbErr := rbAPI.UpdateNodePublicKeyByToken(prev.nid, prev.nodeID, prev.token, oldPub); rbErr != nil {
+					log.Printf("key rotation rollback %s on %s: %v", prev.nid, prev.server, rbErr)
+				}
+			}
+			return fmt.Errorf("rotate %s (%s) on %s: %w", t.nid, t.name, t.server, err)
+		}
+		updated = append(updated, t)
+		log.Printf("key rotation: network %s (%s) on %s now advertises the new public key", t.nid, t.name, t.server)
+	}
+
+	now := time.Now().Unix()
+	d.mu.Lock()
+	d.cfg.PrivateKey = newPrivHex
+	d.cfg.LastKeyRotatedAt = now
+	if d.deviceIDFile != "" {
+		_ = SaveDeviceKeypair(d.deviceIDFile, deviceID, newPrivHex, d.cfg.RecoveryToken)
+	}
+	if err := d.save(); err != nil {
+		d.mu.Unlock()
+		return fmt.Errorf("save rotated key: %w", err)
+	}
+	// Rebuild tunnels so wireguard-go starts using the new keypair. Networking
+	// glitches during this window self-heal via keepalives and the poll loop.
+	for nid, nc := range d.cfg.Networks {
+		if nc.Active {
+			if err := d.bringUp(nid); err != nil {
+				log.Printf("key rotation: rebuild %s: %v", nid, err)
+			}
+		}
+	}
+	d.mu.Unlock()
+	log.Printf("key rotation: new WireGuard keypair active (%d network(s) updated)", len(targets))
+	return nil
+}
+
+func normalizeServer(s string) string {
+	if s == "" {
+		return s
+	}
+	if u, err := url.Parse(s); err == nil && u.Scheme == "" {
+		s = "https://" + s
+	}
+	return strings.TrimRight(s, "/")
+}
+
+// NormalizeServer is the exported form of normalizeServer, used by external
+// binding layers to compare a caller-supplied address against the fixed one.
+func NormalizeServer(s string) string { return normalizeServer(s) }
+
+// Create makes a new network on the server and joins this node as owner.
+// Optional share metadata (description, tags, visibility) may be passed via
+// the variadic shareOpt, keeping existing callers source-compatible.
+func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approvalRequired bool, opts ...shareOpt) (protocol.CreateNetworkResp, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var so shareOpt
+	for _, o := range opts {
+		if o.description != nil {
+			so.description = o.description
+		}
+		if o.tags != nil {
+			so.tags = o.tags
+		}
+		if o.visibility != nil {
+			so.visibility = o.visibility
+		}
+		if o.allowOverlap {
+			so.allowOverlap = true
+		}
+	}
+
+	if strings.TrimSpace(serverAddr) == "" {
+		serverAddr = constants.DefaultServer
+	} else {
+		serverAddr = normalizeServer(serverAddr)
+	}
+	for _, nc := range d.cfg.Networks {
+		if nc.Owner && d.serverForConfigLocked(nc) == serverAddr {
+			return protocol.CreateNetworkResp{}, errors.New("该 SnetServ 上本设备已创建网络（每个服务器仅能创建一个）")
+		}
+	}
+	if err := d.ensureKeys(port); err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	api, err := d.apiForServerLocked(serverAddr)
+	if err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	if err := d.ensureDeviceIDUniqueLocked(api); err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
+	// Reject an explicitly chosen subnet that collides with this machine's real
+	// LAN before creating the network on the server (avoids an orphan network
+	// that attach would refuse to bring up).
+	if subnet != "" {
+		if err := checkLANConflict(subnet); err != nil {
+			return protocol.CreateNetworkResp{}, err
+		}
+	}
+	desc, vis := "", ""
+	if so.description != nil {
+		desc = *so.description
+	}
+	if so.visibility != nil {
+		vis = *so.visibility
+	}
+	resp, err := api.CreateNetwork(d.publicKeyLocked(), d.cfg.DeviceID, name, subnet, approvalRequired, desc, so.tags, vis, so.allowOverlap)
+	if err != nil {
+		return resp, err
+	}
+	if err := d.attachWithIdentity(resp.NetworkID, name, resp.NodeID, resp.IP, resp.Token, resp.PairingCode, resp.Subnet, true, serverAddr, resp.SnetServID); err != nil {
+		return resp, err
+	}
+	resp.Link = d.inviteLinkLocked(resp.NetworkID, resp.PairingCode, name)
+	// Post-create reconciliation and relay-capability reporting can block on
+	// the coordination server. Do them after the HTTP response has had time to
+	// flush, otherwise a slow server makes the client's create request appear
+	// to time out even though the network was created.
+	go d.finishCreateAsync(resp.NetworkID)
+	return resp, nil
+}
+
+// finishCreateAsync performs the non-critical server reconciliation after a
+// network has been created locally. It intentionally runs outside the create
+// request's critical path.
+func (d *Daemon) finishCreateAsync(nid string) {
+	time.Sleep(100 * time.Millisecond)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.cfg.Networks[nid] == nil {
+		return
+	}
+	d.reconcileOwnership(nid)
+	d.publishRelayCapabilityLocked()
+}
+
+// Join joins an existing network by nid + pairing code.
+func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.JoinResp, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if strings.TrimSpace(serverAddr) == "" {
+		serverAddr = constants.DefaultServer
+	} else {
+		serverAddr = normalizeServer(serverAddr)
+	}
+	if err := d.ensureKeys(port); err != nil {
+		return protocol.JoinResp{}, err
+	}
+	api, err := d.apiForServerLocked(serverAddr)
+	if err != nil {
+		return protocol.JoinResp{}, err
+	}
+	if err := d.ensureDeviceIDUniqueLocked(api); err != nil {
+		return protocol.JoinResp{}, err
+	}
+	resp, err := api.Join(nid, code, d.publicKeyLocked(), d.cfg.DeviceID)
+	if err != nil {
+		return resp, err
+	}
+	if resp.Status == "pending" {
+		if _, ok := d.cfg.Networks[resp.NetworkID]; ok {
+			return resp, fmt.Errorf("本机已加入网络 %s", resp.NetworkID)
+		}
+		return resp, d.registerPendingLocked(resp, serverAddr)
+	}
+	if _, ok := d.cfg.Networks[resp.NetworkID]; ok {
+		return resp, fmt.Errorf("本机已加入网络 %s", resp.NetworkID)
+	}
+	if err := d.attachWithIdentity(resp.NetworkID, resp.Name, resp.NodeID, resp.IP, resp.Token, "", resp.Subnet, false, serverAddr, resp.SnetServID); err != nil {
+		return resp, err
+	}
+	d.reconcileOwnership(resp.NetworkID)
+	// Tell the server whether this device can act as a relay gateway, so a
+	// route delegated to it can become active.
+	d.publishRelayCapabilityLocked()
+	return resp, nil
+}
+
+func (d *Daemon) registerPendingLocked(resp protocol.JoinResp, snetServURL ...string) error {
+	if d.cfg.PendingJoins == nil {
+		d.cfg.PendingJoins = map[string]*PendingJoin{}
+	}
+	pj := &PendingJoin{
+		PendingID: resp.PendingID,
+		NetworkID: resp.NetworkID,
+		Name:      resp.Name,
+		Code:      "",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Status:    "pending",
+	}
+	if len(snetServURL) > 0 {
+		pj.SnetServURL = normalizeServer(snetServURL[0])
+	}
+	d.cfg.PendingJoins[resp.PendingID] = pj
+	if err := d.save(); err != nil {
+		return err
+	}
+	d.startPendingLoopLocked(resp.PendingID)
+	return nil
+}
+
+func (d *Daemon) startPendingLoopLocked(pendingID string) {
+	if _, ok := d.pendingRuns[pendingID]; ok {
+		return
+	}
+	stop := make(chan struct{})
+	d.pendingRuns[pendingID] = stop
+	go d.pendingLoop(pendingID, stop)
+}
+
+// pendingPollInterval controls how often a pending join is re-checked.
+var pendingPollInterval = 3 * time.Second
+
+// pendingLoop polls an awaiting-approval join until it is approved (then
+// joins), denied, or expires. It also resumes after daemon restarts.
+func (d *Daemon) pendingLoop(pendingID string, stop chan struct{}) {
+	ticker := time.NewTicker(pendingPollInterval)
+	defer ticker.Stop()
+	timeoutStreak := 0
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+		d.mu.Lock()
+		pj := d.cfg.PendingJoins[pendingID]
+		if pj == nil {
+			delete(d.pendingRuns, pendingID)
+			d.mu.Unlock()
+			return
+		}
+		server := pj.SnetServURL
+		if strings.TrimSpace(server) == "" {
+			server = constants.DefaultServer
+		}
+		api, apiErr := d.apiForServerLocked(server)
+		d.mu.Unlock()
+		if apiErr != nil {
+			log.Printf("pending %s: %v", pendingID, apiErr)
+			continue
+		}
+
+		// Poll without holding d.mu so a slow server never stalls the UI.
+		status, err := api.PendingJoinStatus(pendingID)
+		if err != nil {
+			log.Printf("pending %s: %v", pendingID, err)
+			if isTimeoutError(err) {
+				timeoutStreak++
+				if timeoutStreak >= 3 {
+					d.mu.Lock()
+					if cur := d.cfg.PendingJoins[pendingID]; cur != nil && cur.Err == "" {
+						name := cur.Name
+						if name == "" {
+							name = cur.NetworkID
+						}
+						cur.Err = fmt.Sprintf("等待审批的网络「%s」所在的服务器 %s 不可达，请检查网络或联系网络创建者。", name, server)
+						_ = d.save()
+					}
+					d.mu.Unlock()
+				}
+			} else {
+				timeoutStreak = 0
+			}
+			continue
+		}
+		timeoutStreak = 0
+
+		d.mu.Lock()
+		if d.cfg.PendingJoins[pendingID] == nil {
+			d.mu.Unlock()
+			return
+		}
+		if cur := d.cfg.PendingJoins[pendingID]; strings.HasPrefix(cur.Err, "等待审批的网络") {
+			cur.Err = ""
+			_ = d.save()
+		}
+		switch status.Status {
+		case "approved":
+			err := d.attachWithIdentity(status.NetworkID, pj.Name, status.NodeID, status.IP, status.Token, pj.Code, status.Subnet, false, pj.SnetServURL, status.SnetServID)
+			if err != nil {
+				log.Printf("join approved %s: %v", pendingID, err)
+				d.mu.Unlock()
+				return
+			}
+			delete(d.cfg.PendingJoins, pendingID)
+			delete(d.pendingRuns, pendingID)
+			_ = d.save()
+			d.reconcileOwnership(status.NetworkID)
+			// Report the relay gateway capability for the newly joined network.
+			d.publishRelayCapabilityLocked()
+			d.mu.Unlock()
+			log.Printf("pending %s approved, joined %s", pendingID, status.NetworkID)
+			return
+		case "denied":
+			pj.Status = "denied"
+			pj.Err = "创建者已拒绝加入请求"
+			_ = d.save()
+			d.mu.Unlock()
+			log.Printf("pending %s denied", pendingID)
+			return
+		case "gone":
+			delete(d.cfg.PendingJoins, pendingID)
+			delete(d.pendingRuns, pendingID)
+			pj.Status = "denied"
+			pj.Err = "加入请求已过期"
+			_ = d.save()
+			d.mu.Unlock()
+			return
+		}
+		d.mu.Unlock()
+	}
+}
+
+// CancelPending stops waiting for approval and drops the pending request.
+func (d *Daemon) CancelPending(pendingID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	pj := d.cfg.PendingJoins[pendingID]
+	if pj == nil {
+		return fmt.Errorf("待批准请求 %s 未找到", pendingID)
+	}
+	server := pj.SnetServURL
+	if strings.TrimSpace(server) == "" {
+		server = constants.DefaultServer
+	}
+	api, apiErr := d.apiForServerLocked(server)
+	if apiErr != nil {
+		return fmt.Errorf("取消加入请求失败: %w", apiErr)
+	}
+	if err := api.CancelPending(pendingID, d.cfg.DeviceID); err != nil {
+		var se *httpStatusErr
+		// 404 means the server already removed/approved it; local cleanup can
+		// still proceed. Any other error must be surfaced so the user can retry.
+		if !errors.As(err, &se) || (se.code != 404 && se.code != 401) {
+			return fmt.Errorf("取消加入请求失败: %w", err)
+		}
+	}
+	if stop := d.pendingRuns[pendingID]; stop != nil {
+		close(stop)
+		delete(d.pendingRuns, pendingID)
+	}
+	delete(d.cfg.PendingJoins, pendingID)
+	return d.save()
+}
+
+// attach stores a joined network and brings it up.
+func (d *Daemon) attach(nid, name, nodeID, ip, token, pairingCode, subnet string, owner bool, snetServURL ...string) error {
+	if len(snetServURL) > 0 {
+		return d.attachWithIdentity(nid, name, nodeID, ip, token, pairingCode, subnet, owner, snetServURL[0], "")
+	}
+	return d.attachWithIdentity(nid, name, nodeID, ip, token, pairingCode, subnet, owner, "", "")
+}
+
+func (d *Daemon) attachWithIdentity(nid, name, nodeID, ip, token, pairingCode, subnet string, owner bool, snetServURL, snetServID string) error {
+	if subnet == "" {
+		subnet = defaultSubnet
+	}
+	if err := checkLANConflict(subnet); err != nil {
+		return err
+	}
+	for other, oc := range d.cfg.Networks {
+		if other != nid && subnetsOverlap(subnet, oc.Subnet) {
+			return fmt.Errorf("网段 %s 与已加入网络 %s（%s）冲突，无法加入", subnet, other, oc.Subnet)
+		}
+	}
+	if d.cfg.Networks == nil {
+		d.cfg.Networks = map[string]*NetworkCfg{}
+	}
+	nc := &NetworkCfg{
+		Name:        name,
+		NodeID:      nodeID,
+		IP:          ip,
+		Token:       token,
+		PairingCode: pairingCode,
+		Subnet:      subnet,
+		Port:        0,
+		Active:      true,
+		Owner:       owner,
+		JoinedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+	if strings.TrimSpace(snetServURL) != "" {
+		nc.SnetServURL = normalizeServer(snetServURL)
+	}
+	if strings.TrimSpace(snetServID) != "" {
+		nc.SnetServID = strings.TrimSpace(snetServID)
+	}
+	if existing, ok := d.cfg.Networks[nid]; ok && existing.Name != "" && name == "" {
+		nc.Name = existing.Name
+	}
+	d.cfg.Networks[nid] = nc
+	if d.singleActiveNetwork {
+		d.enforceSingleActiveLocked(nid)
+	}
+	if err := d.save(); err != nil {
+		return err
+	}
+	if err := d.bringUp(nid); err != nil {
+		log.Printf("bring up %s: %v", nid, err)
+	}
+	return nil
+}
+
+// reconcileOwnership migrates legacy networks: registers this device, binds
+// its own node, and claims ownerless networks. Errors are non-fatal.
+func (d *Daemon) reconcileOwnership(nid string) {
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return
+	}
+	if err := api.RegisterDevice(d.cfg.DeviceID, d.publicKeyLocked(), d.hostnameLocked()); err != nil {
+		log.Printf("register device: %v", err)
+	}
+	if err := api.SetNodeDevice(nid, nc.NodeID, nc.Token, d.cfg.DeviceID); err != nil {
+		log.Printf("bind node device: %v", err)
+	}
+	if err := api.ClaimNetwork(nid, nc.Token, d.cfg.DeviceID); err == nil {
+		nc.Owner = true
+		if err := d.save(); err != nil {
+			log.Printf("save owner flag: %v", err)
+		}
+	}
+	server := d.serverForConfigLocked(nc)
+	if (d.cfg.RecoveryTokens == nil || d.cfg.RecoveryTokens[server] == "") && nc.Token != "" {
+		d.ensureRecoveryTokenLocked(nc)
+	}
+}
+
+// ensureRecoveryTokenLocked obtains the device-scoped recovery token using a
+// node token this device already holds, then persists it in both the config
+// and device.id so it survives local config loss. Errors are non-fatal.
+func (d *Daemon) ensureRecoveryTokenLocked(nc *NetworkCfg) {
+	if nc == nil || nc.Token == "" || d.cfg.DeviceID == "" {
+		return
+	}
+	server := d.serverForConfigLocked(nc)
+	if d.cfg.RecoveryTokens != nil && d.cfg.RecoveryTokens[server] != "" {
+		return
+	}
+	api, err := d.apiForServerLocked(server)
+	if err != nil {
+		log.Printf("ensure recovery token: %v", err)
+		return
+	}
+	token, err := api.EnsureRecoveryToken(d.cfg.DeviceID, nc.Token)
+	if err != nil {
+		log.Printf("ensure recovery token: %v", err)
+		return
+	}
+	if token == "" {
+		return
+	}
+	if d.cfg.RecoveryTokens == nil {
+		d.cfg.RecoveryTokens = make(map[string]string)
+	}
+	d.cfg.RecoveryTokens[server] = token
+	if d.cfg.RecoveryToken == "" {
+		d.cfg.RecoveryToken = token
+		if err := SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey, token); err != nil {
+			log.Printf("ensure recovery token: persist: %v", err)
+		}
+	}
+	if err := d.save(); err != nil {
+		log.Printf("ensure recovery token: save config: %v", err)
+	}
+}
+
+// ensureDeviceIDUniqueLocked verifies with the server that a freshly generated
+// identity is unused. A 400 collision response triggers regeneration and a
+// retry; every other error is returned to the caller so a network is never
+// created under an unverified fresh identity. Caller must hold d.mu.
+func (d *Daemon) ensureDeviceIDUniqueLocked(api *apiClient) error {
+	if !d.deviceIDFresh || d.cfg.DeviceID == "" {
+		return nil
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		err := api.RegisterDeviceFresh(d.cfg.DeviceID, d.publicKeyLocked(), d.hostnameLocked())
+		if err == nil {
+			d.deviceIDFresh = false
+			return nil
+		}
+		var se *httpStatusErr
+		if !errors.As(err, &se) || se.code != http.StatusBadRequest || !strings.Contains(se.msg, "deviceId") {
+			return err
+		}
+		id, genErr := deviceIDGen()
+		if genErr != nil {
+			return genErr
+		}
+		if !validDeviceID(id) {
+			continue
+		}
+		d.cfg.DeviceID = id
+		if d.deviceIDFile != "" {
+			if err := SaveDeviceKeypair(d.deviceIDFile, id, d.cfg.PrivateKey, d.cfg.RecoveryToken); err != nil {
+				return err
+			}
+		}
+		if err := d.save(); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("could not allocate a unique device id")
+}
+
+// Start resumes from persisted state (tunnels + poll loops) for every active
+// network, then reconciles device ownership for legacy networks.
+func (d *Daemon) Start() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.started {
+		// Android reuses the daemon across VPN restarts. Restore tunnels for
+		// the new TUN fd (if any) without launching duplicate background loops.
+		d.bringUpAllLocked()
+		return nil
+	}
+
+	// Reconcile identity and keys before any network activity. The identity
+	// file wins over a stale or missing config so a reinstall that preserved
+	// ProgramData keeps the same device ID.
+	if err := d.ensureDeviceIdentityLocked(); err != nil {
+		return err
+	}
+	if d.cfg.PrivateKey == "" {
+		priv, _, err := GenerateKeyPair()
+		if err != nil {
+			return err
+		}
+		d.cfg.PrivateKey = b64ToHex(priv)
+		if d.deviceIDFile != "" {
+			if err := SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey, d.cfg.RecoveryToken); err != nil {
+				return err
+			}
+		}
+		if err := d.save(); err != nil {
+			return err
+		}
+	}
+	// Relay gateway mode: when the user allowed this device to act as a
+	// gateway, the local forwarding and NAT rules must be in place before
+	// any delegated route can be honoured. A failure is reported to the
+	// coordination server so the routes stay pending with a visible reason.
+	d.applyRelayGatewayLocked()
+	// Report the gateway capability again after a restart: the server's view
+	// of this node must match the current state, otherwise a route delegated
+	// to this node would stay pending until the next manual change.
+	d.publishRelayCapabilityAsync()
+	for nid := range d.cfg.Networks {
+		nc := d.cfg.Networks[nid]
+		if !nc.Active {
+			continue
+		}
+		if err := d.bringUp(nid); err != nil {
+			log.Printf("start network %s: %v", nid, err)
+		}
+		d.reconcileOwnership(nid)
+	}
+	for pendingID := range d.cfg.PendingJoins {
+		d.startPendingLoopLocked(pendingID)
+	}
+	// Make sure every network (even a currently disconnected one) can hand
+	// us a recovery token, so a later config loss can still be recovered.
+	for nid := range d.cfg.Networks {
+		d.ensureRecoveryTokenLocked(d.cfg.Networks[nid])
+	}
+	// Periodic WireGuard key rotation (KeyRotationDays > 0) for forward secrecy.
+	if d.cfg.KeyRotationDays > 0 {
+		d.startKeyRotationLocked()
+	}
+	// Automatic inbound port mapping: gives the device a stable direct
+	// endpoint (zero-config) when its gateway supports UPnP/NAT-PMP/PCP. Runs
+	// independently of the network loops; claims arrive from bringUp.
+	d.nat.start()
+	// One-shot startup probe of every joined network so the UI can render a
+	// "已删除" badge for networks that the owner has removed from the server.
+	// Run asynchronously so daemon startup is not blocked on the server.
+	go d.pingAllServerStates()
+	go d.relayCapabilityHeartbeat()
+	// Reconcile memberships with the server after startup. This restores the
+	// config when device.id survived but config.json did not, and refreshes
+	// node tokens for networks that still exist locally.
+	go func() {
+		if err := d.SyncNetworks(); err != nil {
+			log.Printf("startup sync networks: %v", err)
+		}
+	}()
+
+	d.started = true
+	return nil
+}
+
+// SyncNetworks fetches this device's historical memberships from the server
+// and reconstructs the local config. It is used after a reinstall where the
+// device identity survived but the local config (networks/tokens) was lost.
+// A successful response is authoritative: memberships the server no longer
+// returns are removed locally. Errors are logged by the caller and never
+// delete local state.
+func (d *Daemon) SyncNetworks() error {
+	d.syncMu.Lock()
+	defer d.syncMu.Unlock()
+
+	d.mu.Lock()
+	deviceID := d.cfg.DeviceID
+	localBefore := make(map[string]struct{}, len(d.cfg.Networks))
+	groups := make(map[string][]string)
+	localServers := make(map[string]string)
+	tokens := make(map[string]string, len(d.cfg.RecoveryTokens)+1)
+	for server, token := range d.cfg.RecoveryTokens {
+		tokens[normalizeServer(server)] = token
+	}
+	if d.cfg.RecoveryToken != "" {
+		if _, ok := tokens[constants.DefaultServer]; !ok {
+			tokens[constants.DefaultServer] = d.cfg.RecoveryToken
+		}
+	}
+	for nid, nc := range d.cfg.Networks {
+		localBefore[nid] = struct{}{}
+		server := d.serverForConfigLocked(nc)
+		localServers[nid] = server
+		groups[server] = append(groups[server], nid)
+	}
+	// Even with no local networks, every server with a recovery token can
+	// still restore memberships after a config loss.
+	if len(groups) == 0 {
+		for server := range tokens {
+			groups[server] = nil
+		}
+	}
+	d.mu.Unlock()
+	if deviceID == "" {
+		return nil
+	}
+
+	type syncResult struct {
+		server  string
+		details []protocol.DeviceNetworkDetail
+	}
+	results := make([]syncResult, 0, len(groups))
+	for server := range groups {
+		recoveryToken := tokens[server]
+		if recoveryToken == "" {
+			continue
+		}
+		api, err := d.apiForServerLocked(server)
+		if err != nil {
+			log.Printf("sync networks: %v", err)
+			continue
+		}
+		details, err := api.DeviceNetworks(deviceID, recoveryToken)
+		if err != nil {
+			return fmt.Errorf("fetch device networks from %s: %w", server, err)
+		}
+		d.mu.Lock()
+		pub := d.publicKeyLocked()
+		hostname := d.hostnameLocked()
+		d.mu.Unlock()
+		if err := api.RegisterDevice(deviceID, pub, hostname); err != nil {
+			log.Printf("sync networks: register device on %s: %v", server, err)
+		}
+		results = append(results, syncResult{server: server, details: details})
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.cfg.Networks == nil {
+		d.cfg.Networks = map[string]*NetworkCfg{}
+	}
+	pub := d.publicKeyLocked()
+	synced, updated := 0, false
+	seen := make(map[string]struct{})
+	var removeCandidates []struct {
+		nid, server, token, nodeID string
+	}
+
+	for _, result := range results {
+		api, err := d.apiForServerLocked(result.server)
+		if err != nil {
+			log.Printf("sync networks: %v", err)
+			continue
+		}
+		for _, detail := range result.details {
+			nid := detail.Network.ID
+			if nid == "" {
+				continue
+			}
+			seen[nid] = struct{}{}
+			detail.SnetServURL = result.server
+
+			if existing := d.cfg.Networks[nid]; existing != nil {
+				if existing.SnetServURL == "" {
+					existing.SnetServURL = result.server
+					updated = true
+				}
+				if detail.SnetServID != "" && existing.SnetServID != detail.SnetServID {
+					existing.SnetServID = detail.SnetServID
+					updated = true
+				}
+				if detail.Token != "" && existing.Token != detail.Token {
+					existing.Token = detail.Token
+					updated = true
+					if d.serverState != nil {
+						delete(d.serverState, nid)
+					}
+					if rt := d.nets[nid]; rt != nil && rt.path != nil {
+						rt.path.SetToken(existing.Token)
+					}
+				}
+				if existing.Owner != detail.Owner {
+					existing.Owner = detail.Owner
+					updated = true
+					if d.serverState != nil {
+						delete(d.serverState, nid)
+					}
+				}
+				if detail.PublicKey != "" && detail.PublicKey != pub {
+					if err := api.UpdateNodePublicKeyByToken(nid, detail.NodeID, detail.Token, pub); err != nil {
+						log.Printf("sync networks: update public key %s on %s: %v", nid, result.server, err)
+					}
+				}
+				continue
+			}
+
+			if detail.PublicKey != "" && detail.PublicKey != pub && detail.Token != "" {
+				if err := api.UpdateNodePublicKeyByToken(nid, detail.NodeID, detail.Token, pub); err != nil {
+					log.Printf("sync networks: update public key %s on %s: %v", nid, result.server, err)
+				}
+			}
+			active := true
+			for other, oc := range d.cfg.Networks {
+				if other != nid && subnetsOverlap(detail.Subnet, oc.Subnet) {
+					log.Printf("sync networks: subnet %s overlaps with %s (%s), restoring %s inactive", detail.Subnet, other, oc.Subnet, nid)
+					active = false
+					break
+				}
+			}
+			nc := &NetworkCfg{
+				Name:        detail.Name,
+				NodeID:      detail.NodeID,
+				IP:          detail.IP,
+				Token:       detail.Token,
+				Subnet:      detail.Subnet,
+				Port:        0,
+				Active:      active,
+				Owner:       detail.Owner,
+				JoinedAt:    time.Now().UTC().Format(time.RFC3339),
+				SnetServURL: result.server,
+				SnetServID:  detail.SnetServID,
+			}
+			d.cfg.Networks[nid] = nc
+			if err := api.SetNodeDevice(nid, detail.NodeID, detail.Token, deviceID); err != nil {
+				log.Printf("sync networks: bind node device %s on %s: %v", nid, result.server, err)
+			}
+			if detail.Owner {
+				if err := api.ClaimNetwork(nid, detail.Token, deviceID); err != nil {
+					log.Printf("sync networks: claim %s on %s: %v", nid, result.server, err)
+				}
+			}
+			synced++
+		}
+	}
+
+	for nid, nc := range d.cfg.Networks {
+		if _, ok := seen[nid]; ok {
+			continue
+		}
+		if _, existed := localBefore[nid]; !existed {
+			continue
+		}
+		server := localServers[nid]
+		if server == "" {
+			server = constants.DefaultServer
+		}
+		removeCandidates = append(removeCandidates, struct {
+			nid, server, token, nodeID string
+		}{nid: nid, server: server, token: nc.Token, nodeID: nc.NodeID})
+	}
+
+	// NetworkExists probes must run without d.mu; only remove after a confirmed
+	// 404 for the same server/token that was checked.
+	d.mu.Unlock()
+	removed := 0
+	for _, candidate := range removeCandidates {
+		api, err := d.apiForServerLocked(candidate.server)
+		if err != nil {
+			log.Printf("sync networks: %v", err)
+			continue
+		}
+		_, checkErr := api.NetworkExists(candidate.nid, candidate.token)
+		if checkErr == nil && candidate.nodeID != "" && candidate.token != "" {
+			_ = api.SetNodeDevice(candidate.nid, candidate.nodeID, candidate.token, deviceID)
+		}
+		var se *httpStatusErr
+		if !errors.As(checkErr, &se) || se.code != http.StatusNotFound {
+			if checkErr != nil {
+				log.Printf("sync networks: keep local network %s (verify exists on %s: %v)", candidate.nid, candidate.server, checkErr)
+			}
+			continue
+		}
+		d.mu.Lock()
+		cur := d.cfg.Networks[candidate.nid]
+		if cur == nil || cur.Token != candidate.token {
+			d.mu.Unlock()
+			continue
+		}
+		if curServer := d.serverForConfigLocked(cur); curServer != candidate.server {
+			d.mu.Unlock()
+			continue
+		}
+		log.Printf("sync networks: removing deleted local network %s (confirmed 404 on %s)", candidate.nid, candidate.server)
+		d.leaveLocked(candidate.nid)
+		delete(d.cfg.Networks, candidate.nid)
+		if d.serverState != nil {
+			delete(d.serverState, candidate.nid)
+		}
+		removed++
+		d.mu.Unlock()
+	}
+	d.mu.Lock()
+
+	if synced > 0 || updated || removed > 0 {
+		if err := d.save(); err != nil {
+			log.Printf("sync networks: save: %v", err)
+		}
+	}
+	for nid, nc := range d.cfg.Networks {
+		if nc.Active && d.nets[nid] == nil {
+			if err := d.bringUp(nid); err != nil {
+				log.Printf("sync networks: bring up %s: %v", nid, err)
+			}
+		}
+	}
+	if synced > 0 {
+		log.Printf("sync networks: restored %d network(s)", synced)
+	}
+	return nil
+}
+
+// stopAllNetworksLocked closes every live tunnel while keeping the configured
+// networks and their Active intent. Caller must hold d.mu.
+func (d *Daemon) stopAllNetworksLocked() {
+	for nid, rt := range d.nets {
+		rt.shutdown()
+		delete(d.nets, nid)
+	}
+}
+
+// BringUpActive brings up tunnels for all active networks. Used on Android
+// when the TUN fd becomes available after the daemon was already created.
+func (d *Daemon) BringUpActive() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for nid, nc := range d.cfg.Networks {
+		if nc.Active && d.nets[nid] == nil {
+			if err := d.bringUp(nid); err != nil {
+				log.Printf("bring up active %s: %v", nid, err)
+			}
+		}
+	}
+}
+
+func (d *Daemon) bringUp(nid string) error {
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	// Clean up routes from the old tunnel before closing it.
+	if rt := d.nets[nid]; rt != nil {
+		rt.shutdown()
+		delete(d.nets, nid)
+	}
+	// A persisted port can collide with another network's reserved port or
+	// with a non-Snet process. Re-pick instead of failing every retry on the
+	// same stale port; each network needs its own local WireGuard UDP socket.
+	if nc.Port == 0 || d.portOwnedByOtherLocked(nid, nc.Port) || !portFree(nc.Port) {
+		oldPort := nc.Port
+		p, err := d.pickPortLocked(nid)
+		if err != nil {
+			d.netErrs[nid] = err.Error()
+			d.scheduleRetryLocked(nid)
+			return fmt.Errorf("pick port: %w", err)
+		}
+		nc.Port = p
+		if oldPort != 0 {
+			d.nat.unclaim(oldPort)
+		}
+		if err := d.save(); err != nil {
+			log.Printf("save port %d for %s: %v", p, nid, err)
+		}
+	}
+	var t *Tunnel
+	var err error
+	for attempt := 0; attempt < 4; attempt++ {
+		t, err = createTunnelForPlatform(d.androidTunFD, d.cfg.PrivateKey, nc.IP, nc.Port, protocol.DefaultMTU, nid)
+		if err == nil {
+			break
+		}
+		if !isPortInUseError(err) {
+			break
+		}
+		// Another process raced us for the port after the preflight check.
+		// Never retry the same port: Windows may report it free to a plain
+		// IPv4 probe while the WireGuard dual-stack bind still fails.
+		oldPort := nc.Port
+		p, pickErr := d.pickPortLocked(nid, oldPort)
+		if pickErr != nil {
+			break
+		}
+		nc.Port = p
+		d.nat.unclaim(oldPort)
+		if saveErr := d.save(); saveErr != nil {
+			log.Printf("save port %d for %s: %v", p, nid, saveErr)
+		}
+	}
+	if err != nil {
+		d.netErrs[nid] = err.Error()
+		d.scheduleRetryLocked(nid)
+		return fmt.Errorf("tunnel: %w", err)
+	}
+	delete(d.netErrs, nid)
+	rt := &netRuntime{
+		tun:        t,
+		peerDirect: make(map[string]*peerDirect),
+		peerIDs:    make(map[string]string),
+	}
+	d.nets[nid] = rt
+
+	endpoint, err := d.localEndpointForNetworkLocked(nid, nc.Port)
+	if err != nil {
+		log.Printf("endpoint detect failed: %v", err)
+	} else {
+		// Advertise the LAN/NAT-internal endpoint as the direct candidate so
+		// same-subnet peers can reach this device without the relay. A
+		// gateway mapping, when established, is advertised by probeLoop.
+		api, _, apiErr := d.apiForNetworkLocked(nid)
+		if apiErr == nil {
+			if err := api.SetEndpointFor(nid, nc.NodeID, nc.Token, endpoint, endpoint, false); err != nil {
+				log.Printf("set endpoint: %v", err)
+			}
+		}
+	}
+	go d.pollLoop(nid)
+	go d.probeLoop(nid)
+	go d.qualityLoop(nid)
+	if err := d.nat.claim(nc.Port, d.serverForConfigLocked(nc)); err != nil {
+		log.Printf("NAT claim %s: %v", nid, err)
+	}
+	return nil
+}
+
+// noteApplyErrLocked records the result of applying peers/routes for a network.
+// A route conflict is surfaced as a stable, user-facing error instead of the
+// raw "File exists" text. Caller must hold d.mu.
+func (d *Daemon) noteApplyErrLocked(nid string, err error) {
+	if err == nil {
+		delete(d.netErrs, nid)
+		return
+	}
+	if errors.Is(err, ErrRouteConflict) {
+		d.netErrs[nid] = "路由安装失败，可能与本机其他网络冲突"
+		return
+	}
+	d.netErrs[nid] = err.Error()
+}
+
+// scheduleRetryLocked marks a network for background re-bring-up after its
+// tunnel failed to come up, starting the retry loop if it is not running.
+func (d *Daemon) scheduleRetryLocked(nid string) {
+	if d.retryPending == nil {
+		d.retryPending = make(map[string]struct{})
+	}
+	if d.retryAttempts == nil {
+		d.retryAttempts = make(map[string]int)
+	}
+	d.retryPending[nid] = struct{}{}
+	if d.retryStop == nil {
+		stop := make(chan struct{})
+		d.retryStop = stop
+		go d.retryLoop(stop)
+	}
+}
+
+// retryLoop re-attempts tunnel creation for failed networks until they come up
+// or are left/removed. The wait between attempts grows exponentially per
+// network (capped at retryIntervalMax) so a long server outage does not
+// flood logs. The loop stops itself once nothing remains to retry.
+func (d *Daemon) retryLoop(stop chan struct{}) {
+	for {
+		d.mu.Lock()
+		// Find the soonest next attempt time across pending networks.
+		var nextDelay time.Duration
+		hasPending := false
+		for nid := range d.retryPending {
+			delay := nextRetryDelay(d.retryAttempts[nid])
+			if !hasPending || delay < nextDelay {
+				nextDelay = delay
+				hasPending = true
+			}
+		}
+		if !hasPending {
+			// No pending networks: exit. Only close d.retryStop if we are
+			// still the registered loop (the stop channel is still set).
+			if d.retryStop != nil {
+				close(d.retryStop)
+				d.retryStop = nil
+			}
+			d.mu.Unlock()
+			return
+		}
+		d.mu.Unlock()
+
+		timer := time.NewTimer(nextDelay)
+		select {
+		case <-timer.C:
+		case <-stop:
+			timer.Stop()
+			return
+		}
+
+		d.mu.Lock()
+		for nid := range d.retryPending {
+			nc := d.cfg.Networks[nid]
+			if nc == nil || !nc.Active || d.nets[nid] != nil {
+				delete(d.retryPending, nid)
+				delete(d.retryAttempts, nid)
+				continue
+			}
+			if err := d.bringUp(nid); err != nil {
+				d.retryAttempts[nid]++
+				log.Printf("retry bring up %s (attempt %d): %v", nid, d.retryAttempts[nid], err)
+			} else {
+				delete(d.retryPending, nid)
+				delete(d.retryAttempts, nid)
+			}
+		}
+		d.mu.Unlock()
+	}
+}
+
+// pickPortLocked finds a free UDP port, preferring the configured base.
+//
+// The scan covers several contiguous 64-port bands so a client that is
+// co-located with the coordination server can still find a port even when the
+// server's relay pool (usually DefaultWGPort..DefaultWGPort+64, bound by the
+// relay) fully occupies the first band. Falling through to later bands keeps
+// the client's WireGuard port disjoint from the server's relay ports.
+func (d *Daemon) pickPortLocked(nid string, exclude ...int) (int, error) {
+	blocked := make(map[int]struct{}, len(exclude))
+	for _, p := range exclude {
+		blocked[p] = struct{}{}
+	}
+	base := d.cfg.WireguardPort
+	if base == 0 {
+		base = protocol.DefaultWGPort
+	}
+	const band = 64
+	const bands = 4
+	for b := 0; b < bands; b++ {
+		start := base + b*band
+		for p := start; p < start+band; p++ {
+			if _, skip := blocked[p]; skip {
+				continue
+			}
+			if d.portOwnedByOtherLocked(nid, p) {
+				continue
+			}
+			if portFree(p) {
+				return p, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("no free UDP port in range %d-%d", base, base+bands*band-1)
+}
+
+func (d *Daemon) portOwnedByOtherLocked(nid string, port int) bool {
+	if port == 0 {
+		return false
+	}
+	for other, nc := range d.cfg.Networks {
+		if other != nid && nc != nil && nc.Port == port {
+			return true
+		}
+	}
+	return false
+}
+
+func isPortInUseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "address already in use") ||
+		strings.Contains(s, "only one usage of each socket address")
+}
+
+func (d *Daemon) localEndpointForNetworkLocked(nid string, port int) (string, error) {
+	server, err := d.serverForNetworkLocked(nid)
+	if err != nil {
+		return "", err
+	}
+	return d.localEndpointForServerLocked(server, port)
+}
+
+func (d *Daemon) localEndpointForServerLocked(serverAddr string, port int) (string, error) {
+	serverAddr = normalizeServer(strings.TrimSpace(serverAddr))
+	if serverAddr == "" {
+		return "", fmt.Errorf("本地端点缺少 SnetServ 地址")
+	}
+	ip := strings.TrimSpace(os.Getenv("SNET_LOCAL_IP"))
+	if ip != "" {
+		// Container deployments publish the WireGuard port on the host, so the
+		// container's own interface address is unreachable from LAN peers.
+		// SNET_LOCAL_IP advertises the host's LAN address while keeping the
+		// runtime-selected port, which the compose port range maps 1:1.
+		if addr, err := netip.ParseAddr(ip); err == nil && addr.Is4() && !addr.IsLoopback() && !addr.IsUnspecified() {
+			return net.JoinHostPort(addr.String(), fmt.Sprint(port)), nil
+		}
+		log.Printf("ignoring invalid SNET_LOCAL_IP %q", ip)
+	}
+	ip, err := LocalIPForServer(serverAddr)
+	if err != nil {
+		return "", err
+	}
+	return net.JoinHostPort(ip, fmt.Sprint(port)), nil
+}
+
+// resolvePeerEndpoints picks, per peer, the endpoint to use. With relay
+// enabled, a peer whose LocalEndpoint shares our LAN subnet is tried directly
+// first and falls back to the network relay endpoint when no WireGuard
+// handshake completes within directGraceSec; peers stay on the relay until
+// directRetrySec elapses, then retry the direct path. Without relay the
+// peer's self-advertised public endpoint is used as before.
+//
+// Behind a symmetric NAT the public port observed by the probe often differs
+// from the port the peer's WireGuard socket actually uses toward us; while in
+// direct mode the daemon therefore rotates through a small window of nearby
+// candidate ports (buildCandidates) until a handshake completes, improving the
+// direct-hit rate before falling back to the relay.
+// Caller must hold no lock; the reply is a fresh slice.
+func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.PeersResp, localSubs []string, observed []string) []protocol.Node {
+	out := make([]protocol.Node, len(st.Peers))
+	copy(out, st.Peers)
+	var stats map[string]PeerStats
+	if rt != nil && rt.tun != nil {
+		stats, _ = rt.tun.Stats()
+	}
+	now := time.Now().Unix()
+	// The relay reports our own mapping along with the peers'; exclude the
+	// public IP we last advertised so we never punch at ourselves.
+	excludeHost := d.selfPub[nid]
+	// Resolved relay host ("" when none): a handshake whose sender matches it
+	// is relay-delivered and must not lock a "direct" candidate.
+	relayHostNorm := ""
+	if st.RelayEndpoint != "" {
+		if h, _, err := net.SplitHostPort(resolveEndpoint(st.RelayEndpoint)); err == nil {
+			relayHostNorm = hostNorm(h)
+		}
+	}
+	for i := range out {
+		p := &out[i]
+		if rt != nil && p.PublicKey != "" {
+			if rt.peerIDs == nil {
+				rt.peerIDs = make(map[string]string)
+			}
+			rt.peerIDs[p.PublicKey] = p.ID
+		}
+		// The relay host that serves this peer's per-node unicast port. In a
+		// multi-instance topology each node may be served by its own relay
+		// instance: the peer's RelayHostOverride names that instance, and
+		// traffic must go there (not the network's primary relay). Peers
+		// without an override are served by the network's primary relay.
+		// Defaults match the plain single-instance behavior on the wire.
+		relayHost := relayHostNorm
+		if p.RelayHostOverride != "" {
+			relayHost = p.RelayHostOverride
+		}
+		// Per-peer relay endpoint: with a per-node relay port (Phase 3) the
+		// peer is reachable at relayHost:<peer's port> — the recipient's NAT
+		// mapping for exactly that source port — instead of the shared
+		// broadcast port. Legacy peers (RelayPort==0) keep the broadcast port.
+		relayEP := st.RelayEndpoint
+		if relayEP != "" && p.RelayPort > 0 {
+			relayEP = net.JoinHostPort(relayHost, strconv.Itoa(p.RelayPort))
+		}
+		// Choose the best direct candidates for this peer: the global-IPv6
+		// endpoint first (NAT-free), then the v4 self-advertised endpoint and
+		// any LAN/same-subnet local endpoint, then the live relay mappings.
+		direct := ""
+		if st.RelayEndpoint == "" {
+			direct = p.Endpoint
+		} else {
+			direct = endpointIfLocal(p, localSubs)
+			// A peer that obtained a stable inbound mapping from its gateway
+			// (EndpointMapped) is reachable directly even while its RelayFlow
+			// is non-empty: a symmetric-NAT peer cannot be punched, but it
+			// can be *called* once it holds a stable hole. Prefer the mapped
+			// endpoint over the relay windows whenever it is not our own
+			// address (same router = hairpin; the LAN path above already
+			// covers that case). The relay-observed mappings remain as
+			// trailing candidates in buildPeerCandidates.
+			if direct == "" && p.Endpoint != "" && p.EndpointMapped && !sameHost(p.Endpoint, excludeHost) {
+				direct = p.Endpoint
+			}
+			// A peer with no relay mapping (RelayFlow == "") is direct-only:
+			// it never opens a flow toward the relay, so relaying to it is a
+			// dead end (the server drops its frames). Its self-advertised v4
+			// endpoint is then the only path — typical for a NAS behind a
+			// router with a static UDP port-forward rule, which the probe
+			// observes but which never relays. Surface it as a direct target
+			// even though self-advertised endpoints are normally ignored as
+			// stale pinholes when the relay is present.
+			//
+			// Exception: a peer behind our own NAT egress is a hairpin target,
+			// where the handshake can succeed intermittently while most
+			// unicast packets are dropped. Keep such siblings on the relay.
+			if direct == "" && p.Endpoint != "" && p.RelayFlow == "" && !sameHost(p.Endpoint, excludeHost) {
+				direct = p.Endpoint
+			}
+		}
+		v6 := p.EndpointV6
+		// With the relay present the self-advertised public endpoint is often
+		// a stale pinhole, so the "direct" v4 target is only an on-LAN one.
+		// The live NAT mappings the relay observed are retained as extra punch
+		// targets for an already-triggered direct attempt, but never trigger
+		// one: remote NAT/CGNAT mappings are asymmetric and flaky — a one-shot
+		// handshake opened by our own outbound probe must not lock the peer
+		// onto a hole that closes again.
+		peerObs := observed
+		if p.RelayFlow != "" {
+			byHost, _, err := net.SplitHostPort(p.RelayFlow)
+			if err == nil && byHost != "" {
+				peerObs = peerObs[:0:0]
+				for _, ep := range observed {
+					h, _, e := net.SplitHostPort(ep)
+					if e == nil && h == byHost {
+						peerObs = append(peerObs, ep)
+					}
+				}
+				peerObs = append(peerObs, p.RelayFlow)
+			}
+		}
+		// Direct punching is pointless against a side that is offline: probe
+		// only peers the server reports online (or whose state is unknown).
+		if st.RelayEndpoint != "" && !p.Online {
+			p.Endpoint = relayEP
+			continue
+		}
+		// A direct attempt is worthwhile when there is a same-subnet (LAN)
+		// candidate or a relay-observed NAT mapping (RelayFlow). LAN peers
+		// have no NAT; RelayFlow is the peer's current live NAT mapping seen
+		// by the relay, which is the best target for hole punching. We still
+		// avoid using the self-advertised public endpoint (stale pinhole) or
+		// IPv6 (flaky routes) as the *trigger*, but RelayFlow is authoritative.
+		directOk := direct != "" || p.RelayFlow != ""
+		dirKey := v6 + "|" + direct
+		st2 := rt.peerDirect[p.ID]
+		if st2 == nil {
+			// First contact: prefer direct when a candidate exists.
+			st2 = &peerDirect{mode: "relay", lastDir: dirKey, dirSince: now}
+			if directOk {
+				st2.mode = "direct"
+			}
+			rt.peerDirect[p.ID] = st2
+		}
+		st2.relay = st.RelayEndpoint
+		// A one-way direct candidate is quarantined until the peer's
+		// advertised candidate changes (e.g. its NAT/port-forward is fixed).
+		if st2.badDirect != "" && st2.badDirect != dirKey {
+			st2.badDirect = ""
+		}
+
+		// A locked direct path must keep proving itself: WireGuard rekeys
+		// roughly every 120s on a working session, so a lock that saw no new
+		// handshake for directLockStaleSec is stale (the CGNAT hole closed or
+		// the mapping re-bound). Break it and return to the relay instead of
+		// dying on the dead endpoint forever.
+		hs := stats[p.PublicKey].LastHandshakeSec
+		if st2.mode == "direct" && st2.locked && hs > 0 && now-hs >= directLockStaleSec {
+			log.Printf("path %s: peer %s direct lock stale (%ds no handshake) -> relay", nid, p.ID, now-hs)
+			st2.locked = false
+			st2.cands = nil
+			st2.dirSince = now
+			st2.mode = "relay"
+		}
+
+		if st2.mode == "relay" {
+			// Switch to direct on the first opportunity (candidates just
+			// appeared) and re-probe periodically afterwards.
+			if st.RelayEndpoint != "" && directOk && st2.badDirect != dirKey && (!st2.tried || now-st2.dirSince >= directRetrySec) {
+				st2.mode = "direct"
+				st2.tried = true
+				st2.dirSince = now
+				st2.lastDir = dirKey
+				st2.cands = nil
+				log.Printf("path %s: peer %s %s -> direct (%s|%s|obs)", nid, p.ID, "relay", v6, direct)
+			}
+		}
+		if st2.mode == "direct" {
+			switch {
+			case !directOk:
+				// Candidate disappeared; fall back to the relay.
+				if st.RelayEndpoint != "" {
+					log.Printf("path %s: peer %s direct -> relay (no direct candidate)", nid, p.ID)
+				}
+				st2.mode = "relay"
+				st2.dirSince = now
+			case st2.lastDir != dirKey:
+				// Direct candidate changed; restart the direct timer and the
+				// candidate probe window.
+				st2.lastDir = dirKey
+				st2.dirSince = now
+				st2.cands = nil
+			}
+		}
+		if st2.mode == "direct" && directOk {
+			hs := stats[p.PublicKey].LastHandshakeSec
+			// (Re)build the candidate window when it is missing or the direct
+			// candidate changed. baseHS anchors "was there a new handshake
+			// since probing started" so a relay-era handshake cannot falsely
+			// lock a direct candidate.
+			if len(st2.cands) == 0 {
+				st2.cands = buildPeerCandidates(direct, v6, peerObs, excludeHost)
+				st2.candIdx = 0
+				st2.parallelIdx = 0
+				st2.candStart = now
+				st2.baseHS = hs
+				st2.locked = false
+			}
+			// A handshake whose sender is not this peer's relay instance
+			// proves a working direct path: a relay-era handshake (endpoint
+			// host == the relay instance serving this peer) means the peer is
+			// still being reached through the server, so it must not lock a
+			// candidate. Note this uses the peer's own relay host, which in a
+			// multi-instance topology may differ from the network's primary.
+			if !st2.locked && hs > st2.baseHS && relayReceiveDirect(stats[p.PublicKey].Endpoint, relayHost) {
+				st2.locked = true
+				st2.badDirect = ""
+				// Find which candidate matched by checking the handshake endpoint.
+				// For now, just report the current batch leader.
+				if st2.candIdx < len(st2.cands) {
+					log.Printf("path %s: peer %s direct handshake via %s (batch %d)", nid, p.ID, stats[p.PublicKey].Endpoint, st2.parallelIdx/parallelProbes+1)
+				}
+			}
+			// Parallel batch probing: rotate to next batch after candProbeSec.
+			if !st2.locked && now-st2.candStart >= candProbeSec {
+				nextBatch := st2.parallelIdx + parallelProbes
+				if nextBatch < len(st2.cands) {
+					st2.parallelIdx = nextBatch
+					st2.candStart = now
+					st2.baseHS = hs
+					endIdx := nextBatch + parallelProbes
+					if endIdx > len(st2.cands) {
+						endIdx = len(st2.cands)
+					}
+					log.Printf("path %s: peer %s probing batch %d/%d (candidates %d-%d)", nid, p.ID, nextBatch/parallelProbes+1, (len(st2.cands)+parallelProbes-1)/parallelProbes, nextBatch+1, endIdx)
+				}
+			}
+			// Set endpoint to the first candidate in the current batch.
+			// WireGuard will try to reach this endpoint, and if the NAT mapping
+			// matches any candidate in the batch, the handshake succeeds.
+			if st2.parallelIdx < len(st2.cands) {
+				p.Endpoint = st2.cands[st2.parallelIdx]
+			}
+			// Fall back to the relay when the direct budget is exhausted or
+			// every batch has been tried without a handshake.
+			allBatchesTried := !st2.locked && st2.parallelIdx+parallelProbes >= len(st2.cands) && now-st2.candStart >= candProbeSec
+			if st.RelayEndpoint != "" && !st2.locked && (now-st2.dirSince >= directGraceSec || allBatchesTried) {
+				log.Printf("path %s: peer %s direct -> relay (no direct handshake in %ds)", nid, p.ID, now-st2.dirSince)
+				st2.mode = "relay"
+				st2.badDirect = st2.lastDir
+				st2.dirSince = now
+			}
+		}
+		if st2.mode == "relay" && st.RelayEndpoint != "" {
+			p.Endpoint = relayEP
+		}
+	}
+	return out
+}
+
+// hostNorm normalizes a host for comparison: strips IPv6 brackets and any
+// link-local zone ("fe80::1%en0") and lowercases.
+func hostNorm(h string) string {
+	h = strings.Trim(strings.ToLower(h), "[]")
+	if i := strings.Index(h, "%"); i >= 0 {
+		h = h[:i]
+	}
+	return h
+}
+
+// sameHost reports whether an endpoint's host equals a normalized host. The
+// endpoint may be a bare host or host:port; both forms are handled.
+func sameHost(ep, host string) bool {
+	h := ep
+	if hh, _, err := net.SplitHostPort(ep); err == nil {
+		h = hh
+	} else if hh, _, err := net.SplitHostPort("[" + ep + "]"); err == nil {
+		h = hh
+	}
+	return hostNorm(h) == hostNorm(host)
+}
+
+// relayReceiveDirect reports whether a handshake observed at wgEP qualifies as
+// a direct connection: the sender must not be the relay host. With no relay
+// configured there is nothing to distinguish, so it always qualifies.
+func relayReceiveDirect(wgEP, relayHost string) bool {
+	if relayHost == "" {
+		return true
+	}
+	if wgEP == "" {
+		return false
+	}
+	h, _, err := net.SplitHostPort(wgEP)
+	if err != nil {
+		h = wgEP
+	}
+	return hostNorm(h) != hostNorm(relayHost)
+}
+
+// buildPeerCandidates orders the direct endpoints to probe for one peer:
+// the global-IPv6 endpoint first (no NAT), then the v4 self-advertised
+// endpoint, then the live NAT mappings observed by the relay (the exact
+// addresses a direct punch should hit), then the nearby-port window.
+func buildPeerCandidates(direct, epV6 string, observed []string, excludeHost string) []string {
+	seen := make(map[string]struct{}, 4+len(observed))
+	out := make([]string, 0, 4+len(observed))
+	add := func(ep string) {
+		if ep == "" {
+			return
+		}
+		if _, dup := seen[ep]; dup {
+			return
+		}
+		seen[ep] = struct{}{}
+		out = append(out, ep)
+	}
+	filtered := observed[:0:0]
+	for _, ep := range observed {
+		host, _, err := net.SplitHostPort(ep)
+		if err == nil && host == excludeHost {
+			continue
+		}
+		filtered = append(filtered, ep)
+	}
+	// Bare endpoints first, in priority order: global IPv6 (no NAT), the v4
+	// self-advertised endpoint, then every live relay-observed mapping.
+	add(epV6)
+	add(direct)
+	for _, ep := range filtered {
+		add(ep)
+	}
+	// Then the direct candidate's nearby-port window. The self-advertised
+	// endpoint trails the live mappings so a peer whose real WirelessGuard
+	// port is offset from its advertised one still gets probed: symmetric
+	// NATs allocate ports per destination and the relay mapping is the
+	// freshest observation, while the advertised endpoint may be a stale
+	// pinhole.
+	if direct != "" {
+		for _, c := range buildCandidates(direct) {
+			add(c)
+		}
+	}
+	// Last, the windows around each relay-observed mapping: these are the
+	// freshest live endpoints and their offsets are the most likely to hit.
+	for _, ep := range filtered {
+		for _, c := range buildCandidates(ep) {
+			add(c)
+		}
+	}
+	return out
+}
+
+// buildCandidates expands a direct endpoint into the ordered set of endpoints
+// to probe. LAN/private endpoints are tried as-is (no probing window: they are
+// either reachable or not, and a wrong port on the local segment buys nothing).
+// Public endpoints get the observed port first, then a deterministic window of
+// nearby ports (NATs tend to allocate consecutive ports per destination), so
+// a symmetric-NAT peer whose real port is offset from the probe-observed one
+// is still reached directly.
+func buildCandidates(direct string) []string {
+	host, port, err := net.SplitHostPort(direct)
+	if err != nil {
+		return []string{direct}
+	}
+	base, err := strconv.Atoi(port)
+	if err != nil || base <= 0 || base > 65535 {
+		return []string{direct}
+	}
+	hostNoBrackets := strings.Trim(host, "[]")
+	// IPv6 link-local addresses can carry a zone suffix ("fe80::1%en0") that
+	// net.ParseIP does not understand; strip it before classification.
+	hostNoZone := hostNoBrackets
+	if i := strings.Index(hostNoZone, "%"); i >= 0 {
+		hostNoZone = hostNoZone[:i]
+	}
+	ip := net.ParseIP(hostNoZone)
+	if ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.To4() == nil) {
+		// Single candidate: private/LAN addresses have no NAT, and IPv6
+		// (global and link-local) has no port-mapping window to probe.
+		return []string{direct}
+	}
+	out := make([]string, 0, 1+2*maxPortDelta)
+	out = append(out, direct)
+	for delta := 1; delta <= maxPortDelta; delta++ {
+		for _, d := range []int{-delta, delta} {
+			cand := base + d
+			if cand < 1 || cand > 65535 {
+				continue
+			}
+			out = append(out, net.JoinHostPort(host, fmt.Sprint(cand)))
+		}
+	}
+	return out
+}
+
+// maxPortDelta bounds how far from the observed port the candidate window
+// reaches. Eight in each direction (17 candidates total, ~4s each ≈ 68s worst
+// case) is generous for consecutive-allocating NATs while keeping the probe
+// burst tame; directGraceSec caps the overall direct budget anyway.
+const maxPortDelta = 8
+
+// endpointIfLocal returns the peer's local endpoint when its IP falls inside
+// one of our own private LAN subnets (same-segment direct path), and empty
+// otherwise.
+func endpointIfLocal(p *protocol.Node, localSubs []string) string {
+	if p.LocalEndpoint == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(p.LocalEndpoint)
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	for _, sub := range localSubs {
+		_, n, err := net.ParseCIDR(sub)
+		if err != nil {
+			continue
+		}
+		if n.Contains(ip) {
+			return p.LocalEndpoint
+		}
+	}
+	return ""
+}
+
+// pollIntervalFor returns the peer poll interval scaled by network count.
+// Base is 2 s; each extra network adds 0.5 s, capped at 10 s.
+func pollIntervalFor(n int) time.Duration {
+	if n <= 1 {
+		return protocol.PollIntervalSeconds * time.Second
+	}
+	dur := time.Duration(int(protocol.PollIntervalSeconds*10)+5*(n-1)) * 100 * time.Millisecond
+	if dur > 10*time.Second {
+		dur = 10 * time.Second
+	}
+	return dur
+}
+
+// reportPeerSeen tells the coordination server which peers have a recent
+// WireGuard handshake. Exported WireGuard clients never call the control API,
+// so without this they remain permanently "offline" in the owner view.
+func (d *Daemon) reportPeerSeen(nid string, peers []protocol.Node, stats map[string]PeerStats, api *apiClient, token string) {
+	now := time.Now().Unix()
+	d.mu.Lock()
+	last := d.peerSeenAt[nid]
+	if now-last < 15 {
+		d.mu.Unlock()
+		return
+	}
+	d.peerSeenAt[nid] = now
+	d.mu.Unlock()
+
+	ids := make([]string, 0, len(peers))
+	for _, p := range peers {
+		ps := stats[p.PublicKey]
+		if ps.LastHandshakeSec > 0 && now-ps.LastHandshakeSec <= 180 {
+			ids = append(ids, p.ID)
+		}
+	}
+	if err := api.MarkNodesSeen(nid, token, ids); err != nil {
+		log.Printf("report peer seen %s: %v", nid, err)
+	}
+}
+
+func (d *Daemon) pollLoop(nid string) {
+	n := len(d.cfg.Networks)
+	if n < 1 {
+		n = 1
+	}
+	ticker := time.NewTicker(pollIntervalFor(n))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+		case <-d.routeWake:
+		}
+		d.mu.Lock()
+		rt := d.nets[nid]
+		if rt == nil || rt.tun == nil {
+			d.mu.Unlock()
+			return
+		}
+		nc := d.cfg.Networks[nid]
+		if nc == nil {
+			d.mu.Unlock()
+			return
+		}
+		api, server, err := d.apiForNetworkLocked(nid)
+		if err != nil {
+			d.mu.Unlock()
+			return
+		}
+		token := nc.Token
+		d.mu.Unlock()
+
+		// The coordination call runs without holding d.mu so slow/jittery
+		// links do not stall the control API (status/info/members).
+		st, err := api.PeersState(nid, token, true)
+		if err != nil {
+			var se *httpStatusErr
+			if errors.As(err, &se) && (se.code == 404 || se.code == 401) {
+				// Wait for any in-flight SyncNetworks call that may have just
+				// rotated the node token on the server before checking whether
+				// our token changed or the network is truly 404.
+				d.syncMu.Lock()
+				d.syncMu.Unlock()
+				d.mu.Lock()
+				cur := d.cfg.Networks[nid]
+				if cur == nil {
+					d.mu.Unlock()
+					return
+				}
+				if cur.Token != token {
+					d.mu.Unlock()
+					continue
+				}
+				d.mu.Unlock()
+				if se.code == 401 {
+					_, exErr := api.NetworkExists(nid, token)
+					var exSE *httpStatusErr
+					if !errors.As(exErr, &exSE) || exSE.code != http.StatusNotFound {
+						log.Printf("poll peers %s: transient 401 (verify exists: %v); keeping local config", nid, exErr)
+						continue
+					}
+				}
+				log.Printf("poll peers %s: network gone; removing local config", nid)
+				d.mu.Lock()
+				if cur := d.cfg.Networks[nid]; cur == nil || cur.Token != token {
+					d.mu.Unlock()
+					continue
+				}
+				d.leaveLocked(nid)
+				delete(d.cfg.Networks, nid)
+				delete(d.serverState, nid)
+				if saveErr := d.save(); saveErr != nil {
+					log.Printf("remove gone network %s: save: %v", nid, saveErr)
+				}
+				d.mu.Unlock()
+				return
+			}
+			log.Printf("poll peers %s: %v", nid, err)
+			continue
+		}
+
+		// The member-safe peer response carries this node's authoritative
+		// role. Reconcile the cached owner flag so an ownership transfer made
+		// in the admin console is visible without opening network details.
+		// Otherwise the owner UI may never request the owner-only network info
+		// that contains pending join requests.
+		if st.Self != nil {
+			d.reconcileOwnerRole(nid, st.Self.Role)
+		}
+
+		// Legacy path selection is only needed when Relay v2 is not active.
+		// Skip its whoami probes and relay latency voting in relay-v2 mode.
+		sel := ""
+		observed := []string(nil)
+		if st.RelayV2 == nil || !st.RelayV2.Enabled {
+			// Cache the relay candidates (probeLoop uses the selected one for
+			// whoami) and refresh the live peer-mapping list for direct punches.
+			cands := st.RelayEndpoints
+			if len(cands) == 0 && st.RelayEndpoint != "" {
+				cands = []string{st.RelayEndpoint}
+			}
+			sel = d.selectRelay(nid, cands)
+			d.mu.Lock()
+			d.relayCands[nid] = cands
+			d.relayEP[nid] = sel
+			d.mu.Unlock()
+			observed = d.refreshObserved(nid, sel)
+		}
+
+		d.mu.Lock()
+		rt = d.nets[nid]
+		if rt == nil || rt.tun == nil {
+			d.mu.Unlock()
+			return
+		}
+		nc = d.cfg.Networks[nid]
+		if nc == nil {
+			d.mu.Unlock()
+			return
+		}
+		// The owner may have changed the network subnet; the server re-allocated
+		// our IP. Rebuild the tunnel on the new address (port unchanged).
+		if st.Self != nil && st.Self.IP != "" && st.Self.IP != nc.IP {
+			old := nc.IP
+			nc.IP = st.Self.IP
+			if st.Subnet != "" {
+				nc.Subnet = st.Subnet
+			}
+			// Warn if the new subnet overlaps with another network on this device.
+			for other, oc := range d.cfg.Networks {
+				if other != nid && subnetsOverlap(nc.Subnet, oc.Subnet) {
+					log.Printf("WARNING: network %s subnet %s overlaps with %s (%s)", nid, nc.Subnet, other, oc.Subnet)
+					break
+				}
+			}
+			if err := d.save(); err != nil {
+				log.Printf("save after IP change %s: %v", nid, err)
+			}
+			log.Printf("network %s IP changed %s -> %s (subnet %s)", nid, old, nc.IP, nc.Subnet)
+			if err := d.bringUp(nid); err != nil {
+				log.Printf("rebuild after IP change %s: %v", nid, err)
+			}
+			rt = d.nets[nid]
+			if rt == nil || rt.tun == nil {
+				d.mu.Unlock()
+				return
+			}
+		} else if st.Subnet != "" && st.Subnet != nc.Subnet {
+			// Warn if the new subnet overlaps with another network on this device.
+			for other, oc := range d.cfg.Networks {
+				if other != nid && subnetsOverlap(st.Subnet, oc.Subnet) {
+					log.Printf("WARNING: network %s subnet %s overlaps with %s (%s)", nid, st.Subnet, other, oc.Subnet)
+					break
+				}
+			}
+			nc.Subnet = st.Subnet
+			if err := d.save(); err != nil {
+				log.Printf("save subnet %s: %v", nid, err)
+			}
+		}
+		// 同步服务器上的网络名称，保证客户端卡片与服务端显示一致。
+		if st.Name != "" && st.Name != nc.Name {
+			nc.Name = st.Name
+			if err := d.save(); err != nil {
+				log.Printf("save name %s: %v", nid, err)
+			}
+		}
+		if st.RelayV2 != nil && st.RelayV2.Enabled {
+			if rt.path == nil {
+				rt.path = NewPathManager(d.ctx, nid, nc, d.serverForConfigLocked(nc))
+				go rt.path.Run()
+			}
+			subnets := d.DetectLocalSubnetsForServer(server)
+			selfIP := ""
+			if st.Self != nil && st.Self.PublicIPv4 != "" {
+				selfIP = st.Self.PublicIPv4
+				d.selfPub[nid] = selfIP
+			} else if mappedIP := rt.path.MappedPublicIP(); mappedIP != "" {
+				selfIP = mappedIP
+				d.selfPub[nid] = selfIP
+				if nc.PublicIP != mappedIP {
+					nc.PublicIP = mappedIP
+					if err := d.save(); err != nil {
+						log.Printf("save relay-v2 public IP %s: %v", nid, err)
+					}
+				}
+			}
+			rt.path.UpdatePeersWithContext(st.Peers, subnets, selfIP)
+			peers := rt.path.PreparePeers(st.Peers)
+			// Inject the network's delegated relay routes: the CIDR an owner
+			// delegated to a node must travel through that node's tunnel.
+			d.pruneRouteEnabledLocked(nid, st.Routes)
+			peers, skipped := d.planRelayRoutesLocked(nid, nc, st.Routes, peers)
+			if err := rt.tun.ApplyPeers(peers, nc.Subnet, ""); err != nil {
+				log.Printf("apply relay-v2 peers %s: %v", nid, err)
+				d.noteApplyErrLocked(nid, err)
+			} else {
+				d.noteApplyErrLocked(nid, nil)
+				d.logSkippedRoutesLocked(nid, skipped)
+			}
+			pm := rt.path
+			nodeID := nc.NodeID
+			token := nc.Token
+			seenStats, _ := rt.tun.Stats()
+			d.mu.Unlock()
+			d.reportPeerSeen(nid, peers, seenStats, api, token)
+			d.publishDirectEndpoints(nid, api, token, nodeID, pm)
+			continue
+		}
+		if rt.path != nil {
+			rt.path.Close()
+			rt.path = nil
+		}
+		// resolvePeerEndpoints picks, per peer, the endpoint to use. The relay
+		// address fed in is the client-selected candidate (best measured RTT),
+		// not merely the advertised primary; all per-peer relay decisions hang
+		// off the selected relay so failover actually moves the data plane.
+		st.RelayEndpoint = sel
+		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnetsForServer(server), observed)
+		// Inject the network's delegated relay routes into the peer routing
+		// entries so the delegated CIDRs travel through their gateway node.
+		d.pruneRouteEnabledLocked(nid, st.Routes)
+		peers, skipped := d.planRelayRoutesLocked(nid, nc, st.Routes, peers)
+		// Per-peer WireGuard tunnel stats straight from the engine, so the
+		// poll line distinguishes a real data-plane handshake from the
+		// relay-group "online" guess (Cc, CJEB, KAYS... consumers poll peers
+		// on every link and used to only see Online, which relays mark true
+		// as soon as any relay group flow is registered, not when the WG
+		// handshake actually completes end to end).
+		pstats, _ := rt.tun.Stats()
+		for i := range peers {
+			ps := pstats[peers[i].PublicKey]
+			hs := int64(0)
+			if ps.LastHandshakeSec > 0 {
+				hs = time.Now().Unix() - ps.LastHandshakeSec
+			}
+			log.Printf("poll peers %s: peer %d id=%s pub=%s endpoint=%s local=%s online=%v hs=%ds rx=%dB tx=%dB", nid, i, peers[i].ID, peers[i].PublicKey, peers[i].Endpoint, peers[i].LocalEndpoint, peers[i].Online, hs, ps.RxBytes, ps.TxBytes)
+		}
+		if len(peers) == 0 {
+			log.Printf("poll peers %s: got 0 peers", nid)
+		}
+		if err := rt.tun.ApplyPeers(peers, nc.Subnet, st.RelayEndpoint); err != nil {
+			log.Printf("apply peers %s: %v", nid, err)
+			d.noteApplyErrLocked(nid, err)
+		} else {
+			d.noteApplyErrLocked(nid, nil)
+			d.logSkippedRoutesLocked(nid, skipped)
+		}
+		d.mu.Unlock()
+		d.reportPeerSeen(nid, peers, pstats, api, token)
+	}
+}
+
+func (d *Daemon) publishDirectEndpoints(nid string, api *apiClient, token, nodeID string, pm *PathManager) {
+	ep4, ep6, nat := pm.DirectEndpoints()
+	sig := ep4 + "|" + ep6 + "|" + nat
+	d.mu.Lock()
+	if d.directPub[nid] == sig {
+		d.mu.Unlock()
+		return
+	}
+	d.directPub[nid] = sig
+	d.mu.Unlock()
+	if err := api.SetDirectEndpointsFor(nid, nodeID, token, ep4, ep6, nat); err != nil {
+		log.Printf("publish direct endpoints %s: %v", nid, err)
+		d.mu.Lock()
+		delete(d.directPub, nid)
+		d.mu.Unlock()
+	}
+}
+
+// mappedEndpointFor returns "externalIP:externalPort" only when a NAT
+// mapping exists for port, observedIP is non-empty, and the mapping's
+// external IP equals the observed public IP. Otherwise it returns "".
+func (d *Daemon) mappedEndpointFor(port int, observedIP string) string {
+	m, ok := d.nat.mapping(port)
+	if !ok || observedIP == "" || m.externalIP != observedIP {
+		return ""
+	}
+	return net.JoinHostPort(m.externalIP, strconv.Itoa(m.externalPort))
+}
+
+// probeLoop periodically asks the coordination server's UDP echo for this
+// node's public (NAT-observed) IP and advertises publicIP:wgPort as the
+// endpoint, so remote peers can attempt a direct hole-punched connection.
+func (d *Daemon) probeLoop(nid string) {
+	ticker := time.NewTicker(protocol.ProbeIntervalSeconds * time.Second)
+	defer ticker.Stop()
+	lastIP := ""
+	lastLocal := ""
+	lastV6 := ""
+	lastMapped := ""
+	for {
+		select {
+		case <-ticker.C:
+		}
+		d.mu.Lock()
+		rt := d.nets[nid]
+		if rt == nil {
+			d.mu.Unlock()
+			return
+		}
+		if rt.path != nil {
+			// Relay v2 owns the data plane for now. Keep the loop alive so
+			// direct probing resumes if the server disables Relay v2.
+			d.mu.Unlock()
+			continue
+		}
+		nc := d.cfg.Networks[nid]
+		if nc == nil {
+			d.mu.Unlock()
+			return
+		}
+		serverAddr := d.serverForConfigLocked(nc)
+		relayAddr := d.relayEP[nid]
+		port := nc.Port
+		d.mu.Unlock()
+
+		localEP, _ := d.localEndpointForNetworkLocked(nid, port)
+		// Prefer the in-band relay whoami (works over the already-live tunnel
+		// data path); fall back to the dedicated UDP probe port.
+		ip, err := d.probeSelfPublicIP(relayAddr, nid, nc.NodeID, nc.Token, serverAddr)
+		if err != nil {
+			log.Printf("probe public IP %s: %v", nid, err)
+			// Keep whatever we last advertised; the relay group fetch keeps
+			// punching regardless.
+			if lastIP == "" {
+				continue
+			}
+		}
+		epV6 := ""
+		if v6, ok := globalIPv6Endpoint(port); ok {
+			epV6 = v6
+		}
+
+		if ip != "" {
+			d.mu.Lock()
+			d.selfPub[nid] = ip
+			if nc.PublicIP != ip {
+				nc.PublicIP = ip
+				if err := d.save(); err != nil {
+					log.Printf("save public IP %s: %v", nid, err)
+				}
+			}
+			d.mu.Unlock()
+		}
+		// Automatic gateway mapping: when it is active and its external IP
+		// equals this node's relay-observed public IP, advertise the mapped
+		// endpoint and mark it so peers punch it before any relay window. A
+		// mismatch means carrier-grade NAT above the router — the mapping is
+		// unreachable from outside, so keep advertising the observed endpoint
+		// and let peers rely on relay windows as before.
+		mappedEP := d.mappedEndpointFor(port, ip)
+		if ip == lastIP && localEP == lastLocal && epV6 == lastV6 && mappedEP == lastMapped {
+			continue
+		}
+		lastIP = ip
+		lastLocal = localEP
+		lastV6 = epV6
+		lastMapped = mappedEP
+		api := newAPIClient(serverAddr, d.ctx)
+		if ip != "" {
+			ep := net.JoinHostPort(ip, fmt.Sprint(port))
+			if mappedEP != "" {
+				ep = mappedEP
+			}
+			if err := api.SetEndpointFor(nid, nc.NodeID, nc.Token, ep, localEP, mappedEP != ""); err != nil {
+				log.Printf("set public endpoint %s: %v", nid, err)
+				continue
+			}
+			log.Printf("public endpoint %s: %s (local %s)", nid, ep, localEP)
+		}
+		if epV6 != "" {
+			if err := api.SetEndpointV6For(nid, nc.NodeID, nc.Token, epV6); err != nil {
+				log.Printf("set v6 endpoint %s: %v", nid, err)
+				continue
+			}
+			log.Printf("v6 endpoint %s: %s", nid, epV6)
+		}
+	}
+}
+
+// qualityLoop is the per-network health watchdog. Every qualityIntervalSec it
+// samples the data plane per peer (handshake age + rx/tx byte deltas) and
+// records liveness in rt.quality. When a peer is being served by the relay and
+// its path looks dead for qualityDeadBatches consecutive samples — no traffic
+// and an old handshake — the watchdog forces the relay to be re-evaluated (all
+// candidates re-probed immediately) and re-arms a direct retry, so a relay
+// that silently died is not allowed to strand the peer until its next
+// scheduled re-probe.
+func (d *Daemon) qualityLoop(nid string) {
+	ticker := time.NewTicker(qualityIntervalSec * time.Second)
+	defer ticker.Stop()
+	last := make(map[string]PeerStats)
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		d.mu.Lock()
+		rt := d.nets[nid]
+		if rt == nil {
+			d.mu.Unlock()
+			return
+		}
+		if rt.path != nil {
+			// Relay v2 owns the data plane for now. Keep the loop alive so
+			// quality tracking resumes if the server disables Relay v2.
+			d.mu.Unlock()
+			continue
+		}
+		tun := rt.tun
+		if rt.quality == nil {
+			rt.quality = make(map[string]*peerQuality)
+			rt.deadSince = make(map[string]int64)
+		}
+		if tun == nil {
+			d.mu.Unlock()
+			continue
+		}
+		stats, err := tun.Stats()
+		if err != nil {
+			d.mu.Unlock()
+			continue
+		}
+		forced := d.qualityTick(nid, rt, stats, time.Now().Unix(), last)
+		d.mu.Unlock()
+		if forced && len(d.relayCands[nid]) > 0 {
+			// Re-probe every candidate immediately, outside d.mu.
+			d.selectRelay(nid, d.relayCands[nid])
+		}
+	}
+}
+
+// qualityTick updates rt.quality for every peer in stats from the byte/handshake
+// snapshot, tracks relay-path death, and returns whether the watchdog tripped
+// (a relay-served peer whose path stayed dead across the required batches), in
+// which case the caller must re-select the relay and re-arm direct retries.
+// Caller must hold d.mu. last maps peer public key -> previous snapshot.
+func (d *Daemon) qualityTick(nid string, rt *netRuntime, stats map[string]PeerStats, now int64, last map[string]PeerStats) bool {
+	if rt.quality == nil {
+		rt.quality = make(map[string]*peerQuality)
+		rt.deadSince = make(map[string]int64)
+	}
+	var forced bool
+	for pub, ps := range stats {
+		var lastPS PeerStats
+		if le, ok := last[pub]; ok {
+			lastPS = le
+		} else {
+			lastPS = ps
+		}
+		last[pub] = ps
+		rx := ps.RxBytes - lastPS.RxBytes
+		if rx < 0 {
+			rx = 0
+		}
+		tx := ps.TxBytes - lastPS.TxBytes
+		if tx < 0 {
+			tx = 0
+		}
+		hsAge := now - ps.LastHandshakeSec
+		if hsAge < 0 {
+			hsAge = 0
+		}
+		active := rx > 0 || tx > 0 || hsAge < qualityHandshakeStaleSec
+		q := rt.quality[pub]
+		if q == nil {
+			q = &peerQuality{}
+			rt.quality[pub] = q
+		}
+		q.Active = active
+		q.HandshakeAge = hsAge
+		q.RxRate = rx
+		q.TxRate = tx
+
+		id := rt.peerIDs[pub]
+		if id == "" {
+			// Tests and legacy state may key peerDirect by public key.
+			id = pub
+		}
+		pd, ok := rt.peerDirect[id]
+		if !ok {
+			delete(rt.deadSince, pub)
+			continue
+		}
+		if pd.mode == "direct" {
+			// A direct path can pass a handshake yet carry no return traffic
+			// (e.g. the peer's advertised port is stable inbound, but its
+			// Docker/NAT rewrites the reply source port). Direct staleness is
+			// normally handled by handshake age, which stays fresh because the
+			// handshake itself succeeds. Fall back to the relay when TX is
+			// flowing and RX is completely absent for several samples.
+			if tx >= directDeadMinBytes && rx == 0 {
+				dead := rt.deadSince[pub]
+				if dead == 0 {
+					rt.deadSince[pub] = now
+					continue
+				}
+				if now-dead < int64((qualityDeadBatches-1)*qualityIntervalSec) {
+					continue
+				}
+				pd.mode = "relay"
+				pd.locked = false
+				pd.cands = nil
+				pd.tried = true
+				pd.badDirect = pd.lastDir
+				pd.dirSince = now
+				log.Printf("path %s: peer %s direct path one-way for %ds (tx=%dB rx=0) -> relay", nid, id, now-dead, tx)
+				delete(rt.deadSince, pub)
+				continue
+			}
+			delete(rt.deadSince, pub)
+			continue
+		}
+		if pd.mode != "relay" {
+			delete(rt.deadSince, pub)
+			continue
+		}
+		if active {
+			delete(rt.deadSince, pub)
+			continue
+		}
+		dead := rt.deadSince[pub]
+		if dead == 0 {
+			rt.deadSince[pub] = now
+			continue
+		}
+		if now-dead < int64((qualityDeadBatches-1)*qualityIntervalSec) {
+			continue
+		}
+		// Relay path has been dead long enough: re-arm a direct attempt
+		// (the state machine re-evaluates at the next poll) and force a
+		// fresh relay selection so a different candidate (or a recovered
+		// primary) can take over.
+		pd.dirSince = 0
+		pd.badDirect = ""
+		d.relaySelAt[nid] = 0
+		log.Printf("path %s: peer %s relay path dead for %ds hsa=%ds -> forcing relay re-select + direct retry", nid, id, now-dead, hsAge)
+		delete(rt.deadSince, pub)
+		forced = true
+	}
+	return forced
+}
+
+// probeSelfPublicIP learns this node's public IP, preferring an in-band relay
+// whoami (which rides the same relay port the tunnel already uses) and falling
+// back to the dedicated server UDP probe port.
+func (d *Daemon) probeSelfPublicIP(relayAddr, nid, nodeID, token, serverAddr string) (string, error) {
+	if relayAddr != "" {
+		ep, err := relayWhoami(relayAddr)
+		if err == nil && ep != "" {
+			ip, _, err := net.SplitHostPort(ep)
+			if err == nil {
+				return ip, nil
+			}
+		}
+		// Fall through to the dedicated probe on whoami failure.
+	}
+	return probePublicIP(serverProbeAddr(serverAddr), nid, nodeID, token)
+}
+
+// selectRelay picks the best relay candidate for a network's data plane by
+// measuring whoami RTT to every candidate (throttled to relaySelectSec per
+// network). It returns the endpoint to use; callers feed it to the peer
+// resolver and probe loop. Selection logic:
+//
+//   - A single candidate is used without probing (happy path, no relay churn).
+//   - The current selection is kept when its RTT stays within tolerance of
+//     the best (1.5x + 20ms), so small latency noise does not flap the plane.
+//   - A candidate that fails whoami (unreachable relay/dead socket) is treated
+//     as infinitely far and skipped; if all fail, the previous selection is
+//     kept and a later poll re-attempts.
+//
+// The measurement is a network round-trip, so it runs without holding d.mu.
+func (d *Daemon) selectRelay(nid string, cands []string) string {
+	if len(cands) == 0 {
+		return ""
+	}
+	if len(cands) == 1 {
+		// Single candidate: use it directly. Relay data plane is the primary
+		// and only choice; probing would add pointless latency to every poll.
+		return cands[0]
+	}
+	d.mu.Lock()
+	now := time.Now().UnixMilli()
+	if now-d.relaySelAt[nid] < int64(relaySelectSec*1000) {
+		prev := d.relayEP[nid]
+		d.mu.Unlock()
+		return prev
+	}
+	cur := d.relayEP[nid]
+	d.mu.Unlock()
+
+	rinkey := func(ep string) string { return nid + "|" + ep }
+	bestEP := ""
+	bestRTT := int64(math.MaxInt64)
+	for _, ep := range cands {
+		start := time.Now()
+		_, err := relayWhoami(ep)
+		rtt := time.Since(start).Milliseconds()
+		d.mu.Lock()
+		if err != nil {
+			// The candidate is unreachable right now. Drop any cached RTT so
+			// pickRelayByRTT cannot mistake a dead relay for "within tolerance"
+			// of the best (a stale number that no longer reflects reachability),
+			// which would pin the data plane to a relay that just died.
+			delete(d.relayRTT, rinkey(ep))
+			d.mu.Unlock()
+			continue
+		}
+		d.relayRTT[rinkey(ep)] = rtt
+		// Drop RTT cache entries for candidates the server no longer
+		// advertises (network changed), so selection never consults ghosts.
+		for k := range d.relayRTT {
+			if strings.HasPrefix(k, nid+"|") {
+				known := false
+				for _, c := range cands {
+					if k == nid+"|"+c {
+						known = true
+						break
+					}
+				}
+				if !known {
+					delete(d.relayRTT, k)
+				}
+			}
+		}
+		d.mu.Unlock()
+		if rtt < bestRTT {
+			bestEP, bestRTT = ep, rtt
+		}
+	}
+	if bestEP == "" {
+		// Every candidate unreachable: keep whatever we had; a later poll
+		// re-selects once connectivity returns.
+		d.mu.Lock()
+		prev := d.relayEP[nid]
+		d.relaySelAt[nid] = now
+		d.mu.Unlock()
+		return prev
+	}
+
+	sel := pickRelayByRTT(cands, cur, bestEP, bestRTT, d.relayRTT, rinkey)
+	if sel != cur {
+		log.Printf("relay select %s: %s (%.0fms) over %s", nid, sel, float64(bestRTT), cur)
+	}
+	d.mu.Lock()
+	if sel != d.relayEP[nid] {
+		// The data plane endpoint changed; reset so the observed mapping list
+		// (and the relay whoami probe) is re-learned against the new relay.
+		d.obsList[nid] = nil
+	}
+	d.relayEP[nid] = sel
+	d.relaySelAt[nid] = now
+	d.mu.Unlock()
+	return sel
+}
+
+// pickRelayByRTT is the pure selection policy: pick the best candidate by
+// measured RTT, but keep the current relay when its RTT stays within tolerance
+// of the best (1.5x + 20ms) so healthy sessions are not flapped by noise.
+// rtts is a map (via rinkey) of candidate to last measured millisecond RTT;
+// a missing/zero entry means the candidate was unreachable and never wins.
+func pickRelayByRTT(cands []string, cur, bestEP string, bestRTT int64, rtts map[string]int64, rinkey func(string) string) string {
+	if cur == "" {
+		return bestEP
+	}
+	curRTT := rtts[rinkey(cur)]
+	if curRTT <= 0 || curRTT > bestRTT*3/2+20 {
+		return bestEP
+	}
+	return cur
+}
+
+// refreshObserved asks the relay for the current set of live peer mappings
+// (throttled to observedRefreshSec per network) and caches the last good list.
+func (d *Daemon) refreshObserved(nid, relayAddr string) []string {
+	if relayAddr == "" {
+		return nil
+	}
+	d.mu.Lock()
+	last := d.obsAt[nid]
+	now := time.Now().Unix()
+	d.mu.Unlock()
+	if now-last < observedRefreshSec {
+		d.mu.Lock()
+		obs := d.obsList[nid]
+		d.mu.Unlock()
+		return obs
+	}
+	obs, err := relayGroup(relayAddr)
+	d.mu.Lock()
+	if err == nil {
+		d.obsList[nid] = obs
+		d.obsAt[nid] = now
+	} else {
+		log.Printf("relay group %s: %v", nid, err)
+		obs = d.obsList[nid]
+	}
+	d.mu.Unlock()
+	return obs
+}
+
+// serverProbeAddr derives the UDP probe address (host:ProbePort) from the
+// coordination server's base URL.
+func serverProbeAddr(server string) string {
+	if u, err := url.Parse(server); err == nil && u.Hostname() != "" {
+		return net.JoinHostPort(u.Hostname(), fmt.Sprint(protocol.ProbePort))
+	}
+	return net.JoinHostPort(server, fmt.Sprint(protocol.ProbePort))
+}
+
+// probePublicIP sends one UDP probe to the server and returns the public IP
+// the server observed for us.
+func probePublicIP(probeAddr, nid, nodeID, token string) (string, error) {
+	raddr, err := net.ResolveUDPAddr("udp", probeAddr)
+	if err != nil {
+		return "", err
+	}
+	conn, err := net.DialUDP("udp", nil, raddr)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	payload, _ := json.Marshal(map[string]string{"networkId": nid, "nodeId": nodeID, "token": token})
+	if _, err := conn.Write(payload); err != nil {
+		return "", err
+	}
+	buf := getSmallBuf()
+	defer putSmallBuf(buf)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := json.Unmarshal(buf[:n], &resp); err != nil {
+		return "", err
+	}
+	ip, _, err := net.SplitHostPort(resp.Endpoint)
+	if err != nil {
+		return "", err
+	}
+	return ip, nil
+}
+
+// relayControl exchanges one control packet with a network's relay port.
+// The relay answers control packets in-band and never forwards them; the
+// request and reply share a single UDP exchange, so no relay protocol version
+// negotiation is needed beyond the in-band prefix.
+func relayControl(relayAddr string, req interface{}) ([]byte, error) {
+	raddr, err := net.ResolveUDPAddr("udp", relayAddr)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialUDP("udp", nil, raddr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	full := append([]byte(protocol.RelayCtrlPrefix), payload...)
+	if _, err := conn.Write(full); err != nil {
+		return nil, err
+	}
+	buf := getLargeBuf()
+	defer putLargeBuf(buf)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		// The relay answers control packets exclusively with control packets,
+		// but until every relay is upgraded an old one may fan peer WireGuard
+		// traffic back at our probing socket first; skip that noise and wait
+		// for the actual reply.
+		if n >= len(protocol.RelayCtrlPrefix) &&
+			strings.HasPrefix(string(buf[:n]), protocol.RelayCtrlPrefix) {
+			return buf[len(protocol.RelayCtrlPrefix):n], nil
+		}
+	}
+}
+
+// relayWhoami asks the relay for the observed source endpoint ("ip:port") of a
+// packet from this socket. Behind a cone NAT the public IP is authoritative
+// even though the mapped port belongs to this ephemeral socket rather than the
+// WireGuard port; that is why callers use the IP only.
+func relayWhoami(relayAddr string) (string, error) {
+	resp, err := relayControl(relayAddr, map[string]string{"op": protocol.RelayCtrlWhoami})
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := json.Unmarshal(resp, &out); err != nil {
+		return "", err
+	}
+	return out.Endpoint, nil
+}
+
+// relayGroup asks the relay for every other live endpoint on the network's
+// relay port. Because the relay forwards our WireGuard tunnel as-is, each
+// entry is a peer's current NAT-observed WireGuard endpoint — exactly the
+// address a direct punch should target.
+func relayGroup(relayAddr string) ([]string, error) {
+	resp, err := relayControl(relayAddr, map[string]string{"op": protocol.RelayCtrlGroup})
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Peers []string `json:"peers"`
+	}
+	if err := json.Unmarshal(resp, &out); err != nil {
+		return nil, err
+	}
+	return out.Peers, nil
+}
+
+// globalIPv6 tries to find a routable global IPv6 address and returns it as
+// the WireGuard endpoint "[v6]:port". Global IPv6 has no NAT, so a peer
+// reachable over v6 needs neither hole punching nor port forwarding.
+func globalIPv6(port int) string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 || isVirtualInterfaceName(ifc.Name) {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipn, _, err := net.ParseCIDR(a.String())
+			if err != nil {
+				continue
+			}
+			ip16 := ipn.To16()
+			if ip16 == nil {
+				continue
+			}
+			ip, ok := netip.AddrFromSlice(ip16)
+			if !ok || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsPrivate() || !ip.IsGlobalUnicast() {
+				continue
+			}
+			return net.JoinHostPort(ipn.String(), fmt.Sprint(port))
+		}
+	}
+	return ""
+}
+
+func globalIPv6Endpoint(port int) (string, bool) {
+	ep := globalIPv6(port)
+	return ep, ep != ""
+}
+
+// Leave stops and forgets a network's tunnel but keeps the server-side node
+// so the owner can still see this device. Empty nid leaves all networks.
+func (d *Daemon) Leave(nid string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if nid == "" {
+		for id := range d.cfg.Networks {
+			d.leaveLocked(id)
+		}
+		return d.save()
+	}
+	if _, ok := d.cfg.Networks[nid]; !ok {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	d.leaveLocked(nid)
+	return d.save()
+}
+
+func (d *Daemon) leaveLocked(nid string) {
+	if rt := d.nets[nid]; rt != nil {
+		rt.shutdown()
+		delete(d.nets, nid)
+	}
+	if nc := d.cfg.Networks[nid]; nc != nil {
+		nc.Active = false
+		if nc.Port != 0 {
+			d.nat.unclaim(nc.Port)
+		}
+	}
+	delete(d.netErrs, nid)
+	delete(d.retryPending, nid)
+	delete(d.retryAttempts, nid)
+}
+
+// Poke sends a few UDP datagrams to a peer's virtual IP. The packets are
+// routed through the WireGuard TUN, which forces the peer to re-handshake and
+// refreshes both sides' NAT mappings when a direct path has gone stale.
+func (d *Daemon) Poke(target string) error {
+	ip := net.ParseIP(strings.TrimSpace(target))
+	if ip == nil || ip.To4() == nil {
+		return errors.New("目标必须是有效的 IPv4 地址")
+	}
+	d.mu.Lock()
+	found := false
+	for _, nc := range d.cfg.Networks {
+		if nc == nil || !nc.Active || nc.Subnet == "" || nc.IP == target {
+			continue
+		}
+		if _, subnet, err := net.ParseCIDR(nc.Subnet); err == nil && subnet.Contains(ip) {
+			found = true
+			break
+		}
+	}
+	d.mu.Unlock()
+	if !found {
+		return errors.New("目标不在已连接的虚拟网络中")
+	}
+	conn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return fmt.Errorf("唤醒失败：%w", err)
+	}
+	defer conn.Close()
+	dst := &net.UDPAddr{IP: ip, Port: 9}
+	for i := 0; i < 3; i++ {
+		if _, err := conn.WriteToUDP([]byte{0}, dst); err != nil {
+			return fmt.Errorf("唤醒失败：%w", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
+}
+
+// Rejoin brings a network's tunnel back up.
+// Rejoin brings a network's tunnel back up.
+func (d *Daemon) Rejoin(nid string) error {
+	d.mu.Lock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		d.mu.Unlock()
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	// Read current state before we release the lock so we can decide whether
+	// to probe. nil = unknown, &stateGone = gone, &stateOK = ok.
+	currentState := d.serverState[nid]
+	d.mu.Unlock()
+	// Lazy probe: if the network was previously unknown or ok, check the server
+	// now so the user cannot accidentally re-join a deleted network. Run it in
+	// the background: over a slow/jittery physical link this HTTP round trip is
+	// the dominant latency of Rejoin, and blocking the caller (a UI thread on
+	// mobile) made the toggle feel unresponsive. The result lands in
+	// d.serverState and is re-checked below; if the probe is still in flight
+	// when we reach that check we optimistically proceed and re-check on the
+	// next status render.
+	if currentState == nil || *currentState == "ok" {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			d.pingServerState(nid)
+		}()
+		// Give the probe a bounded window so a slow network constrains the
+		// wait instead of the full HTTP client timeout. This keeps the toggle
+		// snappy while still catching a definitively-deleted network quickly.
+		select {
+		case <-done:
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc = d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	if d.serverState[nid] != nil && *d.serverState[nid] == "gone" {
+		return netGoneErr
+	}
+	// If already active but tunnel is missing (e.g. VPN service restarted),
+	// re-bring-up instead of refusing.
+	if nc.Active {
+		if d.singleActiveNetwork {
+			if d.enforceSingleActiveLocked(nid) {
+				if err := d.save(); err != nil {
+					log.Printf("save single active network: %v", err)
+				}
+			}
+		}
+		if rt := d.nets[nid]; rt != nil && rt.tun != nil {
+			return fmt.Errorf("网络 %s 已激活", nid)
+		}
+		// Tunnel lost — bring it up again.
+		if err := d.bringUp(nid); err != nil {
+			log.Printf("rejoin bring up %s: %v", nid, err)
+		}
+		return nil
+	}
+	nc.Active = true
+	if d.singleActiveNetwork {
+		d.enforceSingleActiveLocked(nid)
+	}
+	if err := d.save(); err != nil {
+		return err
+	}
+	if err := d.bringUp(nid); err != nil {
+		log.Printf("bring up %s: %v", nid, err)
+	}
+	return nil
+}
+
+// Remove tears down the tunnel, deletes the node on the server, and forgets
+// the network entirely.
+func (d *Daemon) Remove(nid string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	d.leaveLocked(nid)
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.RemoveNode(nid, nc.NodeID, nc.Token); err != nil {
+		// 404: the node was already gone on the server (network deleted by owner).
+		// 401: the node was kicked and its token invalidated — server-side cleanup
+		// already happened. In either case proceed with local cleanup. Any other
+		// error (network unreachable, 403, 500, ...) means the server could not
+		// process the removal; keep the local config and surface the error so
+		// the caller can retry.
+		if se, ok := err.(*httpStatusErr); !ok || (se.code != 404 && se.code != 401) {
+			return fmt.Errorf("remove node %s from server: %w", nid, err)
+		}
+	}
+	delete(d.cfg.Networks, nid)
+	delete(d.serverState, nid)
+	return d.save()
+}
+
+// UpdateSettings updates the network name, subnet and/or join-approval
+// requirement for a network this node owns. Changing the subnet re-allocates
+// every member's IP on the server; this node itself picks the new IP up via
+// the poll loop.
+func (d *Daemon) UpdateSettings(nid, name, subnet string, approvalRequired *bool, opts ...shareOpt) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	var so shareOpt
+	if len(opts) > 0 {
+		so = opts[0]
+	}
+	if subnet != "" && subnet != nc.Subnet {
+		for other, oc := range d.cfg.Networks {
+			if other != nid && subnetsOverlap(subnet, oc.Subnet) {
+				return fmt.Errorf("网段 %s 与已加入网络 %s（%s）冲突", subnet, other, oc.Subnet)
+			}
+		}
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.UpdateNetworkSettings(nid, nc.Token, name, subnet, approvalRequired, so.description, so.tags, so.visibility); err != nil {
+		return wrapNetGone(err)
+	}
+	if name != "" {
+		nc.Name = name
+	}
+	if subnet != "" {
+		nc.Subnet = subnet
+	}
+	return d.save()
+}
+
+// SetNodeRole updates a peer node's role within a network this node owns.
+func (d *Daemon) SetNodeRole(nid, nodeID, role string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.SetNodeRole(nid, nc.Token, nodeID, role); err != nil {
+		return wrapNetGone(err)
+	}
+	return nil
+}
+
+// applyRelayGatewayLocked (re)configures the local relay gateway according to
+// the current configuration and records the outcome. Caller must hold d.mu.
+//
+// When the gateway is disabled the previous error is cleared and the node
+// stops advertising itself as a gateway. When it is enabled the forwarding
+// and NAT rules are installed; a failure is kept in d.relayErr and reported
+// to the coordination server, so the routes delegated to this node stay
+// pending instead of blackholing traffic.
+func (d *Daemon) applyRelayGatewayLocked() {
+	if !d.cfg.RelayAllowed() {
+		d.relayErr = ""
+		return
+	}
+	subnets := relayGatewaySubnets(d.cfg.Networks)
+	if err := setupRelayGateway(subnets); err != nil {
+		d.relayErr = describeRelayGatewayError(err)
+		log.Printf("relay gateway setup failed: %v", err)
+		return
+	}
+	d.relayErr = ""
+}
+
+// publishRelayCapabilityLocked reports this node's gateway capability to the
+// coordination server for every joined network. Caller must hold d.mu.
+//
+// The report is sent for all networks because the switch is device-wide: a
+// gateway that forwards for one network can forward for all of them.
+func (d *Daemon) publishRelayCapabilityLocked() {
+	allow := relayGatewaySupported() && d.cfg.RelayAllowed() && d.relayErr == ""
+	relayErr := d.relayErr
+	if !relayGatewaySupported() {
+		relayErr = "当前系统不支持中继网络模式"
+	}
+	for nid, nc := range d.cfg.Networks {
+		if nc == nil {
+			continue
+		}
+		token := nc.Token
+		api, _, err := d.apiForNetworkLocked(nid)
+		if err != nil {
+			log.Printf("report relay capability %s: %v", nid, err)
+			continue
+		}
+		if err := api.SetRelayCapability(nid, token, allow, relayErr); err != nil {
+			log.Printf("report relay capability %s: %v", nid, err)
+		}
+	}
+}
+
+// publishRelayCapabilityAsync reports the gateway capability without blocking
+// the caller. The HTTP calls run outside the daemon lock so a slow server
+// cannot stall the control API or the daemon startup.
+func (d *Daemon) publishRelayCapabilityAsync() {
+	go func() {
+		d.mu.Lock()
+		allow := relayGatewaySupported() && d.cfg.RelayAllowed() && d.relayErr == ""
+		relayErr := d.relayErr
+		if !relayGatewaySupported() {
+			relayErr = "当前系统不支持中继网络模式"
+		}
+		type target struct {
+			nid    string
+			token  string
+			server string
+		}
+		var targets []target
+		for nid, nc := range d.cfg.Networks {
+			if nc == nil {
+				continue
+			}
+			targets = append(targets, target{nid: nid, token: nc.Token, server: d.serverForConfigLocked(nc)})
+		}
+		d.mu.Unlock()
+		for _, t := range targets {
+			api, err := d.apiForServerLocked(t.server)
+			if err != nil {
+				log.Printf("report relay capability %s: %v", t.nid, err)
+				continue
+			}
+			if err := api.SetRelayCapability(t.nid, t.token, allow, relayErr); err != nil {
+				log.Printf("report relay capability %s: %v", t.nid, err)
+			}
+		}
+	}()
+}
+
+// SetRelayOptions updates the two relay switches of this device:
+//
+//   - allowRelay makes the device act as a relay gateway for the networks it
+//     belongs to. The local gateway setup (IP forwarding + NAT) is applied
+//     immediately and a failure is reported to the coordination server.
+//   - useRelay controls whether the device honours the network's delegated
+//     routes. It defaults to enabled.
+//
+// The new state is persisted and reported to the server.
+func (d *Daemon) SetRelayOptions(allowRelay, useRelay bool) error {
+	if allowRelay && !relayGatewaySupported() {
+		return errors.New("当前系统不支持中继网络模式")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.cfg.AllowRelay = allowRelay
+	u := useRelay
+	d.cfg.UseRelay = &u
+	if err := d.save(); err != nil {
+		return err
+	}
+	d.applyRelayGatewayLocked()
+	d.publishRelayCapabilityAsync()
+	return nil
+}
+
+// relayCapabilityHeartbeat re-reports the gateway state periodically. The
+// server also performs this reconciliation on every report, so a route that
+// was delegated after the switch was enabled is promoted even when the local
+// flags have not changed.
+func (d *Daemon) relayCapabilityHeartbeat() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+			d.publishRelayCapabilityAsync()
+		}
+	}
+}
+
+// RelayOptions returns the current relay switches and the last gateway setup
+// error, for the status API.
+func (d *Daemon) RelayOptions() (allowRelay, useRelay bool, relayErr string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.cfg.RelayAllowed(), d.cfg.RelayUsed(), d.relayErr
+}
+
+// SetDeviceName changes this device's display name on every joined network.
+// The name is persisted locally and re-reported on the next startup.
+func (d *Daemon) SetDeviceName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("设备名称不能为空")
+	}
+	if len([]rune(name)) > 64 {
+		return errors.New("设备名称不能超过 64 个字符")
+	}
+	d.mu.Lock()
+	d.cfg.DeviceName = name
+	d.hostnameCache = name
+	type target struct {
+		nid    string
+		token  string
+		server string
+	}
+	targets := make([]target, 0, len(d.cfg.Networks))
+	for nid, nc := range d.cfg.Networks {
+		if nc != nil {
+			targets = append(targets, target{nid: nid, token: nc.Token, server: d.serverForConfigLocked(nc)})
+		}
+	}
+	if err := d.save(); err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	d.mu.Unlock()
+	var firstErr error
+	for _, t := range targets {
+		api, err := d.apiForServerLocked(t.server)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("更新设备名称失败: %w", err)
+			}
+			continue
+		}
+		if err := api.RenameDevice(t.nid, t.token, name); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("更新设备名称失败: %w", err)
+		}
+	}
+	return firstErr
+}
+
+// RenameNetworkDevice lets the network owner rename another member's device.
+func (d *Daemon) RenameNetworkDevice(nid, nodeID, name string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	return wrapNetGone(api.RenameNetworkDevice(nid, nodeID, nc.Token, name))
+}
+
+// SetNodeIP lets the network owner change a member's virtual IPv4 address.
+func (d *Daemon) SetNodeIP(nid, nodeID, ip string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	return wrapNetGone(api.SetNodeIP(nid, nodeID, nc.Token, ip))
+}
+
+// Gateways returns gateway candidates for a network the caller owns.
+func (d *Daemon) Gateways(nid string) ([]protocol.GatewayInfo, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return nil, fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return nil, err
+	}
+	return api.Gateways(nid, nc.Token)
+}
+
+// WireGuardConfig exports a standard WireGuard configuration through the
+// selected gateway node. The private key is persisted only in the local daemon
+// config so it can be shown again from the device card.
+func (d *Daemon) WireGuardConfig(nid, gatewayNodeID string) (string, string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return "", "", fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return "", "", err
+	}
+	cfg, nodeID, err := api.WireGuardConfig(nid, nc.Token, gatewayNodeID)
+	if err != nil {
+		return "", "", err
+	}
+	if nodeID != "" {
+		if d.cfg.WireGuardExports == nil {
+			d.cfg.WireGuardExports = make(map[string]WireGuardExport)
+		}
+		d.cfg.WireGuardExports[nid+"/"+nodeID] = WireGuardExport{
+			NodeID:        nodeID,
+			NetworkID:     nid,
+			GatewayNodeID: gatewayNodeID,
+			Config:        cfg,
+			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := d.save(); err != nil {
+			return "", "", err
+		}
+	}
+	return cfg, nodeID, nil
+}
+
+// WireGuardExports returns locally saved exports for a network, newest first.
+func (d *Daemon) WireGuardExports(nid string) []WireGuardExport {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]WireGuardExport, 0)
+	for _, e := range d.cfg.WireGuardExports {
+		if e.NetworkID == nid {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	return out
+}
+
+// SetRoutes replaces the network's delegated relay routes. Only the network
+// SetRoutes replaces the network's delegated relay routes. Only the network
+// owner may delegate routes; the server keeps them pending until the target
+// node confirms it can act as the gateway.
+func (d *Daemon) SetRoutes(nid string, routes []protocol.Route) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.SetRoutes(nid, nc.Token, routes); err != nil {
+		var se *httpStatusErr
+		if errors.As(err, &se) && se.code == 404 {
+			// An older server returns 404 for the unknown /routes endpoint.
+			// Only GET /networks/{nid} returning 404 proves the network itself
+			// is gone; otherwise report a version/capability mismatch instead
+			// of telling the user to clean up a live network.
+			if _, infoErr := api.NetworkInfo(nid, nc.Token); infoErr != nil {
+				return wrapNetGone(infoErr)
+			}
+			return fmt.Errorf("服务端不支持该功能，请检查服务端版本")
+		}
+		return err
+	}
+	return nil
+}
+
+// planRelayRoutesLocked merges the network's enabled delegated relay routes
+// into the peer routing entries. Caller must hold d.mu.
+func (d *Daemon) planRelayRoutesLocked(nid string, nc *NetworkCfg, routes []protocol.Route, peers []protocol.Node) ([]protocol.Node, []string) {
+	if len(routes) == 0 {
+		return peers, nil
+	}
+	enabled := make([]protocol.Route, 0, len(routes))
+	for _, route := range routes {
+		if d.cfg.RouteAllowed(nid, route.CIDR) {
+			enabled = append(enabled, route)
+		}
+	}
+	selfID := ""
+	if nc != nil {
+		selfID = nc.NodeID
+	}
+	planner := NewRoutePlanner(selfID, true)
+	d.logRelayGatewayRolesLocked(nc, planner.ServedBySelf(enabled))
+	return planner.Apply(peers, enabled), planner.Skipped()
+}
+
+// pruneRouteEnabledLocked drops preferences for routes that no longer exist
+// on the network. Caller must hold d.mu.
+func (d *Daemon) pruneRouteEnabledLocked(nid string, routes []protocol.Route) {
+	if d.cfg.RouteEnabled == nil {
+		return
+	}
+	valid := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		valid[nid+"|"+route.CIDR] = struct{}{}
+	}
+	prefix := nid + "|"
+	changed := false
+	for key := range d.cfg.RouteEnabled {
+		if strings.HasPrefix(key, prefix) {
+			if _, ok := valid[key]; !ok {
+				delete(d.cfg.RouteEnabled, key)
+				changed = true
+			}
+		}
+	}
+	if changed {
+		if err := d.save(); err != nil {
+			log.Printf("save pruned route preferences %s: %v", nid, err)
+		}
+	}
+}
+
+// SetRouteEnabled stores a per-CIDR local preference and reapplies the
+// network's routing table. A disabled route stays on the server; this device
+// simply stops installing it locally.
+func (d *Daemon) SetRouteEnabled(nid, cidr string, enabled bool) error {
+	cidr = strings.TrimSpace(cidr)
+	if _, _, err := net.ParseCIDR(cidr); err != nil {
+		return fmt.Errorf("无效的 CIDR: %w", err)
+	}
+	d.mu.Lock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		d.mu.Unlock()
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	if !d.cfg.SetRouteAllowed(nid, cidr, enabled) {
+		d.mu.Unlock()
+		return nil
+	}
+	if err := d.save(); err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	active := nc.Active
+	d.mu.Unlock()
+	if active && d.routeWake != nil {
+		select {
+		case d.routeWake <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+// routeEnabledCopy annotates server routes with the local preference without
+// mutating the server response. Caller must not hold d.mu.
+func (d *Daemon) routeEnabledCopy(nid string, routes []protocol.Route) []protocol.Route {
+	if len(routes) == 0 {
+		return routes
+	}
+	d.mu.Lock()
+	enabled := make([]bool, len(routes))
+	for i, route := range routes {
+		enabled[i] = d.cfg.RouteAllowed(nid, route.CIDR)
+	}
+	nc := d.cfg.Networks[nid]
+	selfID := ""
+	if nc != nil {
+		selfID = nc.NodeID
+	}
+	d.mu.Unlock()
+	out := make([]protocol.Route, len(routes))
+	for i, route := range routes {
+		out[i] = route
+		value := enabled[i]
+		out[i].Enabled = &value
+		if route.Status != protocol.RouteStatusActive {
+			continue
+		}
+		switch {
+		case selfID != "" && route.TargetNodeID == selfID:
+			out[i].LocalState = protocol.RouteLocalSelf
+			out[i].LocalReason = "本机即该网段网关，无需安装隧道路由"
+		case localLANConflict(route.CIDR):
+			out[i].LocalState = protocol.RouteLocalLANConflict
+			out[i].LocalReason = "与本地局域网冲突，已跳过"
+		}
+	}
+	return out
+}
+
+// logSkippedRoutesLocked logs delegated routes that were deliberately not
+// installed because they overlap the host's physical LAN. The per-route
+// conflict is exposed to the UI through routeEnabledCopy; it must not put the
+// whole network into an error state. Caller must hold d.mu.
+func (d *Daemon) logSkippedRoutesLocked(nid string, skipped []string) {
+	if len(skipped) == 0 {
+		return
+	}
+	log.Printf("network %s: 与本地局域网冲突，已跳过: %s", nid, strings.Join(skipped, ", "))
+}
+
+// logRelayGatewayRolesLocked reports the subnets this node forwards as the
+// network's relay gateway. The message is only written when the set changes,
+// so the poll loop does not spam the log. Caller must hold d.mu.
+func (d *Daemon) logRelayGatewayRolesLocked(nc *NetworkCfg, served []string) {
+	if nc == nil {
+		return
+	}
+	key := strings.Join(served, ",")
+	if d.relayServed[nc.NodeID] == key {
+		return
+	}
+	d.relayServed[nc.NodeID] = key
+	if len(served) == 0 {
+		log.Printf("relay gateway %s: no delegated subnet", nc.NodeID)
+		return
+	}
+	log.Printf("relay gateway %s: forwarding %s towards the LAN", nc.NodeID, key)
+}
+
+// DetectLocalSubnets enumerates interfaces for the legacy global
+// /ctl/local-subnets endpoint.
+//
+// Deprecated: this is a UI/diagnostic compatibility wrapper only and is not
+// used for routing. Per-network code must call DetectLocalSubnetsForServer with
+// that network's SnetServ.
+func (d *Daemon) DetectLocalSubnets() []string {
+	return d.DetectLocalSubnetsForServer(constants.DefaultServer)
+}
+
+func (d *Daemon) DetectLocalSubnetsForServer(serverAddr string) []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var result []string
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if iface.Flags&net.FlagPointToPoint != 0 {
+			continue
+		}
+		if isVirtualIface(iface.Name) {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet.IP.To4() == nil {
+				continue
+			}
+			ip := ipNet.IP.To4()
+			if ip[0] == 127 {
+				continue
+			}
+			if !privateIPv4(ip) {
+				continue
+			}
+			cidr := ipNetCIDR(ipNet)
+			if cidr == "" {
+				continue
+			}
+			if _, dup := seen[cidr]; dup {
+				continue
+			}
+			seen[cidr] = struct{}{}
+			result = append(result, cidr)
+		}
+	}
+	// Android's Wi-Fi interface is not always visible through net.Interfaces
+	// once VpnService owns the default route. Derive the physical LAN prefix
+	// from the source address used to reach the coordination server so LAN
+	// peers are still classified correctly.
+	if d.singleActiveNetwork {
+		if ip, err := LocalIPForServer(serverAddr); err == nil {
+			if parsed := net.ParseIP(ip); parsed != nil {
+				if v4 := parsed.To4(); v4 != nil && privateIPv4(v4) {
+					covered := false
+					for _, cidr := range result {
+						if _, n, err := net.ParseCIDR(cidr); err == nil && n.Contains(v4) {
+							covered = true
+							break
+						}
+					}
+					if !covered {
+						result = append(result, fmt.Sprintf("%d.%d.%d.0/24", v4[0], v4[1], v4[2]))
+					}
+				}
+			}
+		}
+	}
+	return result
+}
+
+// isVirtualIface returns true for names known to be VPN tunnels or virtual
+// bridges that should not be advertised as routable LAN subnets.
+func isVirtualIface(name string) bool {
+	n := strings.ToLower(name)
+	prefixes := []string{"utun", "wg", "tun", "tap", "docker", "br-", "veth", "virbr", "lo"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(n, p) {
+			return true
+		}
+	}
+	return n == "docker0" || n == "lo0" || n == "lo"
+}
+
+// privateIPv4 reports whether ip is in a private IPv4 range (10/8, 172.16/12,
+// 192.168/16).
+func privateIPv4(ip net.IP) bool {
+	if len(ip) != 4 {
+		return false
+	}
+	if ip[0] == 10 {
+		return true
+	}
+	if ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31 {
+		return true
+	}
+	if ip[0] == 192 && ip[1] == 168 {
+		return true
+	}
+	return false
+}
+
+// ipNetCIDR returns the CIDR string for an IPNet, computing the network base
+// address from the mask.  Example: 192.168.1.100/255.255.255.0 -> "192.168.1.0/24".
+func ipNetCIDR(n *net.IPNet) string {
+	ip := n.IP.To4()
+	if ip == nil {
+		return ""
+	}
+	mask := n.Mask
+	ones, bits := mask.Size()
+	if bits != 32 {
+		return ""
+	}
+	base := make(net.IP, 4)
+	for i := 0; i < 4; i++ {
+		base[i] = ip[i] & mask[i]
+	}
+	return fmt.Sprintf("%s/%d", base.String(), ones)
+}
+
+// ApprovePending approves a member's join request on a network this node owns.
+func (d *Daemon) ApprovePending(nid, pendingID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	return api.ApprovePending(nid, nc.Token, pendingID)
+}
+
+// DenyPending rejects a member's join request on a network this node owns.
+func (d *Daemon) DenyPending(nid, pendingID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	return api.DenyPending(nid, nc.Token, pendingID)
+}
+
+// DeleteNetwork deletes a network on the server and forgets it locally.
+func (d *Daemon) DeleteNetwork(nid string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.DeleteNetwork(nid, nc.Token); err != nil {
+		return wrapNetGone(err)
+	}
+	d.leaveLocked(nid)
+	delete(d.cfg.Networks, nid)
+	return d.save()
+}
+
+// Kick removes another member from a network this node owns.
+func (d *Daemon) Kick(nid, nodeID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	return wrapNetGone(api.KickNode(nid, nc.Token, nodeID))
+}
+
+// ResetCode issues a fresh pairing code for a network this node owns.
+func (d *Daemon) ResetCode(nid string) (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return "", fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return "", err
+	}
+	code, err := api.ResetCode(nid, nc.Token)
+	return code, wrapNetGone(err)
+}
+
+// ErrInviteExpired reports that the invite link can no longer be rebuilt:
+// the server lost the plaintext pairing code (it only stores a hash), e.g.
+// after a restart. The owner has to rotate the link to get a working one.
+var ErrInviteExpired = errors.New("邀请链接已失效，请重置邀请链接")
+
+// inviteLinkLocked builds the shareable invite link of a network. The
+// coordination server reference is always embedded (encrypted by protocol),
+// so a joiner always reaches the network's server. Callers must hold d.mu.
+func (d *Daemon) inviteLinkLocked(nid, code, name string) string {
+	server := constants.DefaultServer
+	if nc := d.cfg.Networks[nid]; nc != nil {
+		server = serverForConfig(nc)
+	}
+	return protocol.BuildLink(nid, code, server, name)
+}
+
+// InviteLink returns the current invite link of a network this node owns.
+// The pairing code and the network id stay internal: only the link is handed
+// out, so joining always goes through an invite link.
+func (d *Daemon) InviteLink(nid string) (protocol.InviteLinkResp, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return protocol.InviteLinkResp{}, fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return protocol.InviteLinkResp{}, err
+	}
+	info, err := api.NetworkInfo(nid, nc.Token)
+	if err != nil {
+		return protocol.InviteLinkResp{}, wrapNetGone(err)
+	}
+	if info.PairingCode == "" {
+		return protocol.InviteLinkResp{}, ErrInviteExpired
+	}
+	return protocol.InviteLinkResp{
+		NetworkID: info.ID,
+		Name:      info.Name,
+		Link:      d.inviteLinkLocked(info.ID, info.PairingCode, info.Name),
+	}, nil
+}
+
+// RotateInvite issues a fresh invite link for a network this node owns. Every
+// link shared before the rotation stops working immediately.
+func (d *Daemon) RotateInvite(nid string) (protocol.RotateInviteResp, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return protocol.RotateInviteResp{}, fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return protocol.RotateInviteResp{}, err
+	}
+	resp, err := api.RotateInvite(nid, nc.Token)
+	if err != nil {
+		return resp, wrapNetGone(err)
+	}
+	resp.Link = d.inviteLinkLocked(resp.NetworkID, resp.PairingCode, resp.Name)
+	return resp, nil
+}
+
+// Info fetches full network info from the server (owner details included).
+func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
+	d.mu.Lock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		d.mu.Unlock()
+		return protocol.NetworkInfoResp{}, fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		d.mu.Unlock()
+		return protocol.NetworkInfoResp{}, err
+	}
+	token := nc.Token
+	deviceID := d.cfg.DeviceID
+	d.mu.Unlock()
+
+	// Always ask for the member-safe view first: it is available to owners and
+	// members and carries the authoritative owner device + node roles. A local
+	// Owner flag can be stale after an admin transfers ownership, in either
+	// direction (old owner -> member, or member -> owner).
+	resp, err := api.MemberNetworkInfo(nid, token)
+	if err != nil {
+		return resp, wrapNetGone(err)
+	}
+	isOwner := resp.OwnerDeviceID == deviceID
+	if !isOwner {
+		for _, node := range resp.Nodes {
+			if node.DeviceID == deviceID && node.Role == "owner" {
+				isOwner = true
+				break
+			}
+		}
+	}
+	d.mu.Lock()
+	if current := d.cfg.Networks[nid]; current != nil && current.Owner != isOwner {
+		current.Owner = isOwner
+		if err := d.save(); err != nil {
+			log.Printf("save owner flag %s: %v", nid, err)
+		}
+	}
+	d.mu.Unlock()
+	if isOwner {
+		resp, err = api.NetworkInfo(nid, token)
+	}
+	if err != nil {
+		return resp, wrapNetGone(err)
+	}
+	resp.Routes = d.routeEnabledCopy(nid, resp.Routes)
+	return resp, nil
+}
+
+// reconcileOwnerRole updates the cached owner flag from the server-reported
+// self role. Returning it to the UI keeps owner-only features (notably pending
+// join approval) available after an ownership transfer, even when the local
+// config predates the transfer and the user has not opened network details.
+func (d *Daemon) reconcileOwnerRole(nid, role string) {
+	if role != "owner" && role != "member" {
+		return
+	}
+	isOwner := role == "owner"
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil || nc.Owner == isOwner {
+		return
+	}
+	nc.Owner = isOwner
+	log.Printf("network %s: owner flag reconciled to %v from server role", nid, isOwner)
+	if err := d.save(); err != nil {
+		log.Printf("save reconciled owner %s: %v", nid, err)
+	}
+}
+
+// Peers returns the live peer list for a network. Unlike Info it works for
+// any member of the network (the server's /peers endpoint is member-scoped),
+// so non-owner clients can show a read-only member list.
+func (d *Daemon) Peers(nid string) (protocol.PeersResp, error) {
+	d.mu.Lock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		d.mu.Unlock()
+		return protocol.PeersResp{}, fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		d.mu.Unlock()
+		return protocol.PeersResp{}, err
+	}
+	token := nc.Token
+	d.mu.Unlock()
+	resp, err := api.PeersState(nid, token, true)
+	if err != nil {
+		return resp, err
+	}
+	resp.Routes = d.routeEnabledCopy(nid, resp.Routes)
+	return resp, nil
+}
+
+// Pre-allocated string values so serverState can use *string to distinguish
+// nil (unknown) from a real status, without allocating fresh strings on every
+// probe.
+var (
+	stateOK   = "ok"
+	stateGone = "gone"
+)
+
+// pingServerState probes whether the given network still exists on the
+// server. The result is cached in d.serverState so the UI can render a
+// "已删除" badge without having to re-probe on every status request. A 404
+// from the server marks the network as gone; any other error (including
+// transient network errors) leaves the previous state unchanged so we don't
+// flap between ok/gone.
+func (d *Daemon) pingServerState(nid string) {
+	// The server rotates node tokens during device sync. If a probe raced
+	// with that rotation, its 404 is stale: retry once with the token now in
+	// the config instead of removing a live network.
+	for attempt := 0; attempt < 2; attempt++ {
+		d.mu.Lock()
+		nc := d.cfg.Networks[nid]
+		if nc == nil {
+			d.mu.Unlock()
+			return
+		}
+		api, _, err := d.apiForNetworkLocked(nid)
+		if err != nil {
+			d.mu.Unlock()
+			return
+		}
+		token := nc.Token
+		d.mu.Unlock()
+
+		_, err = api.NetworkExists(nid, token)
+		var se *httpStatusErr
+		// 404 means the network was deleted. 401 means this node's token is no
+		// longer valid (the network was deleted or the node was kicked); either
+		// way the local record is stale and must not keep occupying a tab or
+		// blocking the per-device owner limit.
+		gone := errors.As(err, &se) && (se.code == 404 || se.code == 401)
+		if !gone && err != nil {
+			return
+		}
+
+		d.mu.Lock()
+		current := d.cfg.Networks[nid]
+		if current == nil {
+			d.mu.Unlock()
+			return
+		}
+		if gone && current.Token != token {
+			if d.serverState != nil {
+				delete(d.serverState, nid)
+			}
+			d.mu.Unlock()
+			continue
+		}
+		if gone {
+			log.Printf("network %s: server record gone; removing local config", nid)
+			d.leaveLocked(nid)
+			delete(d.cfg.Networks, nid)
+			delete(d.serverState, nid)
+			if saveErr := d.save(); saveErr != nil {
+				log.Printf("remove gone network %s: save: %v", nid, saveErr)
+			}
+			d.mu.Unlock()
+			return
+		}
+		if d.serverState == nil {
+			d.serverState = make(map[string]*string)
+		}
+		d.serverState[nid] = &stateOK
+		d.mu.Unlock()
+		return
+	}
+}
+
+// pingAllServerStates probes every joined network once. Intended to run at
+// daemon startup and after the user explicitly asks for a refresh; it does
+// not run on a timer.
+func (d *Daemon) pingAllServerStates() {
+	d.mu.Lock()
+	nids := make([]string, 0, len(d.cfg.Networks))
+	for nid := range d.cfg.Networks {
+		nids = append(nids, nid)
+	}
+	d.mu.Unlock()
+	for _, nid := range nids {
+		d.pingServerState(nid)
+	}
+}
+
+// SetDeviceID replaces this machine's device identity (advanced; normally
+// auto-generated and persisted at /usr/local/snet/device.id). The key and
+// recovery token are preserved.
+func (d *Daemon) SetDeviceID(id string) error {
+	id = strings.TrimSpace(id)
+	if !validDeviceID(id) {
+		return fmt.Errorf("invalid device id (8-64 chars, alphanumeric, '-' or '_')")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.cfg.DeviceID = id
+	d.deviceIDFresh = false
+	if d.deviceIDFile != "" {
+		if err := SaveDeviceKeypair(d.deviceIDFile, id, d.cfg.PrivateKey, d.cfg.RecoveryToken); err != nil {
+			return err
+		}
+	}
+	return d.save()
+}
+
+// Claim adopts an ownerless (legacy) network as this device's owner.
+func (d *Daemon) Claim(nid string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	api, _, err := d.apiForNetworkLocked(nid)
+	if err != nil {
+		return err
+	}
+	if err := api.ClaimNetwork(nid, nc.Token, d.cfg.DeviceID); err != nil {
+		return wrapNetGone(err)
+	}
+	nc.Owner = true
+	return d.save()
+}
+
+// Close tears down every running tunnel without persisting config changes, so
+// a later start restores the previously active networks. Used by graceful
+// daemon shutdown.
+func (d *Daemon) Close() {
+	d.cancel()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.retryStop != nil {
+		close(d.retryStop)
+		d.retryStop = nil
+	}
+	if d.keyRotationStop != nil {
+		close(d.keyRotationStop)
+		d.keyRotationStop = nil
+	}
+	d.netErrs = make(map[string]string)
+	d.retryPending = make(map[string]struct{})
+	d.retryAttempts = make(map[string]int)
+	d.serverState = make(map[string]*string)
+	for nid := range d.nets {
+		d.leaveLocked(nid)
+	}
+}
+
+// HaltTunnels tears down every tunnel but keeps the daemon and the configured
+// networks (including their Active flag) alive. Used on Android when the VPN
+// service is stopped: the state-bar indicator must disappear and the TUN must
+// be released, but the daemon stays resident so a subsequent toggle re-uses the
+// already-loaded config and bound server connection instead of a full cold
+// start. Unlike leaveLocked this leaves nc.Active untouched so BringUpActive
+// can restore exactly the tunnels that were up before the halt.
+func (d *Daemon) HaltTunnels() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for nid := range d.nets {
+		rt := d.nets[nid]
+		if rt != nil {
+			rt.shutdown()
+			delete(d.nets, nid)
+		}
+	}
+}
+
+// peerPathInfo exposes, per peer, the current routing path (direct vs relay),
+// the mode duration, the direct candidate being tried, the relay fallback, and
+// candidate-probe progress. It renders the daemon's path decisions observable
+// so misrouting through a remote relay is diagnosable. Caller must hold d.mu.
+func peerPathInfo(rt *netRuntime) map[string]any {
+	out := make(map[string]any, len(rt.peerDirect))
+	for id, pd := range rt.peerDirect {
+		info := map[string]any{
+			"mode":   pd.mode,
+			"since":  pd.dirSince,
+			"direct": pd.lastDir,
+			"relay":  pd.relay,
+		}
+		if len(pd.cands) > 0 {
+			info["candidates"] = len(pd.cands)
+			info["batch"] = pd.parallelIdx/parallelProbes + 1
+			info["totalBatches"] = (len(pd.cands) + parallelProbes - 1) / parallelProbes
+		}
+		info["locked"] = pd.locked
+		out[id] = info
+	}
+	return out
+}
+
+// peerQualityInfo renders the per-peer health watchdog snapshot for the
+// control API, alongside peerPaths.
+func peerQualityInfo(rt *netRuntime) map[string]any {
+	out := make(map[string]any, len(rt.quality))
+	for id, q := range rt.quality {
+		out[id] = map[string]any{
+			"active":       q.Active,
+			"handshakeAge": q.HandshakeAge,
+			"rxRate":       q.RxRate,
+			"txRate":       q.TxRate,
+		}
+	}
+	return out
+}
+
+// Status snapshot for the control API.
+func (d *Daemon) Status() (map[string]any, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	nets := make([]map[string]any, 0, len(d.cfg.Networks))
+	var totalRx, totalTx uint64
+	for nid, nc := range d.cfg.Networks {
+		statePtr := d.serverState[nid]
+		active := nc.Active
+		// A "gone" network cannot be linked; reflect that in the active flag
+		// so the UI toggle is disabled without having to teach the renderer
+		// about serverState first.
+		if statePtr != nil && *statePtr == "gone" {
+			active = false
+		}
+		errMsg := ""
+		if statePtr != nil && *statePtr == "gone" {
+			errMsg = netGoneErr.Error()
+		} else if e, ok := d.netErrs[nid]; ok {
+			errMsg = e
+		}
+		state := "inactive"
+		if errMsg != "" {
+			state = "error"
+		} else if active {
+			state = "active"
+		}
+		entry := map[string]any{
+			"networkId":   nid,
+			"name":        nc.Name,
+			"ip":          nc.IP,
+			"subnet":      nc.Subnet,
+			"port":        nc.Port,
+			"active":      active,
+			"owner":       nc.Owner,
+			"serverState": statePtr,
+			"error":       errMsg,
+			"state":       state,
+			"interface":   "",
+			"peerStats":   map[string]PeerStats{},
+			"joinedAt":    nc.JoinedAt,
+			"snetServUrl": d.serverForConfigLocked(nc),
+			"snetServId":  nc.SnetServID,
+		}
+		if rt := d.nets[nid]; rt != nil {
+			if rt.tun != nil {
+				entry["interface"] = rt.tun.InterfaceName()
+				entry["peerSubnets"] = rt.tun.PeerSubnets()
+				if stats, err := rt.tun.Stats(); err == nil {
+					entry["peerStats"] = stats
+					for _, ps := range stats {
+						if ps.RxBytes > 0 {
+							totalRx += uint64(ps.RxBytes)
+						}
+						if ps.TxBytes > 0 {
+							totalTx += uint64(ps.TxBytes)
+						}
+					}
+				}
+			}
+			entry["peerPaths"] = peerPathInfo(rt)
+			entry["peerQuality"] = peerQualityInfo(rt)
+			if rt.path != nil {
+				entry["relayPath"] = rt.path.Status()
+			}
+		}
+		nets = append(nets, entry)
+	}
+	now := time.Now()
+	var rxSpeed, txSpeed uint64
+	if !d.lastStatusAt.IsZero() {
+		elapsed := now.Sub(d.lastStatusAt).Seconds()
+		if elapsed > 0 {
+			if totalRx >= d.lastStatusRx {
+				rxSpeed = uint64(float64(totalRx-d.lastStatusRx) / elapsed)
+			}
+			if totalTx >= d.lastStatusTx {
+				txSpeed = uint64(float64(totalTx-d.lastStatusTx) / elapsed)
+			}
+		}
+	}
+	d.lastStatusAt = now
+	d.lastStatusRx = totalRx
+	d.lastStatusTx = totalTx
+
+	pending := make([]map[string]any, 0, len(d.cfg.PendingJoins))
+	for pid, pj := range d.cfg.PendingJoins {
+		pending = append(pending, map[string]any{
+			"pendingId": pid,
+			"networkId": pj.NetworkID,
+			"createdAt": pj.CreatedAt,
+			"status":    pj.Status,
+			"error":     pj.Err,
+		})
+	}
+	return map[string]any{
+		"version":      buildinfo.Version,
+		"commit":       buildinfo.Commit,
+		"buildDate":    buildinfo.BuildDate,
+		"deviceId":     d.cfg.DeviceID,
+		"deviceName":   d.cfg.DeviceName,
+		"wgPort":       d.cfg.WireguardPort,
+		"rxSpeed":      rxSpeed,
+		"txSpeed":      txSpeed,
+		"networks":     nets,
+		"pendingJoins": pending,
+		"natMapping":   d.nat.status(),
+		// Relay switches: whether this device may act as a gateway for the
+		// network, and whether it honours the network's delegated routes.
+		"allowRelay":            d.cfg.RelayAllowed() && relayGatewaySupported(),
+		"relayGatewaySupported": relayGatewaySupported(),
+		"useRelay":              d.cfg.RelayUsed(),
+		"relayError":            d.relayErr,
+	}, nil
+}

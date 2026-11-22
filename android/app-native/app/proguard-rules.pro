@@ -1,0 +1,2 @@
+-keep class com.snet.android.Snetbind { *; }
+-keep class go.** { *; }

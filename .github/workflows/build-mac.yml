@@ -1,0 +1,202 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/per-route-relay-toggle
+    tags:
+      - 'v*'
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            desktop-mac-v3/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build snetd daemon
+        run: |
+          export PATH=$PATH:$(go env GOPATH)/bin
+          VERSION=$(cat VERSION)
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath \
+            -ldflags="-s -w -X github.com/S-shidi/snet/shared/buildinfo.Version=${VERSION} -X github.com/S-shidi/snet/shared/buildinfo.Commit=${COMMIT} -X github.com/S-shidi/snet/shared/buildinfo.BuildDate=${BUILD_DATE}" \
+            -o dist/snetd-darwin-arm64 ./cmd/client/snetd
+
+      - name: Get Version Info
+        id: vars
+        run: |
+          echo "VERSION=$(cat VERSION)" >> $GITHUB_OUTPUT
+          echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build Frontend
+        working-directory: ./desktop-mac-v3
+        run: |
+          set -euo pipefail
+          ./frontend/build-frontend.sh
+
+      - name: Build Wails Binary (No Bundle)
+        working-directory: ./desktop-mac-v3
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=1 go build -tags desktop,production -trimpath -buildvcs=false \
+            -ldflags "-w -s" -o Snet .
+
+      - name: Manually Assemble .app Bundle
+        working-directory: ./desktop-mac-v3
+        run: |
+          set -euo pipefail
+          APP_DIR="build/Snet.app"
+          rm -rf "$APP_DIR"
+          mkdir -p "$APP_DIR/Contents/MacOS"
+          mkdir -p "$APP_DIR/Contents/Resources"
+
+          cp Snet "$APP_DIR/Contents/MacOS/Snet"
+          chmod +x "$APP_DIR/Contents/MacOS/Snet"
+
+          test -f ../dist/snetd-darwin-arm64
+          test -f scripts/install-daemon.sh
+          cp ../dist/snetd-darwin-arm64 "$APP_DIR/Contents/Resources/snetd"
+          cp scripts/install-daemon.sh "$APP_DIR/Contents/Resources/install-daemon.sh"
+          cp build/darwin/icons.icns "$APP_DIR/Contents/Resources/icon.icns"
+          chmod +x "$APP_DIR/Contents/Resources/snetd" "$APP_DIR/Contents/Resources/install-daemon.sh"
+
+          cat > "$APP_DIR/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>Snet</string>
+              <key>CFBundleDisplayName</key>
+              <string>Snet</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.snet.snet</string>
+              <key>CFBundleName</key>
+              <string>Snet</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleIconFile</key>
+              <string>icon.icns</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${{ steps.vars.outputs.VERSION }}</string>
+              <key>CFBundleVersion</key>
+              <string>${{ steps.vars.outputs.VERSION }}</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>10.13</string>
+              <key>LSUIElement</key>
+              <true/>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          echo "=== 检查 .app 结构 ==="
+          find "$APP_DIR" -type f
+          plutil -lint "$APP_DIR/Contents/Info.plist"
+
+      - name: Manual Codesign (Clean Room)
+        working-directory: ./desktop-mac-v3
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Snet.app"
+          xattr -cr "$APP_PATH"
+
+          codesign --force --sign - "$APP_PATH/Contents/Resources/snetd"
+          codesign --verify --strict "$APP_PATH/Contents/Resources/snetd"
+
+          codesign --force --sign - "$APP_PATH/Contents/MacOS/Snet"
+
+          codesign --force --sign - "$APP_PATH"
+
+          codesign --verify --deep --strict "$APP_PATH"
+          codesign -dv --verbose=4 "$APP_PATH"
+
+      - name: Create DMG
+        working-directory: ./desktop-mac-v3/build
+        run: |
+          set -euo pipefail
+          DMG_NAME="Snet-v${{ steps.vars.outputs.VERSION }}-mac.dmg"
+          STAGE="dmg-stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp -R Snet.app "$STAGE/"
+          cat > "$STAGE/安装说明.txt" <<'TXT'
+          =========================================
+                   Snet 安装指南
+          =========================================
+
+
+          第一步：将左侧的 Snet.app 拖入右侧的 Applications 文件夹。
+
+
+          第二步：安装完成后，打开 Mac 自带的“终端”应用（在启动台搜索“终端”）。
+
+
+          第三步：在终端中复制并粘贴以下整行命令，然后按回车：
+
+
+          sudo xattr -cr /Applications/Snet.app && open /Applications/Snet.app
+
+
+          第四步：根据提示输入你的 Mac 开机密码（输入时屏幕不显示，输完直接回车）。
+
+
+          （注：此命令是为了解除 macOS 对未公证应用的隔离限制，仅需执行一次，后续可直接从启动台打开）
+          =========================================
+          TXT
+          if ! command -v create-dmg >/dev/null 2>&1; then
+            brew install create-dmg || true
+          fi
+          if ! command -v create-dmg >/dev/null 2>&1 || ! create-dmg \
+            --volname "Snet Installer" \
+            --window-pos 200 120 \
+            --window-size 900 420 \
+            --icon-size 100 \
+            --icon "Snet.app" 180 190 \
+            --hide-extension "Snet.app" \
+            --app-drop-link 450 190 \
+            --icon "安装说明.txt" 720 190 \
+            "$DMG_NAME" \
+            "$STAGE"; then
+            rm -f "$DMG_NAME"
+            ln -sfn /Applications "$STAGE/Applications"
+            hdiutil create -volname "Snet Installer" -srcfolder "$STAGE" -ov -format UDZO "$DMG_NAME"
+          fi
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snet-v${{ steps.vars.outputs.VERSION }}-mac
+          path: |
+            desktop-mac-v3/build/Snet-v*.dmg
+          retention-days: 7
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop-mac-v3/build/Snet-v*.dmg
+          generate_release_notes: true

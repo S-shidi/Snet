@@ -1,0 +1,181 @@
+name: Build Android App
+# Feature-branch builds publish an unsigned-test APK artifact; tags publish the release asset.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - feat/per-route-relay-toggle
+    tags:
+      - 'v*'
+    paths:
+      - 'android/**'
+      - 'shared/web/**'
+      - 'scripts/build-android-web.sh'
+      - 'snetbind/**'
+      - 'internal/client/**'
+      - 'shared/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/build-android.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install Android NDK and build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.3.11579264" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/ndk/26.3.11579264" >> "$GITHUB_PATH"
+
+      - name: Install gomobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gomobile" init
+
+      - name: Build gomobile AAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p android/app-native/app/libs
+          gomobile bind \
+            -target=android/arm64 \
+            -androidapi 26 \
+            -javapkg=com.snet.android \
+            -o android/app-native/app/libs/snet.aar \
+            ./snetbind
+
+      - name: Build WebView assets
+        shell: bash
+        run: ./scripts/build-android-web.sh
+
+      - name: Get version
+        id: vars
+        shell: bash
+        run: echo "VERSION=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Decode Keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "::error title=Missing secret::ANDROID_KEYSTORE_BASE64 is not configured"
+            exit 1
+          fi
+          RAW=$(printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d ' \r\n\t')
+          RAW=${RAW#\"}; RAW=${RAW%\"}
+          RAW=${RAW#\'}; RAW=${RAW%\'}
+          RAW=${RAW#data:application/octet-stream;base64,}
+          RAW=$(printf '%s' "$RAW" | sed '1s/^\xEF\xBB\xBF//')
+          RAW=$(printf '%s' "$RAW" | tr '_-' '/+')
+          case $((${#RAW} % 4)) in
+            2) RAW="${RAW}==" ;;
+            3) RAW="${RAW}=" ;;
+          esac
+          if ! printf '%s' "$RAW" | base64 --decode --ignore-garbage > android/app-native/snet-release.keystore; then
+            echo "::error title=Bad keystore secret::ANDROID_KEYSTORE_BASE64 is not valid base64 (len=${#ANDROID_KEYSTORE_BASE64})"
+            exit 1
+          fi
+          if [ ! -s android/app-native/snet-release.keystore ]; then
+            echo "::error title=Empty keystore::decoded keystore is empty"
+            exit 1
+          fi
+          MAGIC=$(od -An -tx1 -N4 android/app-native/snet-release.keystore | tr -d ' \n')
+          echo "Keystore decoded: $(wc -c < android/app-native/snet-release.keystore) bytes, magic $MAGIC"
+          case "$MAGIC" in
+            feedfeed|3082*|3081*|cececece) ;;
+            *) echo "::error title=Bad keystore contents::decoded data magic is $MAGIC, not JKS/PKCS12"; exit 1 ;;
+          esac
+
+      - name: Validate Keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if ! keytool -list -keystore android/app-native/snet-release.keystore \
+              -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null 2>&1; then
+            echo "::error title=Invalid keystore::cannot open keystore with the configured password/alias"
+            exit 1
+          fi
+          echo "Keystore password and alias verified"
+
+      - name: Build Release APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PATH: "snet-release.keystore"
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd android/app-native
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk "../Snet-v${{ steps.vars.outputs.VERSION }}-android.apk"
+
+      - name: Verify Signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_PATH=$(find android/app-native -path "*/outputs/apk/release/*.apk" | head -n 1)
+          echo "Verifying $APK_PATH"
+          CERT_OUT=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK_PATH")
+          echo "$CERT_OUT"
+          echo "::notice title=APK Signature::$(echo "$CERT_OUT" | tr '\n' ' ')"
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snet-Android-v${{ steps.vars.outputs.VERSION }}
+          path: |
+            android/Snet-v${{ steps.vars.outputs.VERSION }}-android.apk
+          retention-days: 14
+
+      - name: Publish Android release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            android/Snet-v${{ steps.vars.outputs.VERSION }}-android.apk
+          fail_on_unmatched_files: true
