@@ -125,9 +125,43 @@ Check target/version or set imagebuilder_url in devices.yaml.
 
 如果没有公开链接，需要从 OpenWrt 源码构建 S805 Image Builder，或使用社区维护的 WankeCloud 固件构建仓库。脚本不会伪造来源或下载地址。
 
+## WankeCloud 可重复重打包
+
+官方 OpenWrt/ImmortalWrt 没有 S805 Image Builder，因此 WankeCloud 使用
+`build-wankecloud-repack.sh`：
+
+- 下载固定版本的 shiyu1314/openwrt-onecloud 25.12 线刷包作为 base
+- 保留 base 内的 DDR / U-Boot / boot / resource 分区
+- 构建 armv7 `snetd`/`snetctl` 和共享 Web UI
+- 替换 rootfs 内的 SNET overlay
+- 用固定 commit 的 hzyitc/AmlImg 重新打包
+
+```bash
+bash scripts/hardware/build-wankecloud-repack.sh
+```
+
+也可以通过统一入口：
+
+```bash
+bash scripts/hardware/build-firmware.sh --device WankeCloud
+```
+
+产物：
+
+```text
+dist/hardware/wankecloud/Snet-v<version>-wankecloud-s805.burn.img
+dist/hardware/wankecloud/Snet-v<version>-wankecloud-s805.burn.img.xz
+```
+
+base 镜像和 SHA256 已固定；升级 SNET 客户端不需要重新构建整个 OpenWrt。
+如果需要从 OpenWrt 源码完整构建（而不是基于已知可用 base 重打包），需要
+Lean's LEDE 的 `amlogic/meson8b` 构建流程，见后续独立 workflow。
+
 ## Amlogic 打包
 
-`amlogic-pack.sh` 需要以下环境变量：
+`amlogic-pack.sh` 是通用 Image Builder 路径的 Amlogic 打包骨架；WankeCloud
+的推荐路径是 `build-wankecloud-repack.sh`。`amlogic-pack.sh` 仍然需要：
+
 
 ```bash
 export AML_BOOTLOADER=/path/to/u-boot.bin
