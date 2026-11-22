@@ -260,6 +260,11 @@ build_device() {
   echo "target=$target profile=$profile arch=$arch openwrt=$version"
   echo "============================================================"
 
+  if [[ "$name" == "WankeCloud" ]]; then
+    bash "$HW_DIR/build-wankecloud-repack.sh"
+    return
+  fi
+
   rm -rf "$stage"
   mkdir -p "$stage/files/usr/bin" "$out"
   cp -a "$FILES_DIR/." "$stage/files/"
