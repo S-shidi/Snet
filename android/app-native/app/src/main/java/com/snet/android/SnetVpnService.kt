@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
@@ -264,28 +265,39 @@ class SnetVpnService : VpnService() {
      * to the daemon. Without this the node never advertises a v6 endpoint and
      * every IPv6 direct attempt is skipped.
      */
+    private fun globalIPv6Of(cm: ConnectivityManager, network: Network?): String? {
+        if (network == null) return null
+        val caps = cm.getNetworkCapabilities(network) ?: return null
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return null
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return null
+        val lp = cm.getLinkProperties(network) ?: return null
+        for (link in lp.linkAddresses) {
+            val ip = link.address
+            if (ip !is Inet6Address) continue
+            if (ip.isLoopbackAddress || ip.isLinkLocalAddress) continue
+            val raw = ip.address
+            if (raw.isNotEmpty() && (raw[0].toInt() and 0xfe) == 0xfc) continue // ULA fc00::/7
+            return ip.hostAddress
+        }
+        return null
+    }
+
     private fun updateLocalIPv6() {
         try {
             val cm = getSystemService(ConnectivityManager::class.java) ?: return
-            for (network in cm.allNetworks) {
-                val caps = cm.getNetworkCapabilities(network) ?: continue
-                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
-                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
-                val lp = cm.getLinkProperties(network) ?: continue
-                for (link in lp.linkAddresses) {
-                    val ip = link.address
-                    if (ip !is Inet6Address) continue
-                    if (ip.isLoopbackAddress || ip.isLinkLocalAddress) continue
-                    val raw = ip.address
-                    if (raw.isNotEmpty() && (raw[0].toInt() and 0xfe) == 0xfc) continue // ULA fc00::/7
-                    val host = ip.hostAddress ?: continue
-                    if (host != lastLocalV6) {
-                        lastLocalV6 = host
-                        Log.i(TAG, "local IPv6: $host")
-                    }
-                    SnetCore.setLocalIPv6(host)
-                    return
+            // Prefer the default network: the v6 socket will use its source
+            // address, so publishing an address from another interface would
+            // advertise an endpoint the peer cannot reach.
+            val active = cm.activeNetwork
+            val host = globalIPv6Of(cm, active)
+                ?: cm.allNetworks.firstNotNullOfOrNull { if (it != active) globalIPv6Of(cm, it) else null }
+            if (host != null) {
+                if (host != lastLocalV6) {
+                    lastLocalV6 = host
+                    Log.i(TAG, "local IPv6: $host")
                 }
+                SnetCore.setLocalIPv6(host)
+                return
             }
             if (lastLocalV6 != "") {
                 lastLocalV6 = ""

@@ -1721,6 +1721,7 @@ func (d *Daemon) bringUp(nid string) error {
 		nc.Port = p
 		if oldPort != 0 {
 			d.nat.unclaim(oldPort)
+			d.nat.unclaimDirect(oldPort)
 		}
 		if err := d.save(); err != nil {
 			log.Printf("save port %d for %s: %v", p, nid, err)
@@ -1746,6 +1747,7 @@ func (d *Daemon) bringUp(nid string) error {
 		}
 		nc.Port = p
 		d.nat.unclaim(oldPort)
+		d.nat.unclaimDirect(oldPort)
 		if saveErr := d.save(); saveErr != nil {
 			log.Printf("save port %d for %s: %v", p, nid, saveErr)
 		}
@@ -1783,6 +1785,7 @@ func (d *Daemon) bringUp(nid string) error {
 	if err := d.nat.claim(nc.Port, d.serverForConfigLocked(nc)); err != nil {
 		log.Printf("NAT claim %s: %v", nid, err)
 	}
+	d.nat.claimDirect(nc.Port)
 	return nil
 }
 
@@ -3340,6 +3343,7 @@ func (d *Daemon) leaveLocked(nid string) {
 		nc.Active = false
 		if nc.Port != 0 {
 			d.nat.unclaim(nc.Port)
+			d.nat.unclaimDirect(nc.Port)
 		}
 	}
 	delete(d.netErrs, nid)

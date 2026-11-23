@@ -35,6 +35,16 @@ const (
 	// directProbeAcks is how many copies of a probe ack are sent back; the
 	// first one is often lost while a NAT mapping is still forming.
 	directProbeAcks = 3
+	// directPortWindowWide is the wider window tried on every fourth burst,
+	// for CGNATs whose allocation is far from the relay-observed port.
+	directPortWindowWide = 32
+)
+
+// Offsets from the WireGuard port used by the dedicated direct sockets. A
+// stable local port keeps the NAT mapping alive; natmgr maps the same port.
+const (
+	directV4PortOffset = 2
+	directV6PortOffset = 3
 )
 
 // PathManager owns the relay-first data plane for one network. It presents a
@@ -127,12 +137,12 @@ type directPeer struct {
 	online       bool
 	ready        bool
 	lookupMisses int
-	probeIdx     int
 	lastRecv     time.Time
 	lastProbe    time.Time
 	lastLookup   time.Time
 	lastPing     time.Time
 	lastProbeLog time.Time
+	probeRounds  int
 	// pathSince is when the peer entered its current non-direct state. It
 	// lets Status report a relay fallback once hole punching has timed out
 	// instead of showing "discovering" forever.
@@ -159,8 +169,8 @@ func NewPathManager(ctx context.Context, nid string, nc *NetworkCfg, serverAddr 
 		dropLogged:  make(map[string]time.Time),
 	}
 	if nc.Port > 0 && nc.Port <= 65533 {
-		pm.directPort4 = nc.Port + 2
-		pm.directPort6 = nc.Port + 3
+		pm.directPort4 = nc.Port + directV4PortOffset
+		pm.directPort6 = nc.Port + directV6PortOffset
 	}
 	return pm
 }
@@ -936,7 +946,9 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 	if needV6 && dconn6 == nil {
 		dconn6 = pm.ensureDirectConn(true)
 	}
-	hasV6 = dconn6 != nil || localV6 != ""
+	// Only probe v6 candidates when the v6 socket actually bound; a published
+	// address without a socket would just drop every probe.
+	hasV6 = dconn6 != nil
 	if dconn == nil && dconn6 == nil {
 		return
 	}
@@ -1031,13 +1043,18 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 			continue
 		}
 		if dp.lastProbe.IsZero() || now.Sub(dp.lastProbe) >= directProbeInterval {
+			window := directPortWindow
+			if dp.probeRounds%4 == 3 {
+				window = directPortWindowWide
+			}
+			dp.probeRounds++
 			packets := 0
 			for _, c := range cands {
 				// IPv4 public candidates get a port window: the mapping toward
 				// us differs from the mapping toward the relay on CGNAT and
 				// port-restricted NATs, and allocations are usually sequential.
 				if c.kind == "public" && c.addr.IP.To4() != nil {
-					for _, a := range expandPortWindow(c.addr, directPortWindow) {
+					for _, a := range expandPortWindow(c.addr, window) {
 						probes = append(probes, target{key: key, id: peerID, addr: a, kind: c.kind})
 						packets++
 					}
@@ -1047,11 +1064,10 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 				packets++
 			}
 			dp.lastProbe = now
-			dp.probeIdx++
 			if now.Sub(dp.lastProbeLog) >= directProbeLog {
 				dp.lastProbeLog = now
 				log.Printf("path %s: DIRECT_PROBE peer=%s candidates=%d packets=%d window=%d",
-					pm.nid, peerID, len(cands), packets, directPortWindow)
+					pm.nid, peerID, len(cands), packets, window)
 			}
 		}
 	}

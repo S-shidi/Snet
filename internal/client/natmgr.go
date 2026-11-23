@@ -158,6 +158,34 @@ func (n *natManager) claim(port int, server string) error {
 	return nil
 }
 
+// claimDirect asks the gateway to map the Relay v2 direct-socket port. A
+// static inbound mapping is what lets a home peer be reached when both sides
+// use port-restricted NATs; the relay only ever observes the mapping toward
+// itself.
+func (n *natManager) claimDirect(wgPort int) {
+	direct := wgPort + directV4PortOffset
+	if wgPort <= 0 || direct > 65535 {
+		return
+	}
+	n.mu.Lock()
+	server := n.claimed[wgPort]
+	n.mu.Unlock()
+	if server == "" {
+		return
+	}
+	_ = n.claim(direct, server)
+}
+
+// unclaimDirect drops the direct-socket mapping when a network is left or its
+// WireGuard port changes.
+func (n *natManager) unclaimDirect(wgPort int) {
+	direct := wgPort + directV4PortOffset
+	if direct < 1 || direct > 65535 {
+		return
+	}
+	n.unclaim(direct)
+}
+
 // unclaim drops the mapping for a port (e.g. a network was left/removed).
 func (n *natManager) unclaim(port int) {
 	n.mu.Lock()
