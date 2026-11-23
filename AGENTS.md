@@ -20,10 +20,12 @@
 
 Follow `docs/RELEASING.md` for tags, GHCR images, and rollback.
 
-- Client releases publish the Docker image to GHCR before the release is complete:
+- Client releases publish the Docker image to both GHCR and the private ACR registry before the release is complete:
   - `ghcr.io/s-shidi/snet-client:vX.Y.Z`
-  - `ghcr.io/s-shidi/snet-client:latest`
+  - `<SNET_ACR_REGISTRY>/snet-client:vX.Y.Z`
+  - `latest` in both registries
 - Docker image tags are always `vX.Y.Z` (with the `v`). Never push a bare `X.Y.Z` image tag.
+- Do not hardcode the ACR host: it comes from the `SNET_ACR_REGISTRY` secret.
 - Do not reference private registries, private IPs, server deployment paths, or server secrets in this repository.
 - Do not commit `.env` files, tokens, private keys, WireGuard exports, signing keystores, or generated binaries.
 

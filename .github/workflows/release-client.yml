@@ -7,12 +7,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
   image:
     runs-on: ubuntu-latest
+    env:
+      ACR_REGISTRY: ${{ secrets.SNET_ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.SNET_ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.SNET_ACR_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,6 +32,28 @@ jobs:
       - name: Build client binaries
         run: ./scripts/build-client-release.sh
 
+      - name: Package client binaries
+        if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+        run: |
+          tar -czf "Snet-${GITHUB_REF_NAME}-binaries.tar.gz" -C dist .
+          ls -lh "Snet-${GITHUB_REF_NAME}-binaries.tar.gz"
+
+      - name: Compute image list
+        id: images
+        run: |
+          {
+            echo "images<<EOF"
+            echo "ghcr.io/${{ github.repository_owner }}/snet-client"
+            if [ -n "${ACR_REGISTRY}" ]; then
+              echo "${ACR_REGISTRY}/snet-client"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve ACR host
+        if: ${{ env.ACR_REGISTRY != '' }}
+        run: echo "ACR_HOST=${ACR_REGISTRY%%/*}" >> "$GITHUB_ENV"
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -35,11 +61,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Login to ACR
+        if: ${{ env.ACR_REGISTRY != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_HOST }}
+          username: ${{ env.ACR_USERNAME }}
+          password: ${{ env.ACR_PASSWORD }}
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/snet-client
+          images: ${{ steps.images.outputs.images }}
           # Docker image tags are always vX.Y.Z (same string as the Git tag).
           # prefix=v (not pattern=v{{version}}): metadata-action ignores a
           # custom pattern for prerelease semver and falls back to {{version}}.
@@ -57,3 +91,10 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Upload binaries to release
+        if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Snet-v*-binaries.tar.gz
+          fail_on_unmatched_files: true

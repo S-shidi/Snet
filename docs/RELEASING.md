@@ -20,12 +20,22 @@ the `v` prefix. Bare `X.Y.Z` image tags are no longer pushed, for any component.
 
 | Artifact | Tag |
 |---|---|
-| Client image | `ghcr.io/s-shidi/snet-client:vX.Y.Z` |
-| Server images | `$SNET_REGISTRY/snet-{snetserv,admin-server,relay}:vX.Y.Z` |
+| Client image (GHCR) | `ghcr.io/s-shidi/snet-client:vX.Y.Z` |
+| Client image (private registry) | `<SNET_ACR_REGISTRY>/snet-client:vX.Y.Z` |
+| Server images | `snet-{snetserv,admin-server,relay}:vX.Y.Z` (both registries) |
 
-`latest` tracks the newest **stable** release. Prerelease tags (`vX.Y.Z-rc1`)
-publish only the versioned image — never `latest` — and skip the macOS,
-Windows and Android builds.
+Every image is pushed to **both** GHCR and the private ACR registry on each
+release, with the same `vX.Y.Z` tag. The ACR side is configured by the
+`SNET_ACR_REGISTRY`, `SNET_ACR_USERNAME` and `SNET_ACR_PASSWORD` repository
+secrets and is skipped automatically when they are unset.
+
+`latest` tracks the newest **stable** release in both registries. Prerelease
+tags (`vX.Y.Z-rc1`) publish only the versioned image — never `latest` — and
+skip the macOS, Windows, Android and firmware builds.
+
+The release workflow also packages `Snet-vX.Y.Z-binaries.tar.gz` and the
+WankeCloud firmware, and attaches them to the GitHub Release automatically;
+no manual `gh release upload` is needed.
 
 Self-hosted `compose.yaml` files must use the `v` prefix, e.g.
 `snet-client:v1.2.4`. From `v1.2.4` on there is no backwards-compatible

@@ -2,12 +2,17 @@ name: Build WankeCloud firmware
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
+    # Manual runs and stable tags only; prerelease tags skip platform assets.
+    if: ${{ github.ref_type != 'tag' || !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -33,9 +38,16 @@ jobs:
       - name: Build WankeCloud repack
         run: ./scripts/hardware/build-wankecloud-repack.sh
 
-      - name: Upload firmware
+      - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
           name: Snet-wankecloud-v${{ github.run_id }}
           path: dist/hardware/wankecloud/*
           retention-days: 14
+
+      - name: Upload firmware to release
+        if: ${{ github.ref_type == 'tag' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/hardware/wankecloud/Snet-v*-wankecloud-s805.burn.img.xz
+          fail_on_unmatched_files: true
