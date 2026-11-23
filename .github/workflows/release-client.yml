@@ -41,9 +41,11 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/snet-client
           # Docker image tags are always vX.Y.Z (same string as the Git tag).
+          # prefix=v (not pattern=v{{version}}): metadata-action ignores a
+          # custom pattern for prerelease semver and falls back to {{version}}.
           # Prerelease tags (vX.Y.Z-rc1) never move latest.
           tags: |
-            type=semver,pattern=v{{version}}
+            type=semver,pattern={{version}},prefix=v
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Build and push
