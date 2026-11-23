@@ -98,6 +98,14 @@ jobs:
           fi
           test -f darwin/Assets.car
 
+      - name: Render Icon Preview
+        working-directory: ./desktop-mac-v3/build
+        run: |
+          set -euo pipefail
+          mkdir -p icon-preview
+          sips -s format png darwin/appicon.icns --out icon-preview/appicon-1024.png
+          sips -g pixelWidth -g pixelHeight icon-preview/appicon-1024.png
+
       - name: Manually Assemble .app Bundle
         working-directory: ./desktop-mac-v3
         run: |
@@ -232,6 +240,7 @@ jobs:
           name: Snet-v${{ steps.vars.outputs.VERSION }}-mac
           path: |
             desktop-mac-v3/build/Snet-v*.dmg
+            desktop-mac-v3/build/icon-preview/appicon-1024.png
           retention-days: 7
 
       - name: Publish GitHub Release
