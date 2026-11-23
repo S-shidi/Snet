@@ -24,6 +24,17 @@ const (
 	directPingInterval     = 5 * time.Second
 	directDeadAfter        = 15 * time.Second
 	relayFallbackAfter     = 30 * time.Second
+
+	// directPortWindow is how many ports on each side of a peer's
+	// relay-observed public port are probed in one burst. CGNAT allocates
+	// ports sequentially per destination, so the mapping toward us is often a
+	// small delta away from the mapping toward the relay.
+	directPortWindow = 8
+	// directProbeLog throttles the per-peer probe summary.
+	directProbeLog = 30 * time.Second
+	// directProbeAcks is how many copies of a probe ack are sent back; the
+	// first one is often lost while a NAT mapping is still forming.
+	directProbeAcks = 3
 )
 
 // PathManager owns the relay-first data plane for one network. It presents a
@@ -53,6 +64,12 @@ type PathManager struct {
 	directConn  *net.UDPConn
 	directConn6 *net.UDPConn
 	directPeers map[uint64]*directPeer
+
+	// directPort4/6 are the preferred local ports for the direct sockets. A
+	// stable local port keeps the CGNAT mapping alive across daemon or VPN
+	// restarts; zero means "let the OS choose".
+	directPort4 int
+	directPort6 int
 
 	natType      string
 	localNets    []*net.IPNet
@@ -115,6 +132,7 @@ type directPeer struct {
 	lastProbe    time.Time
 	lastLookup   time.Time
 	lastPing     time.Time
+	lastProbeLog time.Time
 	// pathSince is when the peer entered its current non-direct state. It
 	// lets Status report a relay fallback once hole punching has timed out
 	// instead of showing "discovering" forever.
@@ -139,6 +157,10 @@ func NewPathManager(ctx context.Context, nid string, nc *NetworkCfg, serverAddr 
 		closed:      make(chan struct{}),
 		peerSig:     make(map[uint64]string),
 		dropLogged:  make(map[string]time.Time),
+	}
+	if nc.Port > 0 && nc.Port <= 65533 {
+		pm.directPort4 = nc.Port + 2
+		pm.directPort6 = nc.Port + 3
 	}
 	return pm
 }
@@ -1009,10 +1031,28 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 			continue
 		}
 		if dp.lastProbe.IsZero() || now.Sub(dp.lastProbe) >= directProbeInterval {
-			c := cands[dp.probeIdx%len(cands)]
-			dp.probeIdx++
-			probes = append(probes, target{key: key, id: peerID, addr: cloneUDPAddr(c.addr), kind: c.kind})
+			packets := 0
+			for _, c := range cands {
+				// IPv4 public candidates get a port window: the mapping toward
+				// us differs from the mapping toward the relay on CGNAT and
+				// port-restricted NATs, and allocations are usually sequential.
+				if c.kind == "public" && c.addr.IP.To4() != nil {
+					for _, a := range expandPortWindow(c.addr, directPortWindow) {
+						probes = append(probes, target{key: key, id: peerID, addr: a, kind: c.kind})
+						packets++
+					}
+					continue
+				}
+				probes = append(probes, target{key: key, id: peerID, addr: cloneUDPAddr(c.addr), kind: c.kind})
+				packets++
+			}
 			dp.lastProbe = now
+			dp.probeIdx++
+			if now.Sub(dp.lastProbeLog) >= directProbeLog {
+				dp.lastProbeLog = now
+				log.Printf("path %s: DIRECT_PROBE peer=%s candidates=%d packets=%d window=%d",
+					pm.nid, peerID, len(cands), packets, directPortWindow)
+			}
 		}
 	}
 	pm.mu.Unlock()
@@ -1036,7 +1076,6 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 		}
 	}
 	for _, p := range probes {
-		log.Printf("path %s: DIRECT_PROBE to peer=%s kind=%s addr=%s", pm.nid, p.id, p.kind, p.addr)
 		pm.writeCandidate(p.key, p.addr, protocol.RelayTypeDirectProbe, sid, dconn, dconn6)
 	}
 	for _, p := range pings {
@@ -1081,6 +1120,30 @@ func (pm *PathManager) candidatesLocked(dp *directPeer) []directCandidate {
 	return out
 }
 
+// expandPortWindow returns addr first, then the nearby ports in both
+// directions. CGNAT and port-restricted NATs allocate the mapping toward a new
+// destination close to the mapping toward the relay, so a small window raises
+// the chance that one probe lands on the peer's real port.
+func expandPortWindow(addr *net.UDPAddr, delta int) []*net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	out := make([]*net.UDPAddr, 0, 1+2*delta)
+	out = append(out, cloneUDPAddr(addr))
+	for d := 1; d <= delta; d++ {
+		for _, offset := range []int{-d, d} {
+			p := addr.Port + offset
+			if p < 1 || p > 65535 {
+				continue
+			}
+			a := cloneUDPAddr(addr)
+			a.Port = p
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func (pm *PathManager) writeCandidate(key uint64, addr *net.UDPAddr, typ uint8, sid [16]byte, dconn, dconn6 *net.UDPConn) {
 	conn := dconn
 	if addr != nil && addr.IP.To4() == nil {
@@ -1105,12 +1168,22 @@ func (pm *PathManager) ensureDirectConn(v6 bool) *net.UDPConn {
 		return conn
 	}
 	network := "udp4"
-	bind := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
+	port := pm.directPort4
+	bind := &net.UDPAddr{IP: net.IPv4zero, Port: port}
 	if v6 {
 		network = "udp6"
-		bind = &net.UDPAddr{IP: net.IPv6unspecified, Port: 0}
+		port = pm.directPort6
+		bind = &net.UDPAddr{IP: net.IPv6unspecified, Port: port}
+	}
+	if port < 1 || port > 65535 {
+		bind.Port = 0
 	}
 	bound, err := net.ListenUDP(network, bind)
+	if err != nil && bind.Port != 0 {
+		// The preferred port is busy; fall back to an ephemeral one.
+		bind.Port = 0
+		bound, err = net.ListenUDP(network, bind)
+	}
 	if err != nil {
 		log.Printf("path %s: open direct socket (%s): %v", pm.nid, network, err)
 		return nil
@@ -1138,6 +1211,7 @@ func (pm *PathManager) ensureDirectConn(v6 bool) *net.UDPConn {
 		pm.directConn = bound
 	}
 	pm.mu.Unlock()
+	log.Printf("path %s: direct socket %s bound %s", pm.nid, network, bound.LocalAddr())
 	go pm.directReadLoop(bound)
 	return bound
 }
@@ -1202,12 +1276,15 @@ func (pm *PathManager) handleDirectFrame(conn *net.UDPConn, f protocol.RelayFram
 			pm.recvDrops.Add(1)
 			return
 		}
-		pm.writeFrameTo(conn, protocol.RelayFrame{
+		ack := protocol.RelayFrame{
 			Type:        protocol.RelayTypeDirectProbeAck,
 			SessionID:   sid,
 			SenderID:    ownKey,
 			RecipientID: f.SenderID,
-		}, addr)
+		}
+		for i := 0; i < directProbeAcks; i++ {
+			pm.writeFrameTo(conn, ack, addr)
+		}
 	case protocol.RelayTypeDirectProbeAck:
 		if !pm.noteDirectPeer(f.SenderID, addr, now, true) {
 			pm.recvDrops.Add(1)

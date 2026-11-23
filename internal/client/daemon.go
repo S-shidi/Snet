@@ -439,17 +439,45 @@ func (d *Daemon) SetAndroidTunFD(fd int) {
 		}
 	}
 	// Android replaces the TUN fd whenever VpnService is rebuilt to add new
-	// network addresses/routes. The existing wireguard-go devices still hold
-	// duplicates of the old fd, so rebuild them on the new one. The daemon
-	// itself keeps running: the ctl proxy and WebView requests must not be
-	// interrupted by a route update.
+	// network addresses/routes. Swap the WireGuard device onto the new fd but
+	// keep the path manager (and its direct sockets) alive: recreating them
+	// changes the CGNAT mapping and invalidates every peer's cached endpoint.
 	if fd != oldFD {
-		d.stopAllNetworksLocked()
-		if fd != 0 && d.started {
-			d.bringUpAllLocked()
+		switch {
+		case fd == 0:
+			d.stopAllNetworksLocked()
+		case d.started:
+			d.swapAndroidTunLocked(fd)
 		}
 	}
 	d.mu.Unlock()
+}
+
+// swapAndroidTunLocked rebuilds each network's WireGuard device on a new TUN fd
+// while preserving the relay-v2 PathManager and its direct sockets. Caller must
+// hold d.mu.
+func (d *Daemon) swapAndroidTunLocked(fd int) {
+	for nid, rt := range d.nets {
+		nc := d.cfg.Networks[nid]
+		if nc == nil || rt.tun == nil {
+			continue
+		}
+		old := rt.tun
+		rt.tun = nil
+		old.Close()
+		t, err := createTunnelForPlatform(fd, d.cfg.PrivateKey, nc.IP, nc.Port, protocol.DefaultMTU, nid)
+		if err != nil {
+			log.Printf("android tun swap %s: %v; rebuilding", nid, err)
+			rt.shutdown()
+			delete(d.nets, nid)
+			if e := d.bringUp(nid); e != nil {
+				log.Printf("android tun swap %s: bring up: %v", nid, e)
+			}
+			continue
+		}
+		rt.tun = t
+		log.Printf("android tun swapped for %s (direct path preserved)", nid)
+	}
 }
 
 // enforceSingleActiveLocked deactivates every active network except keep.
