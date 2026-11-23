@@ -196,6 +196,23 @@ async function refresh() {
     } catch {
       status = null;
     }
+    const notice = status?.notice;
+    if (notice?.text) {
+      let seen = "";
+      try {
+        seen = localStorage.getItem("snet-notice") || "";
+      } catch {
+        // localStorage is unavailable in some embedded views.
+      }
+      if (seen !== notice.text) {
+        try {
+          localStorage.setItem("snet-notice", notice.text);
+        } catch {
+          // Ignore; the toast still shows on this refresh.
+        }
+        toast(notice.text);
+      }
+    }
     // Render the shell and tabs from the local status immediately. Owner/peer
     // requests go to the coordination server and can take seconds (or time
     // out on a flaky uplink); waiting for them before the first paint left the
@@ -705,6 +722,48 @@ function bindNetListEvents() {
   });
 }
 
+function parseCidrRange(cidr: string): { start: number; end: number } | null {
+  const m = cidr.trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/);
+  if (!m) return null;
+  const oct = [m[1], m[2], m[3], m[4]].map(Number);
+  if (oct.some((o) => o < 0 || o > 255)) return null;
+  const p = Number(m[5]);
+  if (p < 0 || p > 32) return null;
+  const ip = ((oct[0] << 24) | (oct[1] << 16) | (oct[2] << 8) | oct[3]) >>> 0;
+  const mask = p === 0 ? 0 : (~0 << (32 - p)) >>> 0;
+  const start = (ip & mask) >>> 0;
+  return { start, end: start + 2 ** (32 - p) - 1 };
+}
+
+function subnetsOverlap(a: string, b: string): boolean {
+  const ra = parseCidrRange(a);
+  const rb = parseCidrRange(b);
+  if (!ra || !rb) return false;
+  return ra.start <= rb.end && rb.start <= ra.end;
+}
+
+async function confirmSubnetSwitch(nid: string, label: string): Promise<boolean> {
+  const target = status?.networks?.find((n) => n.networkId === nid);
+  const conflicts = (status?.networks ?? []).filter((n) =>
+    n.networkId !== nid && n.active && target?.subnet && n.subnet && subnetsOverlap(target.subnet, n.subnet));
+  if (!conflicts.length) return true;
+  const names = conflicts.map((n) => n.name || n.networkId).join("、");
+  const ok = await confirmDialog(
+    "网段冲突",
+    `「${label}」与本机已连接的网络（${names}）网段重叠。继续将先断开这些网络，是否切换？`,
+    true,
+  );
+  if (!ok) return false;
+  for (const c of conflicts) {
+    try {
+      await backend.leave(c.networkId);
+    } catch (err) {
+      toast(`断开「${c.name || c.networkId}」失败: ${err}`, "err");
+    }
+  }
+  return true;
+}
+
 async function onToggle(card: HTMLElement, checked: boolean) {
   const nid = card.dataset.nid!;
   const input = card.querySelector<HTMLInputElement>('input[data-act="toggle"]')!;
@@ -716,6 +775,10 @@ async function onToggle(card: HTMLElement, checked: boolean) {
   if (checked) {
     const label = status?.networks?.find((n) => n.networkId === nid)?.name || nid;
     if (!(await confirmAndroidSingleNetwork(`连接「${label}」`, nid))) {
+      input.checked = false;
+      return;
+    }
+    if (!(await confirmSubnetSwitch(nid, label))) {
       input.checked = false;
       return;
     }
@@ -1381,6 +1444,74 @@ async function showMembers(nid: string) {
   });
 }
 
+/* ── Network ownership transfer ──────────────────────────────── */
+async function openTransferModal(nid: string) {
+  const mine = (status?.networks ?? []).find((n) => n.networkId === nid);
+  if (!mine) return;
+  if (mine.serverState === "gone") {
+    toast("该网络已删除，无法移交", "err");
+    return;
+  }
+  if (!mine.owner) {
+    toast("只有创建者可以移交网络", "err");
+    return;
+  }
+  if (!backend.setRole) {
+    toast("当前平台不支持移交网络", "err");
+    return;
+  }
+  let detail: NetInfoDetail;
+  try {
+    detail = await backend.netinfo(nid);
+  } catch (err) {
+    toast(String(err), "err");
+    return;
+  }
+  const selfIP = mine.ip;
+  const selfDevice = status?.deviceId;
+  const targets = (detail.nodes ?? []).filter((nd) =>
+    !!nd.deviceId && nd.ip !== selfIP && nd.deviceId !== selfDevice && String(nd.role || "").toLowerCase() !== "owner");
+  if (!targets.length) {
+    toast("网内没有可接收创建者身份的设备", "err");
+    return;
+  }
+  const options = targets
+    .map((nd) => `<option value="${esc(nd.id)}">${esc(deviceLabelText(nd))} · ${esc(nd.ip)}${nd.online ? "" : "（离线）"}</option>`)
+    .join("");
+  openModal({
+    title: "移交网络",
+    body: `<p class="hint">选择接收「创建者」身份的设备，移交后本设备变为普通成员。</p>
+      <div class="form-field">
+        <label for="transfer-target">目标设备</label>
+        <select id="transfer-target" class="form-control">${options}</select>
+      </div>
+      <p class="msg" id="transfer-result"></p>`,
+    footer: `<button data-close class="btn ghost">取消</button><button id="transfer-submit" class="btn">确认移交</button>`,
+    onBody: (body) => {
+      body.querySelector("[data-close]")?.addEventListener("click", closeModal);
+      const submit = body.querySelector<HTMLButtonElement>("#transfer-submit")!;
+      submit.addEventListener("click", async () => {
+        const sel = body.querySelector<HTMLSelectElement>("#transfer-target")!;
+        const result = body.querySelector<HTMLElement>("#transfer-result")!;
+        if (!sel.value) return;
+        submit.disabled = true;
+        result.className = "msg";
+        result.textContent = "移交中…";
+        try {
+          await backend.setRole!({ nid, nodeId: sel.value, role: "owner" });
+          closeModal();
+          toast("已移交网络创建者身份");
+          await refresh();
+        } catch (err) {
+          result.className = "msg err";
+          result.textContent = `移交失败: ${err}`;
+          submit.disabled = false;
+        }
+      });
+    },
+  });
+}
+
 /* ── Create modal ─────────────────────────────────────────────── */
 function suggestedCreateSubnet(): string {
   const used = new Set(
@@ -1811,7 +1942,7 @@ function openSettingsModal() {
       <section class="settings-group">
         <div class="settings-group-head"><h3>关于</h3><span>Snet</span></div>
         <div class="settings-card settings-about">
-          <p class="about-intro">构建独属于您的私域网络，无论在何处，都能轻松直达家庭与公司网络，享受高速、安全、隐私的网络</p>
+          <p class="about-intro">Snet构建独属于你的私域网络，无论身在何处，轻松直连你的家庭与公司网络，让你的网络更安全更隐私</p>
           <div class="about-meta">
             <span>作者 <b>S.shidi</b></span>
             <span>邮箱 <a href="mailto:s.shidi@gmail.com">s.shidi@gmail.com</a></span>
@@ -2398,6 +2529,13 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="13" height="13" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
           </button>
         </div>
+        <div class="member-card-line">
+          <span class="member-card-label">节点 ID</span>
+          <button type="button" class="member-device-id" data-copy-node-id="${esc(nd.id || "")}" title="${nd.id ? "点击复制节点 ID" : "无节点 ID"}" ${nd.id ? "" : "disabled"}>
+            <code>${esc(nd.id || "-")}</code>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="13" height="13" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          </button>
+        </div>
         ${publicLine}
       </div>
       ${foot}
@@ -2865,6 +3003,7 @@ function networkDetailHTML(n: NetInfo): string {
       ${canManage ? '<button type="button" data-detail-act="wg-export">生成 WireGuard 配置</button>' : ""}
       ${canManage ? '<button type="button" data-detail-act="settings">编辑网络</button>' : ""}
       ${canManage ? '<button type="button" data-detail-act="subnets">子网路由管理</button>' : ""}
+      ${canManage ? '<button type="button" data-detail-act="transfer">移交网络</button>' : ""}
       ${canManage ? "" : '<button type="button" data-detail-act="leave">退出网络</button>'}
       ${canManage ? '<button type="button" class="danger" data-detail-act="delete">删除网络</button>' : ""}
     </div>
@@ -3017,6 +3156,10 @@ function bindNetworkDetailEvents() {
       const menu = document.getElementById("detail-more-menu");
       if (menu) menu.hidden = true;
     }
+    if (moreAction && detailNid && moreAction.dataset.detailAct === "transfer") {
+      void openTransferModal(detailNid);
+      return;
+    }
     const pendingCancel = target.closest<HTMLElement>('[data-detail-act="cancel-pending"]');
     if (pendingCancel && detailPendingId) {
       const pid = detailPendingId;
@@ -3058,6 +3201,12 @@ function bindNetworkDetailEvents() {
     if (copyDeviceEl) {
       const id = copyDeviceEl.dataset.copyDeviceId || "";
       if (id) await copyText(id, copyDeviceEl);
+      return;
+    }
+    const copyNodeEl = target.closest<HTMLButtonElement>("[data-copy-node-id]");
+    if (copyNodeEl) {
+      const id = copyNodeEl.dataset.copyNodeId || "";
+      if (id) await copyText(id, copyNodeEl);
       return;
     }
     const pokeEl = target.closest<HTMLButtonElement>("[data-detail-poke]");
@@ -3169,6 +3318,10 @@ function bindNetworkDetailEvents() {
     if (input.checked) {
       const label = status?.networks?.find((n) => n.networkId === detailNid)?.name || detailNid;
       if (!(await confirmAndroidSingleNetwork(`连接「${label}」`, detailNid))) {
+        input.checked = false;
+        return;
+      }
+      if (!(await confirmSubnetSwitch(detailNid, label))) {
         input.checked = false;
         return;
       }

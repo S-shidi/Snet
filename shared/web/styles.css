@@ -1038,6 +1038,59 @@ select.form-control option { background: var(--bg); color: var(--text); }
 .subnet-wrap { margin-top: 4px; }
 .subnet-input { display: flex; gap: 8px; align-items: stretch; }
 .subnet-input .subnet-base { flex: 1; }
+.subnet-octets {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.subnet-octets .subnet-sep {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0 1px;
+  color: var(--faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  line-height: 1;
+}
+.subnet-octets .subnet-oct,
+.subnet-octets .subnet-prefix {
+  width: auto;
+  min-width: 0;
+  text-align: center;
+}
+.subnet-octets .subnet-oct1 { flex: 1.1 1 0; min-width: 50px; }
+.subnet-octets .subnet-oct2,
+.subnet-octets .subnet-oct3,
+.subnet-octets .subnet-oct4 { flex: 0.9 1 0; min-width: 36px; }
+.subnet-octets .subnet-prefix { flex: 1 1 0; min-width: 50px; }
+.subnet-octets .subnet-oct {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  color: var(--text);
+  padding: 8px 4px;
+  font-size: 13px;
+  outline: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  -moz-appearance: textfield;
+}
+.subnet-octets .subnet-oct:focus { border-color: var(--accent); box-shadow: var(--ring); }
+.subnet-octets .subnet-oct::-webkit-outer-spin-button,
+.subnet-octets .subnet-oct::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.subnet-wrap .subnet-octets .subnet-prefix { width: auto; }
+.subnet-octets .subnet-oct:disabled,
+.subnet-octets .subnet-prefix:disabled { opacity: 0.55; cursor: not-allowed; }
+.subnet-keep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--dim);
+}
+.subnet-keep input { accent-color: var(--accent); }
 
 /* ── join link row: text input + scan button ── */
 .join-link-input { flex: 1; min-width: 0; }

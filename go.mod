@@ -20,6 +20,6 @@ require (
 
 tool golang.org/x/mobile/cmd/gobind
 
-require github.com/S-shidi/snet/shared v1.2.4
+require github.com/S-shidi/snet/shared v1.2.5
 
 replace github.com/S-shidi/snet/shared => ./shared

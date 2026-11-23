@@ -381,6 +381,11 @@ type Daemon struct {
 	lastStatusAt time.Time
 	lastStatusRx uint64
 	lastStatusTx uint64
+	// noticeSeq/notice carry a one-shot message to the UI when the server no
+	// longer knows a joined network (deleted by owner or admin). Status exposes
+	// it so the desktop/mobile UI can tell the user why the network vanished.
+	noticeSeq int64
+	notice    string
 }
 
 func NewDaemonAt(cfg *Config, configPath string) *Daemon {
@@ -1192,9 +1197,22 @@ func (d *Daemon) attachWithIdentity(nid, name, nodeID, ip, token, pairingCode, s
 	if err := checkLANConflict(subnet); err != nil {
 		return err
 	}
-	for other, oc := range d.cfg.Networks {
-		if other != nid && subnetsOverlap(subnet, oc.Subnet) {
-			return fmt.Errorf("网段 %s 与已加入网络 %s（%s）冲突，无法加入", subnet, other, oc.Subnet)
+	// Duplicate virtual subnets are allowed across networks on the server.
+	// On this device only one of a conflicting pair may be active: like
+	// Android's single-network rule, attaching a conflicting network switches
+	// to it and deactivates the network it collides with.
+	if !d.singleActiveNetwork {
+		for other, oc := range d.cfg.Networks {
+			if other == nid || !oc.Active || !subnetsOverlap(subnet, oc.Subnet) {
+				continue
+			}
+			if rt := d.nets[other]; rt != nil {
+				rt.shutdown()
+				delete(d.nets, other)
+			}
+			oc.Active = false
+			d.netErrs[other] = fmt.Sprintf("网段 %s 与新启用网络冲突，已自动停用", oc.Subnet)
+			log.Printf("network %s: subnet %s conflicts with new network %s; deactivated", other, oc.Subnet, nid)
 		}
 	}
 	if d.cfg.Networks == nil {
@@ -1706,6 +1724,21 @@ func (d *Daemon) bringUp(nid string) error {
 	if rt := d.nets[nid]; rt != nil {
 		rt.shutdown()
 		delete(d.nets, nid)
+	}
+	// Duplicate virtual subnets are allowed on the server, but this device
+	// must not run two overlapping networks at once (the OS routes would
+	// collide). Android's single-active rule already covers the global case.
+	if !d.singleActiveNetwork {
+		for other, oc := range d.cfg.Networks {
+			if other == nid || !oc.Active || d.nets[other] == nil {
+				continue
+			}
+			if subnetsOverlap(nc.Subnet, oc.Subnet) {
+				err := fmt.Errorf("网段 %s 与在线网络 %s（%s）冲突，已暂停", nc.Subnet, other, oc.Subnet)
+				d.netErrs[nid] = err.Error()
+				return err
+			}
+		}
 	}
 	// A persisted port can collide with another network's reserved port or
 	// with a non-Snet process. Re-pick instead of failing every retry on the
@@ -2493,6 +2526,11 @@ func (d *Daemon) pollLoop(nid string) {
 					d.mu.Unlock()
 					continue
 				}
+				name := nid
+				if nc := d.cfg.Networks[nid]; nc != nil && nc.Name != "" {
+					name = nc.Name
+				}
+				d.setNetworkGoneNoticeLocked(name)
 				d.leaveLocked(nid)
 				delete(d.cfg.Networks, nid)
 				delete(d.serverState, nid)
@@ -3549,6 +3587,18 @@ func (d *Daemon) SetNodeRole(nid, nodeID, role string) error {
 	if err := api.SetNodeRole(nid, nc.Token, nodeID, role); err != nil {
 		return wrapNetGone(err)
 	}
+	// Reflect an ownership transfer immediately. Without this the status
+	// endpoint would keep reporting owner=true until the next peer poll
+	// reconciles the role, and the UI would still show creator controls.
+	if strings.EqualFold(role, "owner") {
+		isSelf := nodeID == nc.NodeID
+		if nc.Owner != isSelf {
+			nc.Owner = isSelf
+			if err := d.save(); err != nil {
+				log.Printf("save local owner after transfer %s: %v", nid, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -4455,6 +4505,11 @@ func (d *Daemon) pingServerState(nid string) {
 		}
 		if gone {
 			log.Printf("network %s: server record gone; removing local config", nid)
+			name := nid
+			if current.Name != "" {
+				name = current.Name
+			}
+			d.setNetworkGoneNoticeLocked(name)
 			d.leaveLocked(nid)
 			delete(d.cfg.Networks, nid)
 			delete(d.serverState, nid)
@@ -4723,5 +4778,19 @@ func (d *Daemon) Status() (map[string]any, error) {
 		"relayGatewaySupported": relayGatewaySupported(),
 		"useRelay":              d.cfg.RelayUsed(),
 		"relayError":            d.relayErr,
+		"notice": map[string]any{
+			"seq":  d.noticeSeq,
+			"text": d.notice,
+		},
 	}, nil
+}
+
+// setNetworkGoneNoticeLocked records that a joined network no longer exists on
+// the server. Callers must hold d.mu.
+func (d *Daemon) setNetworkGoneNoticeLocked(name string) {
+	if name == "" {
+		name = "该网络"
+	}
+	d.noticeSeq++
+	d.notice = fmt.Sprintf("网络「%s」已被删除或移除，已从本机清除", name)
 }

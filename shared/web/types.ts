@@ -107,6 +107,8 @@ export type DaemonStatus = {
   useRelay?: boolean;
   /** Why the local relay gateway setup failed (empty when healthy). */
   relayError?: string;
+  /** One-shot message when a joined network was removed server-side. */
+  notice?: { seq?: number; text?: string };
 };
 export type NetInfoDetail = {
   id?: string;

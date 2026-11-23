@@ -21,9 +21,9 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
 	"github.com/S-shidi/snet/shared/constants"
 	"github.com/S-shidi/snet/shared/protocol"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // resolveServer returns a normalized SnetServ address, falling back to the
@@ -434,6 +434,25 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			return
 		}
 		w.WriteHeader(204)
+	})
+
+	// Set a peer node's role (owner-only). The transfer-ownership UI and the
+	// member role selector both go through this endpoint.
+	mux.HandleFunc("POST /ctl/role", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Nid    string `json:"nid"`
+			NodeID string `json:"nodeId"`
+			Role   string `json:"role"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.SetNodeRole(req.Nid, req.NodeID, req.Role); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("POST /ctl/rename-device", func(w http.ResponseWriter, r *http.Request) {
