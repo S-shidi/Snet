@@ -146,13 +146,13 @@ Section
     Pop $1
     ${StrStr} $2 "$1" "DELETE_PENDING"
     ${If} $2 != ""
-        MessageBox MB_ICONEXCLAMATION|MB_OKCANCEL "检测到旧服务正在后台清理，建议重启电脑后再安装。$\r$\n$\r$\n点击「确定」忽略并继续，点击「取消」退出安装。"
+        MessageBox MB_ICONEXCLAMATION|MB_OKCANCEL "检测到旧服务正在后台清理，建议重启电脑后再安装。$\r$\n$\r$\n点击「确定」忽略并继续，点击「取消」退出安装。" /SD IDOK IDOK +2
         Abort
     ${EndIf}
     nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM snetd.exe /T'
     Pop $0
     Pop $1
-    nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM Snet.exe /T'
+    nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM Snet.exe'
     Pop $0
     Pop $1
     Delete /REBOOTOK "$INSTDIR\SnetWindows.exe"
@@ -167,7 +167,7 @@ Section
         Rename "$INSTDIR\snetd.exe" "$INSTDIR\snetd.exe.old"
         ${If} ${Errors}
             Delete /REBOOTOK "$INSTDIR\snetd.exe"
-            MessageBox MB_ICONEXCLAMATION|MB_OK "旧版 snetd.exe 仍被占用。安装将继续，但请重启电脑后重新运行安装包以完成后台服务更新。"
+            MessageBox MB_ICONEXCLAMATION|MB_OK "旧版 snetd.exe 仍被占用。安装将继续，但请重启电脑后重新运行安装包以完成后台服务更新。" /SD IDOK
         ${Else}
             Delete /REBOOTOK "$INSTDIR\snetd.exe.old"
         ${EndIf}
@@ -178,15 +178,14 @@ Section
     ClearErrors
     File /nonfatal "/oname=snetd.exe" "..\..\..\bin\snetd.exe"
     IfErrors 0 +2
-        MessageBox MB_ICONEXCLAMATION|MB_OK "新版 snetd.exe 未能写入。请重启电脑后重新运行安装包。"
-    File "/oname=snetctl.exe" "..\..\..\bin\snetctl.exe"
+        MessageBox MB_ICONEXCLAMATION|MB_OK "新版 snetd.exe 未能写入。请重启电脑后重新运行安装包。" /SD IDOK
     File "/oname=snetctl.exe" "..\..\..\bin\snetctl.exe"
     File "/oname=wintun.dll" "..\..\..\bin\wintun.dll"
 
     nsExec::ExecToLog '"$INSTDIR\snetd.exe" install'
     Pop $0
     ${If} $0 != 0
-        MessageBox MB_ICONEXCLAMATION|MB_OK "SNET 后台服务安装失败（代码 $0）。请以管理员身份重新运行安装包。"
+        MessageBox MB_ICONEXCLAMATION|MB_OK "SNET 后台服务安装失败（代码 $0）。请以管理员身份重新运行安装包。" /SD IDOK
     ${EndIf}
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -209,6 +208,9 @@ Section
     !insertmacro wails.associateCustomProtocols
     
     !insertmacro wails.writeUninstaller
+
+    IfSilent 0 +2
+        Exec '"$WINDIR\explorer.exe" "$INSTDIR\${PRODUCT_EXECUTABLE}"'
 SectionEnd
 
 Section "uninstall" 

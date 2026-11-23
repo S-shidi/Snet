@@ -1,7 +1,7 @@
 /* ── Web adapter: fetch HTTP → shared UI ────────────────────────
  * Thin adapter: provides Backend + auth flow, delegates UI to shared/ui.ts.
  */
-import type { Backend, DaemonStatus, DesktopDaemonStatus, GatewayInfo, WireGuardExport, WireGuardConfigResp, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute, InviteLinkResp, RotateInviteResp, InviteInfo } from "../../../shared/web/types.js";
+import type { Backend, DaemonStatus, DesktopDaemonStatus, UpdateCheckResp, UpgradeProgress, GatewayInfo, WireGuardExport, WireGuardConfigResp, NetInfoDetail, PeersResp, CreateResp, JoinResp, RelayRoute, InviteLinkResp, RotateInviteResp, InviteInfo } from "../../../shared/web/types.js";
 import { DEFAULT_SERVER } from "../../../shared/web/types.js";
 import { init } from "../../../shared/web/ui.js";
 
@@ -253,6 +253,33 @@ const backend: Backend = {
     const res = await fetch("/desktop/status", { cache: "no-store" });
     if (!res.ok) throw new Error(await res.text() || ("HTTP " + res.status));
     return await res.json() as DesktopDaemonStatus;
+  },
+
+  async checkUpdate(platform?: string): Promise<UpdateCheckResp> {
+    const q = platform ? ("?platform=" + encodeURIComponent(platform)) : "";
+    return api("/check-update" + q);
+  },
+
+  async startDesktopUpgrade(params: { version: string; assetUrl?: string }): Promise<UpgradeProgress> {
+    if (!isWailsDesktop()) {
+      throw new Error("当前环境不支持桌面端自升级");
+    }
+    const res = await fetch("/desktop/upgrade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || ("启动升级失败: HTTP " + res.status));
+    }
+    return await res.json() as UpgradeProgress;
+  },
+
+  async desktopUpgradeStatus(): Promise<UpgradeProgress> {
+    const res = await fetch("/desktop/upgrade-status", { cache: "no-store" });
+    if (!res.ok) throw new Error(await res.text() || ("HTTP " + res.status));
+    return await res.json() as UpgradeProgress;
   },
 };
 

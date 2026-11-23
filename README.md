@@ -41,7 +41,7 @@ Snet 是一个开箱即用的私有网络。离开公司或家之后，你仍然
 - **Android**：从 [Latest Release](https://github.com/S-shidi/Snet/releases/latest) 下载 APK。当前为单网络模式。
 - **NAS / Linux**：[Docker 客户端部署](deploy-prod/docker-client/README.md)。
 
-客户端首次启动后打开 Web 控制台，设置管理密码，然后通过邀请链接加入网络。
+客户端首次启动后打开 Web 控制台，设置管理密码，然后通过邀请链接加入网络。在「设置 → 关于与更新」中可检查最新版本并一键升级（macOS 自动挂载 `.dmg` 替换应用并重启，Windows 静默运行 NSIS 安装器并重启，Android 自动下载 `.apk` 并调起系统安装器，Docker / Linux Web 端展示宿主机 `docker compose pull && docker compose up -d` 一键复制命令）。
 
 ## Docker / NAS
 

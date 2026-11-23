@@ -42,4 +42,14 @@
     if (reject) reject(new Error(message || "扫码已取消"));
   };
 
+  // APK download & install progress bridge called from MainActivity.
+  window.__snetUpgradeState = { state: "idle", percent: 0, downloaded: 0, total: 0, message: "" };
+  window.__snetUpgradeProgress = function (payload) {
+    if (!payload || typeof payload !== "object") return;
+    window.__snetUpgradeState = payload;
+    if (typeof window.__snetOnUpgradeProgress === "function") {
+      try { window.__snetOnUpgradeProgress(payload); } catch (_) {}
+    }
+  };
+
 })();

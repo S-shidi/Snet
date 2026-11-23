@@ -290,6 +290,39 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		writeCtlJSON(w, 200, st)
 	})
 
+	mux.HandleFunc("GET /ctl/check-update", func(w http.ResponseWriter, r *http.Request) {
+		platform := strings.TrimSpace(r.URL.Query().Get("platform"))
+		resp, err := CheckUpdate(r.Context(), platform)
+		if err != nil {
+			writeCtlErr(w, 502, err)
+			return
+		}
+		writeCtlJSON(w, 200, resp)
+	})
+
+	mux.HandleFunc("POST /ctl/upgrade/download", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Version        string `json:"version"`
+			AssetURL       string `json:"assetUrl"`
+			SHA256URL      string `json:"sha256Url"`
+			ExpectedSHA256 string `json:"expectedSha256"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		st, err := defaultUpgradeDownloader.start(req.Version, req.AssetURL, req.SHA256URL, req.ExpectedSHA256)
+		if err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		writeCtlJSON(w, 200, st)
+	})
+
+	mux.HandleFunc("GET /ctl/upgrade/progress", func(w http.ResponseWriter, r *http.Request) {
+		writeCtlJSON(w, 200, defaultUpgradeDownloader.status())
+	})
+
 	mux.HandleFunc("POST /ctl/ping", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Target string `json:"target"`

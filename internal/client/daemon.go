@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -4761,10 +4762,12 @@ func (d *Daemon) Status() (map[string]any, error) {
 		})
 	}
 	return map[string]any{
-		"version":      buildinfo.Version,
-		"commit":       buildinfo.Commit,
-		"buildDate":    buildinfo.BuildDate,
-		"deviceId":     d.cfg.DeviceID,
+		"version":          buildinfo.Version,
+		"commit":           buildinfo.Commit,
+		"buildDate":        buildinfo.BuildDate,
+		"platform":         runtime.GOOS,
+		"upgradeSupported": UpgradeSupported(),
+		"deviceId":         d.cfg.DeviceID,
 		"deviceName":   d.cfg.DeviceName,
 		"wgPort":       d.cfg.WireguardPort,
 		"rxSpeed":      rxSpeed,

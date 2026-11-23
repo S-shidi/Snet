@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -281,6 +282,29 @@ func (p *ctlProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.URL.Path == "/desktop/upgrade" && r.Method == http.MethodPost {
+		var req struct {
+			Version  string `json:"version"`
+			AssetURL string `json:"assetUrl"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		st, err := p.service.StartUpgrade(req.Version, req.AssetURL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(st)
+		return
+	}
+	if r.URL.Path == "/desktop/upgrade-status" {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(p.service.UpgradeStatus())
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/ctl/") {

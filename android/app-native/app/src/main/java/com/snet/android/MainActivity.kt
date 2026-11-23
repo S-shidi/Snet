@@ -29,6 +29,10 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : AppCompatActivity() {
 
@@ -36,6 +40,9 @@ class MainActivity : AppCompatActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var vpnPermissionDenied = false
     private var notificationPermissionRequested = false
+    private val apkDownloading = AtomicBoolean(false)
+    @Volatile
+    private var pendingInstallApk: File? = null
     private val restartVpnRunnable = Runnable {
         // A network switch-off may have stopped the service after this rebuild
         // was queued. Do not resurrect a placeholder TUN in that case.
@@ -67,6 +74,18 @@ class MainActivity : AppCompatActivity() {
             sendScanError("扫码已取消")
         } else {
             sendScanResult(contents)
+        }
+    }
+
+    private val installPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        val apk = pendingInstallApk ?: return@registerForActivityResult
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+            pendingInstallApk = null
+            launchApkInstallIntent(apk)
+        } else {
+            sendUpgradeProgress("error", 0, 0, 0, "未授予「安装未知应用」权限", "请在系统设置中允许 Snet 安装未知应用后重试")
         }
     }
 
@@ -199,6 +218,179 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript("window.__snetScanError(" + JSONObject.quote(message) + ")", null)
     }
 
+    private fun sendUpgradeProgress(
+        state: String,
+        percent: Int,
+        downloaded: Long,
+        total: Long,
+        message: String,
+        error: String = ""
+    ) {
+        val payload = JSONObject().apply {
+            put("state", state)
+            put("percent", percent)
+            put("downloaded", downloaded)
+            put("total", total)
+            put("message", message)
+            if (error.isNotEmpty()) {
+                put("error", error)
+            }
+        }
+        runOnUiThread {
+            webView.evaluateJavascript(
+                "window.__snetUpgradeProgress && window.__snetUpgradeProgress($payload)",
+                null
+            )
+        }
+    }
+
+    private fun candidateDownloadUrls(rawUrl: String): List<String> {
+        val u = rawUrl.trim()
+        if (u.isEmpty()) return emptyList()
+        val ghproxy = "https://ghproxy.net/"
+        if (u.startsWith("https://github.com/") || u.startsWith("https://objects.githubusercontent.com/")) {
+            return listOf(u, ghproxy + u)
+        }
+        if (u.startsWith(ghproxy)) {
+            val orig = u.removePrefix(ghproxy)
+            if (orig.isNotEmpty()) return listOf(orig, u)
+        }
+        return listOf(u)
+    }
+
+    private fun downloadApkFromUrl(urlStr: String, destFile: File) {
+        var currentUrl = urlStr
+        var redirects = 0
+        var conn: HttpURLConnection? = null
+        try {
+            while (redirects < 6) {
+                val u = URL(currentUrl)
+                conn = (u.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15_000
+                    readTimeout = 30_000
+                    instanceFollowRedirects = false
+                    setRequestProperty("User-Agent", "Snet-Android-Updater")
+                }
+                val code = conn.responseCode
+                if (code in listOf(
+                        HttpURLConnection.HTTP_MOVED_PERM,
+                        HttpURLConnection.HTTP_MOVED_TEMP,
+                        HttpURLConnection.HTTP_SEE_OTHER,
+                        307,
+                        308
+                    )
+                ) {
+                    val loc = conn.getHeaderField("Location") ?: throw Exception("重定向缺少 Location")
+                    conn.disconnect()
+                    currentUrl = URL(u, loc).toString()
+                    redirects++
+                    continue
+                }
+                if (code != HttpURLConnection.HTTP_OK) {
+                    throw Exception("HTTP $code")
+                }
+                val total = conn.contentLengthLong
+                val partFile = File(destFile.parentFile, "${destFile.name}.part")
+                sendUpgradeProgress("downloading", 0, 0L, if (total > 0) total else 0L, "正在下载 APK 安装包…")
+
+                val header = ByteArray(4)
+                var headerFilled = 0
+                var downloaded = 0L
+                var lastReportAt = 0L
+
+                conn.inputStream.use { input ->
+                    FileOutputStream(partFile).use { output ->
+                        val buf = ByteArray(32 * 1024)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            if (n == 0) continue
+                            if (headerFilled < 4) {
+                                val take = minOf(4 - headerFilled, n)
+                                System.arraycopy(buf, 0, header, headerFilled, take)
+                                headerFilled += take
+                            }
+                            output.write(buf, 0, n)
+                            downloaded += n
+                            val now = System.currentTimeMillis()
+                            if (now - lastReportAt >= 80) {
+                                lastReportAt = now
+                                val pct = if (total > 0) ((downloaded * 95L) / total).toInt().coerceIn(0, 95) else 50
+                                sendUpgradeProgress("downloading", pct, downloaded, if (total > 0) total else 0L, "正在下载 APK 安装包…")
+                            }
+                        }
+                        output.flush()
+                    }
+                }
+                if (downloaded < 64 * 1024) {
+                    partFile.delete()
+                    throw Exception("下载的 APK 文件大小异常 ($downloaded 字节)")
+                }
+                if (total > 0 && downloaded != total) {
+                    partFile.delete()
+                    throw Exception("下载未完成 ($downloaded / $total 字节)")
+                }
+                if (headerFilled < 4 ||
+                    header[0] != 'P'.code.toByte() ||
+                    header[1] != 'K'.code.toByte() ||
+                    header[2] != 0x03.toByte() ||
+                    header[3] != 0x04.toByte()
+                ) {
+                    partFile.delete()
+                    throw Exception("下载的文件不是有效的 APK 安装包")
+                }
+                if (destFile.exists()) destFile.delete()
+                if (!partFile.renameTo(destFile)) {
+                    partFile.copyTo(destFile, overwrite = true)
+                    partFile.delete()
+                }
+                return
+            }
+            throw Exception("重定向次数过多")
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    private fun promptOrInstallApk(apkFile: File) {
+        runOnUiThread {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                pendingInstallApk = apkFile
+                sendUpgradeProgress("installing", 98, apkFile.length(), apkFile.length(), "请授予「安装未知应用」权限以继续安装…")
+                try {
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName")
+                    )
+                    installPermissionLauncher.launch(intent)
+                } catch (e: Exception) {
+                    sendUpgradeProgress("error", 0, 0, 0, "无法打开安装权限设置: ${e.message}", e.message ?: "权限申请失败")
+                }
+                return@runOnUiThread
+            }
+            launchApkInstallIntent(apkFile)
+        }
+    }
+
+    private fun launchApkInstallIntent(apkFile: File) {
+        try {
+            val uri = FileProvider.getUriForFile(
+                this@MainActivity,
+                "$packageName.fileprovider",
+                apkFile
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            sendUpgradeProgress("restarting", 100, apkFile.length(), apkFile.length(), "下载完成，正在拉起系统安装界面…")
+            startActivity(intent)
+        } catch (e: Exception) {
+            sendUpgradeProgress("error", 0, 0, 0, "拉起系统安装器失败: ${e.message}", e.message ?: "拉起安装器失败")
+        }
+    }
+
     inner class NetworkBridge {
         @JavascriptInterface
         fun setVpnActive(active: Boolean) {
@@ -262,6 +454,44 @@ class MainActivity : AppCompatActivity() {
                 scanLauncher.launch(options)
             }
         }
+
+        @JavascriptInterface
+        fun downloadAndInstallApk(url: String) {
+            val trimmed = url.trim()
+            if (trimmed.isEmpty()) {
+                sendUpgradeProgress("error", 0, 0, 0, "APK 下载地址为空", "APK 下载地址为空")
+                return
+            }
+            if (!apkDownloading.compareAndSet(false, true)) {
+                return
+            }
+            Thread {
+                try {
+                    val destFile = File(cacheDir, "snet-upgrade.apk")
+                    val candidates = candidateDownloadUrls(trimmed)
+                    var lastErr: Exception? = null
+                    var ok = false
+                    for (cand in candidates) {
+                        try {
+                            downloadApkFromUrl(cand, destFile)
+                            ok = true
+                            break
+                        } catch (e: Exception) {
+                            lastErr = e
+                        }
+                    }
+                    if (!ok) {
+                        val msg = lastErr?.message ?: "网络请求失败"
+                        sendUpgradeProgress("error", 0, 0, 0, "下载 APK 失败: $msg", msg)
+                        return@Thread
+                    }
+                    sendUpgradeProgress("installing", 98, destFile.length(), destFile.length(), "校验通过，正在准备安装…")
+                    promptOrInstallApk(destFile)
+                } finally {
+                    apkDownloading.set(false)
+                }
+            }.start()
+        }
     }
 
     override fun onResume() {
@@ -270,6 +500,11 @@ class MainActivity : AppCompatActivity() {
         // permission dialog was dismissed. Let the next status refresh retry.
         if (vpnPermissionDenied && VpnService.prepare(this) == null) {
             vpnPermissionDenied = false
+        }
+        val apk = pendingInstallApk
+        if (apk != null && (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls())) {
+            pendingInstallApk = null
+            launchApkInstallIntent(apk)
         }
     }
 

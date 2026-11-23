@@ -6,7 +6,7 @@
 
 | 文档 | 用途 |
 |---|---|
-| [`../README.md`](../README.md) | 安装、平台入口、构建 |
+| [`../README.md`](../README.md) | 安装、平台入口、应用内一键升级与构建 |
 | [`../deploy-prod/README-client.md`](../deploy-prod/README-client.md) | 客户端部署入口 |
 | [`../deploy-prod/docker-client/README.md`](../deploy-prod/docker-client/README.md) | Docker / 群晖 NAS 客户端 |
 | [`../deploy-prod/manual-client/README.md`](../deploy-prod/manual-client/README.md) | 二进制 + systemd 客户端 |

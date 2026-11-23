@@ -4,7 +4,7 @@
  * Platform adapters (Desktop/Web/Android) provide a Backend implementation
  * and call init() to wire everything up.
  */
-import { DEFAULT_SERVER, type Backend, type DaemonStatus, type GatewayInfo, type WireGuardExport, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode, type RelayRoute } from "./types.js";
+import { DEFAULT_SERVER, type Backend, type DaemonStatus, type UpgradeProgress, type GatewayInfo, type WireGuardExport, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp, type PeerDirect, type NetInfo, type NetNode, type RelayRoute } from "./types.js";
 import { $, esc, SPIN, fmtBytes, onlineCount, toast, copyText, renderQR, loadQR, openModal, closeModal, confirmDialog, initTabs } from "./utils.js";
 import { subnetCheck, subnetWidgetHTML, subnetWidgetInit } from "./subnet.js";
 
@@ -13,11 +13,24 @@ import { subnetCheck, subnetWidgetHTML, subnetWidgetInit } from "./subnet.js";
 // optimistic switch quickly instead of waiting for the next poll.
 (globalThis as any).snetRefresh = () => refresh();
 
+type LatestReleaseInfo = {
+  version: string;
+  url: string;
+  publishedAt?: string;
+  assets: {
+    darwin: string;
+    windows: string;
+    android: string;
+  };
+};
+
 let backend: Backend;
 let status: DaemonStatus | null = null;
-let latestRelease: { version: string; url: string } | null = null;
+let latestRelease: LatestReleaseInfo | null = null;
 let updateCheckPromise: Promise<void> | null = null;
 let updateCheckDone = false;
+let currentUpgradeState: UpgradeProgress = { state: "idle", downloaded: 0, total: 0, percent: 0 };
+let desktopUpgradeTimer: number | null = null;
 
 /* ── Settings (localStorage) ──────────────────────────────────── */
 const SETTINGS_KEY = "snet.settings";
@@ -52,7 +65,35 @@ function compareClientVersions(a: string, b: string): number {
   return 0;
 }
 
-async function fetchLatestRelease(): Promise<{ version: string; url: string } | null> {
+function parseReleaseAssets(version: string, rawAssets?: Array<{ name?: string; browser_download_url?: string }>): LatestReleaseInfo["assets"] {
+  const base = `https://github.com/S-shidi/Snet/releases/download/v${version}`;
+  const out = {
+    darwin: "",
+    windows: "",
+    android: "",
+  };
+  for (const a of rawAssets ?? []) {
+    const name = String(a?.name || "").trim();
+    const dl = String(a?.browser_download_url || "").trim();
+    if (!name || !dl) continue;
+    const lower = name.toLowerCase();
+    if (lower.endsWith(".dmg")) {
+      out.darwin = dl;
+    } else if (lower.endsWith(".apk")) {
+      out.android = dl;
+    } else if (lower.startsWith("snet-setup-") && lower.endsWith(".exe")) {
+      out.windows = dl;
+    } else if (lower.endsWith("-win-setup.zip") && !out.windows) {
+      out.windows = dl;
+    }
+  }
+  if (!out.darwin) out.darwin = `${base}/Snet-v${version}-mac.dmg`;
+  if (!out.windows) out.windows = `${base}/Snet-Setup-v${version}.exe`;
+  if (!out.android) out.android = `${base}/Snet-v${version}-android.apk`;
+  return out;
+}
+
+async function fetchLatestRelease(): Promise<LatestReleaseInfo | null> {
   const urls = [
     "https://api.github.com/repos/S-shidi/Snet/releases/latest",
     "https://ghproxy.net/https://api.github.com/repos/S-shidi/Snet/releases/latest",
@@ -63,12 +104,19 @@ async function fetchLatestRelease(): Promise<{ version: string; url: string } | 
     try {
       const res = await fetch(url, { signal: ctrl.signal, headers: { Accept: "application/vnd.github+json" } });
       if (!res.ok) continue;
-      const rel = await res.json() as { tag_name?: string; html_url?: string };
+      const rel = await res.json() as {
+        tag_name?: string;
+        html_url?: string;
+        published_at?: string;
+        assets?: Array<{ name?: string; browser_download_url?: string }>;
+      };
       const version = String(rel.tag_name || "").trim().replace(/^v/i, "");
       if (!version) continue;
       return {
         version,
         url: String(rel.html_url || "https://github.com/S-shidi/Snet/releases/latest"),
+        publishedAt: rel.published_at,
+        assets: parseReleaseAssets(version, rel.assets),
       };
     } catch {
       // Try the fallback mirror.
@@ -76,14 +124,58 @@ async function fetchLatestRelease(): Promise<{ version: string; url: string } | 
       window.clearTimeout(timer);
     }
   }
+  if (backend?.checkUpdate) {
+    try {
+      const resp = await backend.checkUpdate();
+      const version = String(resp?.latestVersion || "").trim().replace(/^v/i, "");
+      if (version) {
+        const base = `https://github.com/S-shidi/Snet/releases/download/v${version}`;
+        return {
+          version,
+          url: String(resp.releaseUrl || "https://github.com/S-shidi/Snet/releases/latest"),
+          publishedAt: resp.publishedAt,
+          assets: {
+            darwin: resp.assets?.darwin || `${base}/Snet-v${version}-mac.dmg`,
+            windows: resp.assets?.windows || `${base}/Snet-Setup-v${version}.exe`,
+            android: resp.assets?.android || `${base}/Snet-v${version}-android.apk`,
+          },
+        };
+      }
+    } catch {
+      // Ignore daemon fallback failure.
+    }
+  }
   return null;
+}
+
+function hasNewClientVersion(): boolean {
+  if (!latestRelease || !status?.version) return false;
+  return compareClientVersions(status.version, latestRelease.version) < 0;
+}
+
+function canSelfUpgradeClient(): boolean {
+  if (isAndroidClient()) return true;
+  if (backend?.hasDaemonControl) return true;
+  return false;
+}
+
+function isDockerOrWebClient(): boolean {
+  return !isAndroidClient() && !backend?.hasDaemonControl;
+}
+
+function currentPlatformAssetUrl(): string {
+  if (!latestRelease) return "https://github.com/S-shidi/Snet/releases/latest";
+  if (isAndroidClient()) return latestRelease.assets.android;
+  if (isWailsWindows()) return latestRelease.assets.windows;
+  if (backend?.hasDaemonControl) return latestRelease.assets.darwin;
+  return latestRelease.url;
 }
 
 function renderUpdateBanner(): void {
   const banner = $("#update-banner") as HTMLElement | null;
   const link = $("#update-banner-link") as HTMLAnchorElement | null;
   const version = $("#update-banner-version") as HTMLElement | null;
-  if (!banner || !link || !version || !latestRelease || compareClientVersions(status?.version || "0", latestRelease.version) >= 0) {
+  if (!banner || !link || !version || !latestRelease || !hasNewClientVersion()) {
     if (banner) banner.hidden = true;
     return;
   }
@@ -92,25 +184,258 @@ function renderUpdateBanner(): void {
   banner.hidden = false;
 }
 
-function renderAboutUpdateState(el: HTMLElement | null): void {
+function renderAboutUpdateState(root?: ParentNode | null): void {
+  const scope = root || document;
+  const el = scope.querySelector<HTMLElement>("#about-update");
+  const upgradeBtn = scope.querySelector<HTMLButtonElement>("#btn-do-upgrade");
+  const dockerBox = scope.querySelector<HTMLElement>("#about-docker-upgrade");
+  const dockerVer = scope.querySelector<HTMLElement>("#docker-new-ver");
+  const releaseLink = scope.querySelector<HTMLAnchorElement>("#about-release-link");
+  const manualLink = scope.querySelector<HTMLAnchorElement>("#upgrade-manual-link");
+
+  if (releaseLink && latestRelease?.url) releaseLink.href = latestRelease.url;
+  if (manualLink && latestRelease?.url) manualLink.href = latestRelease.url;
+
   if (!el) return;
   if (!latestRelease) {
     el.className = "about-update";
     el.textContent = updateCheckDone ? "无法检查更新" : "正在检查更新…";
+    if (upgradeBtn) upgradeBtn.hidden = true;
+    if (dockerBox) dockerBox.hidden = true;
     return;
   }
-  const cmp = compareClientVersions(status?.version || "0", latestRelease.version);
-  el.className = cmp < 0 ? "about-update new" : "about-update ok";
-  el.textContent = cmp < 0 ? `发现新版本 v${latestRelease.version}` : "已是最新版本";
+  const hasNew = hasNewClientVersion();
+  el.className = hasNew ? "about-update new" : "about-update ok";
+  el.textContent = hasNew ? `发现新版本 v${latestRelease.version}` : "已是最新版本";
+
+  const upgrading = currentUpgradeState.state === "downloading" ||
+    currentUpgradeState.state === "verifying" ||
+    currentUpgradeState.state === "installing" ||
+    currentUpgradeState.state === "restarting";
+
+  if (upgradeBtn) {
+    if (hasNew && canSelfUpgradeClient()) {
+      upgradeBtn.hidden = false;
+      upgradeBtn.disabled = upgrading;
+      upgradeBtn.textContent = upgrading ? "正在升级…" : `立即升级 v${latestRelease.version}`;
+    } else {
+      upgradeBtn.hidden = true;
+    }
+  }
+
+  if (dockerBox) {
+    if (hasNew && isDockerOrWebClient()) {
+      dockerBox.hidden = false;
+      if (dockerVer) dockerVer.textContent = `v${latestRelease.version}`;
+    } else {
+      dockerBox.hidden = true;
+    }
+  }
+
+  renderUpgradeProgressBox(scope);
 }
 
-function checkForUpdatesOnce(): Promise<void> {
+function renderUpgradeProgressBox(root?: ParentNode | null): void {
+  const scope = root || document;
+  const box = scope.querySelector<HTMLElement>("#about-upgrade-progress");
+  if (!box) return;
+  const st = currentUpgradeState;
+  if (st.state === "idle") {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+
+  const msgEl = scope.querySelector<HTMLElement>("#upgrade-progress-msg");
+  const pctEl = scope.querySelector<HTMLElement>("#upgrade-progress-pct");
+  const fillEl = scope.querySelector<HTMLElement>("#upgrade-progress-fill");
+  const metaEl = scope.querySelector<HTMLElement>("#upgrade-progress-meta");
+  const errBox = scope.querySelector<HTMLElement>("#upgrade-error-box");
+  const errLog = scope.querySelector<HTMLElement>("#upgrade-error-log");
+
+  const pct = Math.max(0, Math.min(100, Math.round(st.percent || 0)));
+  if (pctEl) pctEl.textContent = st.state === "error" ? "失败" : `${pct}%`;
+  if (fillEl) {
+    fillEl.style.width = `${st.state === "error" ? 100 : pct}%`;
+    fillEl.className = `upgrade-progress-fill ${st.state === "error" ? "is-error" : st.state === "restarting" ? "is-ok" : ""}`;
+  }
+  if (msgEl) {
+    msgEl.className = `upgrade-progress-msg ${st.state === "error" ? "err" : st.state === "restarting" ? "ok" : ""}`;
+    msgEl.textContent = st.message || (
+      st.state === "downloading" ? "正在下载更新包…" :
+      st.state === "verifying" ? "正在校验安装包…" :
+      st.state === "installing" ? "正在安装更新…" :
+      st.state === "restarting" ? "升级完成，即将重启" :
+      st.state === "error" ? "升级失败" : "准备升级…"
+    );
+  }
+  if (metaEl) {
+    if (st.total > 0 && st.downloaded >= 0) {
+      metaEl.textContent = `${fmtBytes(st.downloaded)} / ${fmtBytes(st.total)}`;
+      metaEl.hidden = false;
+    } else if (st.downloaded > 0) {
+      metaEl.textContent = `已下载 ${fmtBytes(st.downloaded)}`;
+      metaEl.hidden = false;
+    } else {
+      metaEl.textContent = "";
+      metaEl.hidden = true;
+    }
+  }
+  if (errBox && errLog) {
+    if (st.state === "error") {
+      errBox.hidden = false;
+      errLog.textContent = st.error || st.message || "下载或覆盖安装失败";
+    } else {
+      errBox.hidden = true;
+      errLog.textContent = "";
+    }
+  }
+}
+
+function applyUpgradeProgress(next: UpgradeProgress): void {
+  currentUpgradeState = next;
+  renderAboutUpdateState(document);
+}
+
+function startDesktopUpgradePolling(): void {
+  if (desktopUpgradeTimer !== null) {
+    window.clearInterval(desktopUpgradeTimer);
+    desktopUpgradeTimer = null;
+  }
+  desktopUpgradeTimer = window.setInterval(async () => {
+    if (!backend.desktopUpgradeStatus) return;
+    try {
+      const st = await backend.desktopUpgradeStatus();
+      applyUpgradeProgress(st);
+      if (st.state === "error" || st.state === "idle") {
+        if (desktopUpgradeTimer !== null) {
+          window.clearInterval(desktopUpgradeTimer);
+          desktopUpgradeTimer = null;
+        }
+      } else if (st.state === "restarting") {
+        toast("升级完成，即将重启");
+      }
+    } catch {
+      // During app restart the webview proxy briefly disconnects; keep the
+      // "restarting" state on screen if we already reached it.
+      if (currentUpgradeState.state === "installing" || currentUpgradeState.state === "restarting") {
+        applyUpgradeProgress({
+          ...currentUpgradeState,
+          state: "restarting",
+          percent: 100,
+          message: "升级完成，即将重启…",
+        });
+      }
+    }
+  }, 250);
+}
+
+async function triggerClientUpgrade(confirmFirst = true): Promise<void> {
+  if (!latestRelease || !hasNewClientVersion()) {
+    toast("当前已是最新版本");
+    return;
+  }
+  const targetVer = latestRelease.version;
+  if (isDockerOrWebClient()) {
+    renderAboutUpdateState(document);
+    return;
+  }
+  if (confirmFirst) {
+    const ok = await confirmDialog(
+      "发现新版本",
+      `发现新版本 v${targetVer}，是否立即升级？`,
+    );
+    if (!ok) return;
+  }
+
+  const assetUrl = currentPlatformAssetUrl();
+  if (isAndroidClient()) {
+    const bridge = (globalThis as any).SnetAndroid;
+    if (!bridge || typeof bridge.downloadAndInstallApk !== "function") {
+      applyUpgradeProgress({
+        state: "error",
+        version: targetVer,
+        downloaded: 0,
+        total: 0,
+        percent: 0,
+        message: "当前 Android 客户端版本不支持应用内下载，请手动下载安装",
+        error: "SnetAndroid.downloadAndInstallApk 未绑定",
+      });
+      return;
+    }
+    (globalThis as any).__snetOnUpgradeProgress = (p: any) => {
+      applyUpgradeProgress({
+        state: p?.state || "downloading",
+        version: targetVer,
+        message: p?.message || "",
+        downloaded: Number(p?.downloaded) || 0,
+        total: Number(p?.total) || 0,
+        percent: Number(p?.percent) || 0,
+        error: p?.error ? String(p.error) : undefined,
+      });
+    };
+    applyUpgradeProgress({
+      state: "downloading",
+      version: targetVer,
+      downloaded: 0,
+      total: 0,
+      percent: 0,
+      message: "正在连接下载服务器…",
+    });
+    try {
+      bridge.downloadAndInstallApk(assetUrl);
+    } catch (e) {
+      applyUpgradeProgress({
+        state: "error",
+        version: targetVer,
+        downloaded: 0,
+        total: 0,
+        percent: 0,
+        message: `启动 APK 下载失败: ${e}`,
+        error: String(e),
+      });
+    }
+    return;
+  }
+
+  if (backend.hasDaemonControl && backend.startDesktopUpgrade) {
+    applyUpgradeProgress({
+      state: "downloading",
+      version: targetVer,
+      downloaded: 0,
+      total: 0,
+      percent: 0,
+      message: "正在启动升级任务…",
+    });
+    try {
+      const st = await backend.startDesktopUpgrade({ version: targetVer, assetUrl });
+      applyUpgradeProgress(st);
+      startDesktopUpgradePolling();
+    } catch (e) {
+      applyUpgradeProgress({
+        state: "error",
+        version: targetVer,
+        downloaded: 0,
+        total: 0,
+        percent: 0,
+        message: `启动升级失败: ${e}`,
+        error: String(e),
+      });
+    }
+  }
+}
+
+function checkForUpdatesOnce(force = false): Promise<void> {
   if (!status?.version) return Promise.resolve();
-  if (updateCheckPromise) return updateCheckPromise;
+  if (!force && updateCheckPromise) return updateCheckPromise;
   updateCheckPromise = (async () => {
-    latestRelease = await fetchLatestRelease();
+    const rel = await fetchLatestRelease();
+    if (rel || !latestRelease) {
+      latestRelease = rel;
+    }
     updateCheckDone = true;
     renderUpdateBanner();
+    renderAboutUpdateState(document);
   })();
   return updateCheckPromise;
 }
@@ -1940,7 +2265,7 @@ function openSettingsModal() {
       </section>
 
       <section class="settings-group">
-        <div class="settings-group-head"><h3>关于</h3><span>Snet</span></div>
+        <div class="settings-group-head"><h3>关于与更新</h3><span>Snet</span></div>
         <div class="settings-card settings-about">
           <p class="about-intro">Snet构建独属于你的私域网络，无论身在何处，轻松直连你的家庭与公司网络，让你的网络更安全更隐私</p>
           <div class="about-meta">
@@ -1949,9 +2274,41 @@ function openSettingsModal() {
             <span>微信 <b>S-shidi</b></span>
           </div>
           <div class="about-version">
-            <span>客户端版本 <code id="about-version">v${esc(status?.version || "-")}</code></span>
-            <span class="about-update" id="about-update">正在检查更新…</span>
-            <a href="https://github.com/S-shidi/Snet/releases/latest" target="_blank" rel="noopener noreferrer">GitHub Releases ↗</a>
+            <div class="about-version-main">
+              <span>当前版本：<code id="about-version">v${esc(status?.version || "-")}</code></span>
+              <span class="about-update" id="about-update">正在检查更新…</span>
+            </div>
+            <div class="about-version-actions">
+              <button type="button" id="btn-check-update" class="btn ghost sm">检查更新</button>
+              <button type="button" id="btn-do-upgrade" class="btn primary sm" hidden>立即升级</button>
+              <a id="about-release-link" href="https://github.com/S-shidi/Snet/releases/latest" target="_blank" rel="noopener noreferrer">GitHub Releases ↗</a>
+            </div>
+          </div>
+
+          <div class="upgrade-docker-box" id="about-docker-upgrade" hidden>
+            <div class="upgrade-docker-title">🚀 发现新版本 <span id="docker-new-ver">v-</span>！</div>
+            <div class="upgrade-docker-desc">请在你的宿主机执行以下命令完成升级：</div>
+            <div class="upgrade-docker-cmd-row">
+              <code class="upgrade-docker-cmd" id="docker-upgrade-cmd">docker compose pull &amp;&amp; docker compose up -d</code>
+              <button type="button" id="btn-copy-docker-cmd" class="btn primary sm">复制命令</button>
+            </div>
+          </div>
+
+          <div class="upgrade-progress-box" id="about-upgrade-progress" hidden>
+            <div class="upgrade-progress-head">
+              <span class="upgrade-progress-msg" id="upgrade-progress-msg">正在准备升级…</span>
+              <span class="upgrade-progress-pct" id="upgrade-progress-pct">0%</span>
+            </div>
+            <div class="upgrade-progress-track">
+              <div class="upgrade-progress-fill" id="upgrade-progress-fill" style="width:0%"></div>
+            </div>
+            <div class="upgrade-progress-meta" id="upgrade-progress-meta" hidden></div>
+            <div class="upgrade-error-box" id="upgrade-error-box" hidden>
+              <pre class="upgrade-error-log" id="upgrade-error-log"></pre>
+              <div class="upgrade-error-help">
+                升级失败，请前往 <a id="upgrade-manual-link" href="https://github.com/S-shidi/Snet/releases/latest" target="_blank" rel="noopener noreferrer">GitHub Releases 页面手动下载 ↗</a>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -1966,9 +2323,47 @@ function openSettingsModal() {
     footer: `<button data-close class="btn ghost">关闭</button>`,
     onBody: (body) => {
       const msg = body.querySelector<HTMLElement>("#s-msg")!;
-      const updateState = body.querySelector<HTMLElement>("#about-update");
-      renderAboutUpdateState(updateState);
-      void checkForUpdatesOnce().then(() => renderAboutUpdateState(updateState));
+      renderAboutUpdateState(body);
+      void checkForUpdatesOnce().then(() => renderAboutUpdateState(body));
+
+      const checkBtn = body.querySelector<HTMLButtonElement>("#btn-check-update");
+      checkBtn?.addEventListener("click", async () => {
+        checkBtn.disabled = true;
+        checkBtn.innerHTML = `${SPIN} 检查中…`;
+        const updateEl = body.querySelector<HTMLElement>("#about-update");
+        if (updateEl) {
+          updateEl.className = "about-update";
+          updateEl.textContent = "正在检查更新…";
+        }
+        try {
+          await checkForUpdatesOnce(true);
+          renderAboutUpdateState(body);
+          if (!latestRelease) {
+            toast("无法连接更新服务器，请稍后重试", "err");
+          } else if (hasNewClientVersion()) {
+            if (canSelfUpgradeClient()) {
+              await triggerClientUpgrade(true);
+            } else {
+              toast(`发现新版本 v${latestRelease.version}`);
+            }
+          } else {
+            toast(`当前已是最新版本 (v${status?.version || latestRelease.version})`);
+          }
+        } finally {
+          checkBtn.disabled = false;
+          checkBtn.textContent = "检查更新";
+        }
+      });
+
+      const upgradeBtn = body.querySelector<HTMLButtonElement>("#btn-do-upgrade");
+      upgradeBtn?.addEventListener("click", async () => {
+        await triggerClientUpgrade(true);
+      });
+
+      const copyDockerBtn = body.querySelector<HTMLButtonElement>("#btn-copy-docker-cmd");
+      copyDockerBtn?.addEventListener("click", async (e) => {
+        await copyText("docker compose pull && docker compose up -d", e.currentTarget as HTMLButtonElement);
+      });
       body.querySelector("#s-copy-device")?.addEventListener("click", async (e) => {
         await copyText(status?.deviceId || "", e.currentTarget as HTMLButtonElement);
       });
@@ -3427,6 +3822,13 @@ async function ensureDaemon() {
 /* ── Event bindings ───────────────────────────────────────────── */
 function bindEvents() {
   $("#btn-info")?.addEventListener("click", openSettingsModal);
+  $("#update-banner-link")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    openSettingsModal();
+    if (canSelfUpgradeClient() && hasNewClientVersion()) {
+      void triggerClientUpgrade(true);
+    }
+  });
   $("#empty-create")?.addEventListener("click", openCreateModal);
   $("#empty-join")?.addEventListener("click", openJoinModal);
   $("#network-tabs")?.addEventListener("click", (e) => {

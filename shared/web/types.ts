@@ -96,6 +96,8 @@ export type DaemonStatus = {
   rxSpeed?: number;
   txSpeed?: number;
   version?: string;
+  platform?: string;
+  upgradeSupported?: boolean;
   networks?: NetInfo[];
   pendingJoins?: PendingJoin[];
   natMapping?: NatStatus;
@@ -144,6 +146,31 @@ export type RotateInviteResp = { networkId: string; name?: string; pairingCode?:
 export type ShareMeta = { description?: string; tags?: string[]; visibility?: string };
 /** Desktop daemon supervisor state (Windows Wails only). */
 export type DesktopDaemonStatus = { running: boolean; starting: boolean; error?: string };
+
+export type UpdateCheckResp = {
+  currentVersion?: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  upgradeSupported?: boolean;
+  platform?: string;
+  releaseUrl: string;
+  publishedAt?: string;
+  releaseNotes?: string;
+  assetName?: string;
+  assetUrl?: string;
+  sha256Url?: string;
+  assets?: Record<string, string>;
+};
+
+export type UpgradeProgress = {
+  state: "idle" | "downloading" | "verifying" | "installing" | "restarting" | "ready" | "error";
+  version?: string;
+  message?: string;
+  downloaded: number;
+  total: number;
+  percent: number;
+  error?: string;
+};
 
 /* ── Backend interface: platform adapters implement this ──────── */
 export interface Backend {
@@ -214,6 +241,12 @@ export interface Backend {
   ensureDaemon(): Promise<void>;
   /** Desktop supervisor state (Windows Wails only) */
   daemonStatus?(): Promise<DesktopDaemonStatus>;
+  /** Check for client updates via the local daemon */
+  checkUpdate?(platform?: string): Promise<UpdateCheckResp>;
+  /** Start desktop one-click self-upgrade (macOS / Windows Wails) */
+  startDesktopUpgrade?(params: { version: string; assetUrl?: string }): Promise<UpgradeProgress>;
+  /** Poll desktop self-upgrade progress (macOS / Windows Wails) */
+  desktopUpgradeStatus?(): Promise<UpgradeProgress>;
   /** Scan a QR code and return the decoded text (Android native only) */
   scanQR?(): Promise<string>;
   /** Whether the backend supports daemon lifecycle management */
