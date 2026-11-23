@@ -6,17 +6,21 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.io.File
+import java.net.Inet6Address
 
 /**
  * Owns the Android TUN interface and hands its fd to the gomobile daemon.
@@ -30,6 +34,8 @@ class SnetVpnService : VpnService() {
     private var tun: ParcelFileDescriptor? = null
     private val watchdog = Handler(Looper.getMainLooper())
     private var inactiveChecks = 0
+    private var v6Ticks = 0
+    private var lastLocalV6 = ""
     private val watchdogRunnable = object : Runnable {
         override fun run() {
             if (!isRunning) return
@@ -44,6 +50,11 @@ class SnetVpnService : VpnService() {
                     stopSelf()
                     return
                 }
+            }
+            v6Ticks++
+            if (v6Ticks >= 5) {
+                v6Ticks = 0
+                updateLocalIPv6()
             }
             watchdog.postDelayed(this, 2000)
         }
@@ -100,6 +111,8 @@ class SnetVpnService : VpnService() {
 
         isRunning = true
         inactiveChecks = 0
+        v6Ticks = 0
+        updateLocalIPv6()
         watchdog.removeCallbacks(watchdogRunnable)
         watchdog.postDelayed(watchdogRunnable, 2000)
         Log.i(TAG, "snetd started with TUN fd ${pfd.fd}")
@@ -134,6 +147,8 @@ class SnetVpnService : VpnService() {
         old.close()
         isRunning = true
         inactiveChecks = 0
+        v6Ticks = 0
+        updateLocalIPv6()
         watchdog.removeCallbacks(watchdogRunnable)
         watchdog.postDelayed(watchdogRunnable, 2000)
         Log.i(TAG, "TUN rebuilt with fd ${pfd.fd}")
@@ -145,10 +160,24 @@ class SnetVpnService : VpnService() {
             .setSession("Snet")
             .setMtu(1320)
             .setBlocking(false)
+            // The overlay is IPv4-only. Without allowFamily, Android blocks
+            // IPv6 for apps inside an IPv4-only VPN, so the carrier's IPv6
+            // address becomes unreachable and IPv6 direct dials always fail.
+            .allowFamily(OsConstants.AF_INET6)
             .addDnsServer("1.1.1.1")
             .addDnsServer("8.8.8.8")
 
         addConfiguredNetworks(builder)
+
+        // Keep snetd's own transport sockets (relay links, direct candidates,
+        // probes) on the physical network. The ctl API is loopback-only, so
+        // excluding the app from the VPN does not affect the UI or the tunnel.
+        try {
+            builder.addDisallowedApplication(packageName)
+        } catch (e: Exception) {
+            Log.w(TAG, "cannot exclude app from VPN", e)
+        }
+
         return try {
             builder.establish()
         } catch (e: Exception) {
@@ -229,9 +258,50 @@ class SnetVpnService : VpnService() {
         super.onDestroy()
     }
 
+    /**
+     * The VPN is IPv4-only and Go's interface enumeration can miss the
+     * carrier's global IPv6, so read it from the underlying network and hand it
+     * to the daemon. Without this the node never advertises a v6 endpoint and
+     * every IPv6 direct attempt is skipped.
+     */
+    private fun updateLocalIPv6() {
+        try {
+            val cm = getSystemService(ConnectivityManager::class.java) ?: return
+            for (network in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(network) ?: continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+                val lp = cm.getLinkProperties(network) ?: continue
+                for (link in lp.linkAddresses) {
+                    val ip = link.address
+                    if (ip !is Inet6Address) continue
+                    if (ip.isLoopbackAddress || ip.isLinkLocalAddress) continue
+                    val raw = ip.address
+                    if (raw.isNotEmpty() && (raw[0].toInt() and 0xfe) == 0xfc) continue // ULA fc00::/7
+                    val host = ip.hostAddress ?: continue
+                    if (host != lastLocalV6) {
+                        lastLocalV6 = host
+                        Log.i(TAG, "local IPv6: $host")
+                    }
+                    SnetCore.setLocalIPv6(host)
+                    return
+                }
+            }
+            if (lastLocalV6 != "") {
+                lastLocalV6 = ""
+                Log.i(TAG, "local IPv6: none (underlying network)")
+            }
+            SnetCore.setLocalIPv6("")
+        } catch (e: Exception) {
+            Log.w(TAG, "local IPv6 lookup failed", e)
+        }
+    }
+
     private fun stopVpn() {
         watchdog.removeCallbacks(watchdogRunnable)
         inactiveChecks = 0
+        v6Ticks = 0
+        SnetCore.setLocalIPv6("")
         val err = SnetCore.clearTun()
         if (err.isNotEmpty()) {
             Log.w(TAG, "SnetCore.stop: $err")

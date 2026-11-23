@@ -60,6 +60,12 @@ type PathManager struct {
 	mappedAddr   *net.UDPAddr
 	mappedAt     time.Time
 
+	// Diagnostic state (maintained by the direct loop; not used for routing).
+	peerSig      map[uint64]string
+	lastV6Logged string
+	lastMapLog   string
+	dropLogged   map[string]time.Time
+
 	sendDrops  atomic.Uint64
 	recvDrops  atomic.Uint64
 	sendFrames atomic.Uint64
@@ -85,6 +91,7 @@ type relayLink struct {
 	nextRegister time.Time
 	lastHello    time.Time
 	lastRecv     atomic.Int64
+	lastErrLog   time.Time
 }
 
 type directCandidate struct {
@@ -100,6 +107,7 @@ type directPeer struct {
 	directAddr   *net.UDPAddr
 	v6Addr       *net.UDPAddr
 	relayAddr    *net.UDPAddr
+	online       bool
 	ready        bool
 	lookupMisses int
 	probeIdx     int
@@ -129,6 +137,8 @@ func NewPathManager(ctx context.Context, nid string, nc *NetworkCfg, serverAddr 
 		peers:       make(map[string]protocol.Node),
 		directPeers: make(map[uint64]*directPeer),
 		closed:      make(chan struct{}),
+		peerSig:     make(map[uint64]string),
+		dropLogged:  make(map[string]time.Time),
 	}
 	return pm
 }
@@ -206,6 +216,14 @@ func (pm *PathManager) UpdatePeersWithContext(peers []protocol.Node, localSubnet
 			dp.lanAddr = cloneUDPAddr(dp.directAddr)
 		}
 		dp.v6Addr = peerV6Addr(p.DirectEndpointV6)
+		sig := p.DirectEndpoint + "|" + p.DirectEndpointV6 + "|" + strconv.FormatBool(p.Online)
+		if pm.peerSig[key] != sig {
+			pm.peerSig[key] = sig
+			dp.online = p.Online
+			log.Printf("path %s: peer=%s online=%v directV4=%q directV6=%q v6accepted=%v",
+				pm.nid, p.ID, p.Online, p.DirectEndpoint, p.DirectEndpointV6, dp.v6Addr != nil)
+		}
+		dp.online = p.Online
 		if dp.ready && dp.addr != nil {
 			switch dp.kind {
 			case "lan":
@@ -881,13 +899,22 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 	}
 	pm.mu.RUnlock()
 
-	hasV6 := dconn6 != nil || firstGlobalIPv6() != ""
+	localV6 := firstGlobalIPv6()
+	hasV6 := dconn6 != nil || localV6 != ""
+	if localV6 != pm.lastV6Logged {
+		pm.lastV6Logged = localV6
+		log.Printf("path %s: local IPv6=%q v6socket=%v", pm.nid, localV6, dconn6 != nil)
+	}
 	if dconn == nil {
 		dconn = pm.ensureDirectConn(false)
 	}
-	if needV6 && hasV6 && dconn6 == nil {
+	// Open the v6 socket whenever a peer advertises a v6 candidate, even if
+	// local enumeration found no address: the OS picks the source and an
+	// injected address (Android) may arrive later.
+	if needV6 && dconn6 == nil {
 		dconn6 = pm.ensureDirectConn(true)
 	}
+	hasV6 = dconn6 != nil || localV6 != ""
 	if dconn == nil && dconn6 == nil {
 		return
 	}
@@ -896,6 +923,7 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 		key  uint64
 		id   string
 		addr *net.UDPAddr
+		kind string
 	}
 	type registration struct {
 		conn *net.UDPConn
@@ -927,6 +955,9 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 	lookupLink := pm.pickRelayLocked()
 	for key, dp := range pm.directPeers {
 		peerID := pm.peerKeys[key]
+		if !dp.online {
+			continue
+		}
 		if lookupLink != nil {
 			interval := directLookupInterval
 			if dp.addr == nil || !dp.ready {
@@ -946,7 +977,7 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 				continue
 			}
 			if dp.lastPing.IsZero() || now.Sub(dp.lastPing) >= directPingInterval {
-				pings = append(pings, target{key: key, id: peerID, addr: cloneUDPAddr(dp.addr)})
+				pings = append(pings, target{key: key, id: peerID, addr: cloneUDPAddr(dp.addr), kind: dp.kind})
 				dp.lastPing = now
 			}
 			// Keep probing better candidates (LAN > IPv6 > public) so a path
@@ -958,7 +989,7 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 						continue
 					}
 					if pathRank(c.kind) > pathRank(dp.kind) {
-						probes = append(probes, target{key: key, id: peerID, addr: cloneUDPAddr(c.addr)})
+						probes = append(probes, target{key: key, id: peerID, addr: cloneUDPAddr(c.addr), kind: c.kind})
 						dp.lastProbe = now
 						break
 					}
@@ -980,7 +1011,7 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 		if dp.lastProbe.IsZero() || now.Sub(dp.lastProbe) >= directProbeInterval {
 			c := cands[dp.probeIdx%len(cands)]
 			dp.probeIdx++
-			probes = append(probes, target{key: key, id: peerID, addr: cloneUDPAddr(c.addr)})
+			probes = append(probes, target{key: key, id: peerID, addr: cloneUDPAddr(c.addr), kind: c.kind})
 			dp.lastProbe = now
 		}
 	}
@@ -1005,7 +1036,7 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 		}
 	}
 	for _, p := range probes {
-		log.Printf("path %s: DIRECT_PROBE to peer=%s addr=%s", pm.nid, p.id, p.addr)
+		log.Printf("path %s: DIRECT_PROBE to peer=%s kind=%s addr=%s", pm.nid, p.id, p.kind, p.addr)
 		pm.writeCandidate(p.key, p.addr, protocol.RelayTypeDirectProbe, sid, dconn, dconn6)
 	}
 	for _, p := range pings {
@@ -1216,6 +1247,12 @@ func (pm *PathManager) noteDirectPeer(key uint64, addr *net.UDPAddr, now time.Ti
 	}
 	kind := pm.matchCandidateLocked(dp, addr)
 	if kind == "" {
+		ipKey := addr.IP.String()
+		if t, ok := pm.dropLogged[ipKey]; !ok || now.Sub(t) >= 30*time.Second {
+			pm.dropLogged[ipKey] = now
+			log.Printf("path %s: direct frame from unmatched peer=%s src=%s candidates=%d",
+				pm.nid, pm.peerKeys[key], addr, len(pm.candidatesLocked(dp)))
+		}
 		return false
 	}
 	if dp.addr != nil && sameUDPAddr(dp.addr, addr) {
@@ -1351,6 +1388,10 @@ func (pm *PathManager) noteDirectMapping(raw string) {
 	}
 	pm.mappedAddr = cloneUDPAddr(addr)
 	pm.mappedAt = now
+	if s := addr.String(); s != pm.lastMapLog {
+		pm.lastMapLog = s
+		log.Printf("path %s: relay-observed mapping=%s nat=%s", pm.nid, s, pm.natType)
+	}
 }
 
 func (pm *PathManager) handleDirectPeer(f protocol.RelayFrame) {
@@ -1394,6 +1435,9 @@ func (pm *PathManager) handleDirectPeer(f protocol.RelayFrame) {
 	old := dp.relayAddr
 	changed := !sameUDPAddr(old, addr)
 	dp.relayAddr = cloneUDPAddr(addr)
+	if changed {
+		log.Printf("path %s: peer=%s relay-observed endpoint=%s", pm.nid, pm.peerKeys[f.RecipientID], addr)
+	}
 	if !changed {
 		return
 	}
@@ -1468,6 +1512,9 @@ func isPublicIPv6(ip net.IP) bool {
 }
 
 func firstGlobalIPv6() string {
+	if v := advertisedIPv6Value(); v != "" {
+		return v
+	}
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return ""
@@ -1490,6 +1537,7 @@ func firstGlobalIPv6() string {
 			}
 		}
 	}
+	dumpInterfaces()
 	return ""
 }
 
@@ -1544,7 +1592,11 @@ func (pm *PathManager) relayReadLoop(l *relayLink, conn *net.UDPConn) {
 		case protocol.RelayTypePong:
 			// Any valid PONG proves the relay still has our mapping.
 		case protocol.RelayTypeError:
-			log.Printf("path %s: relay error from %s: %s", pm.nid, l.endpoint, string(f.Payload))
+			now := time.Now()
+			if now.Sub(l.lastErrLog) >= 30*time.Second {
+				l.lastErrLog = now
+				log.Printf("path %s: relay error from %s: %s", pm.nid, l.endpoint, string(f.Payload))
+			}
 		case protocol.RelayTypeDirectPeer:
 			pm.handleDirectPeer(f)
 		case protocol.RelayTypeData:

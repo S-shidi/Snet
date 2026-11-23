@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/S-shidi/snet/internal/client"
+	"github.com/S-shidi/snet/shared/buildinfo"
 )
 
 const (
@@ -31,6 +33,7 @@ const (
 
 var (
 	mu        sync.Mutex
+	logOnce   sync.Once
 	daemon    *client.Daemon
 	ctlToken  string
 	proxySrv  *http.Server
@@ -43,6 +46,14 @@ var (
 func Start(configDir string, tunFD int32, ctlPort int32) string {
 	mu.Lock()
 	defer mu.Unlock()
+
+	// gomobile does not install a log writer, so /ctl/logs and the in-app
+	// diagnostic export would be empty. Keep an in-memory tail and still write
+	// to stderr (logcat).
+	logOnce.Do(func() {
+		log.SetOutput(io.MultiWriter(client.LogWriter(), os.Stderr))
+	})
+	log.Printf("snetd %s starting (android, tun fd %d, ctl port %d)", buildinfo.String(), tunFD, ctlPort)
 
 	if configDir == "" {
 		return "配置目录不能为空"
@@ -192,6 +203,13 @@ func Stop() string {
 // GetStatus returns the daemon's /ctl/status JSON. When the daemon has not
 // started it returns a JSON object with an error field instead of an empty
 // string, so Kotlin can display a useful message.
+// SetLocalIPv6 injects the underlying network's global IPv6 address. Android
+// reports it through ConnectivityManager because Go's interface enumeration
+// can miss it while a VPN is active.
+func SetLocalIPv6(addr string) {
+	client.SetAdvertisedIPv6(addr)
+}
+
 func GetStatus() string {
 	mu.Lock()
 	running := daemon != nil

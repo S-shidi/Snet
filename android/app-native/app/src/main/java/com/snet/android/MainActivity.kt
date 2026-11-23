@@ -22,11 +22,13 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
@@ -214,6 +216,38 @@ class MainActivity : AppCompatActivity() {
                 // running, so this is only a route/address refresh.
                 mainHandler.removeCallbacks(restartVpnRunnable)
                 mainHandler.postDelayed(restartVpnRunnable, 600)
+            }
+        }
+
+        @JavascriptInterface
+        fun saveDiagnosticLog(text: String): Boolean {
+            return try {
+                val file = File(cacheDir, "snet-diagnostic.log")
+                file.writeText(text)
+                val uri = FileProvider.getUriForFile(
+                    this@MainActivity,
+                    "$packageName.fileprovider",
+                    file,
+                )
+                runOnUiThread {
+                    val share = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        putExtra(Intent.EXTRA_SUBJECT, "Snet diagnostic log")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(Intent.createChooser(share, "导出诊断日志"))
+                }
+                true
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "导出失败: ${e.message}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                false
             }
         }
 

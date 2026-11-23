@@ -352,7 +352,7 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 	mux.HandleFunc("GET /ctl/logs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="snet-diagnostic.log"`)
-		_, _ = io.WriteString(w, d.logText(200))
+		_, _ = io.WriteString(w, d.logText(2000))
 	})
 
 	mux.HandleFunc("POST /ctl/leave", func(w http.ResponseWriter, r *http.Request) {

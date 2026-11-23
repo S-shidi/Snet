@@ -1904,14 +1904,22 @@ function openSettingsModal() {
         btn.disabled = true;
         try {
           const text = await backend.logs();
-          const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = "snet-diagnostic.log";
-          a.click();
-          URL.revokeObjectURL(url);
-          toast("诊断日志已导出");
+          // Android WebView does not save <a download> blobs; hand the text to
+          // the native shell, which writes a file and opens the share sheet.
+          const bridge = (globalThis as any).SnetAndroid;
+          if (bridge && typeof bridge.saveDiagnosticLog === "function") {
+            if (!bridge.saveDiagnosticLog(text)) throw new Error("保存失败");
+            toast("已生成日志，请在分享面板中选择保存位置");
+          } else {
+            const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "snet-diagnostic.log";
+            a.click();
+            URL.revokeObjectURL(url);
+            toast("诊断日志已导出");
+          }
         } catch (err) {
           toast(`导出日志失败: ${err}`, "err");
         } finally {
