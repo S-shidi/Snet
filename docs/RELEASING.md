@@ -93,7 +93,7 @@ If the GHCR package is private, set it to public in package settings before anno
 
 ## Release checklist
 
-- [ ] `VERSION` matches the tag
+- [ ] `VERSION` matches the tag (CI fails the release if they differ)
 - [ ] public CI green
 - [ ] Android APK attached
 - [ ] macOS DMG attached

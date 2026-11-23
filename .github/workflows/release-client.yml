@@ -21,6 +21,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify tag matches VERSION
+        if: ${{ github.ref_type == 'tag' }}
+        run: |
+          set -euo pipefail
+          want="${GITHUB_REF_NAME#v}"
+          have="$(tr -d '[:space:]' < VERSION)"
+          if [ "$want" != "$have" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match VERSION ${have}" >&2
+            exit 1
+          fi
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
