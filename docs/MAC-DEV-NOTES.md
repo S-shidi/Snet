@@ -184,3 +184,7 @@ Tahoe 只原生渲染 Icon Composer 的 `.icon` 图标。只提供旧式 `.icns`
 - GitHub Actions：`Build macOS App` 工作流使用 `xcrun actool` 从 `build/appicon.icon` 生成 `Assets.car`。
 - 编译 `.icon` 需要 Xcode 26 / macOS 26 SDK；`Assets.car` 是构建产物，不提交到仓库。
 - `icons.icns` 继续保留，作为 macOS 15 及更早版本的图标和 DMG 卷图标。
+
+**注意：logo 图层用 PNG，不用 SVG**
+
+白色主图形放在 `build/appicon.icon/Assets/snet_icon_logo.png`（由 `snet_icon_vector.svg` 渲染出的透明 PNG），`icon.json` 引用这个 PNG。原因是 Icon Composer 的 SVG 渲染器不会把父级 `<g fill="#FFFFFF">` 继承给子 `<path>`，编译后白色图形会消失，只剩带自身 `fill` 的绿点。修改 logo 后需要重新从 SVG 生成该 PNG。
