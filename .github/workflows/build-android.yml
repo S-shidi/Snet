@@ -25,6 +25,7 @@ permissions:
 
 jobs:
   build-android:
+    if: ${{ !(github.ref_type == 'tag' && contains(github.ref_name, '-')) }}
     runs-on: ubuntu-latest
 
     steps:

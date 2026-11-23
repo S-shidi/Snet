@@ -13,6 +13,24 @@ This repository owns the public client release train and the shared protocol mod
 For a coordinated release, use the same numeric version across all three.
 A client-only patch does not require a server release unless the shared protocol changed.
 
+## Docker image tags
+
+All Docker image tags are **`vX.Y.Z`** — the same string as the Git tag, with
+the `v` prefix. Bare `X.Y.Z` image tags are no longer pushed, for any component.
+
+| Artifact | Tag |
+|---|---|
+| Client image | `ghcr.io/s-shidi/snet-client:vX.Y.Z` |
+| Server images | `$SNET_REGISTRY/snet-{snetserv,admin-server,relay}:vX.Y.Z` |
+
+`latest` tracks the newest **stable** release. Prerelease tags (`vX.Y.Z-rc1`)
+publish only the versioned image — never `latest` — and skip the macOS,
+Windows and Android builds.
+
+Self-hosted `compose.yaml` files must use the `v` prefix, e.g.
+`snet-client:v1.2.4`. From `v1.2.4` on there is no backwards-compatible
+`X.Y.Z` tag; see [`release-notes-v1.2.4.md`](release-notes-v1.2.4.md).
+
 ## Before tagging
 
 ```bash
@@ -57,7 +75,7 @@ This triggers:
 The release must include the expected platform assets and the GHCR image:
 
 ```text
-ghcr.io/s-shidi/snet-client:X.Y.Z
+ghcr.io/s-shidi/snet-client:vX.Y.Z
 ghcr.io/s-shidi/snet-client:latest
 ```
 
@@ -70,7 +88,7 @@ If the GHCR package is private, set it to public in package settings before anno
 - [ ] Android APK attached
 - [ ] macOS DMG attached
 - [ ] Windows installer/zip attached
-- [ ] GHCR image tags exist and are pullable
+- [ ] GHCR image tags exist and are pullable, and the version tag is `vX.Y.Z` (not `X.Y.Z`)
 - [ ] public README/badges point to the right release
 - [ ] no server/private material in the public tree
 - [ ] server repository has bumped `shared` if needed

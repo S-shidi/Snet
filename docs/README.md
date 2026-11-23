@@ -25,6 +25,7 @@
 | 文档 | 用途 |
 |---|---|
 | [`RELEASING.md`](RELEASING.md) | 客户端与 shared 发布流程、tag、GHCR 与回滚 |
+| [`release-notes-v1.2.4.md`](release-notes-v1.2.4.md) | v1.2.4 发布说明草稿（镜像 Tag Breaking Change） |
 
 ## 维护规则
 
