@@ -312,6 +312,10 @@ type Daemon struct {
 	// directPub caches the last advertised Relay v2 direct endpoints/NAT type
 	// per network ("v4|v6|nat") to avoid rewriting unchanged node state.
 	directPub map[string]string
+	// directPubPending/directPubAt debounce endpoint changes so a phone
+	// flapping between Wi-Fi and cellular does not publish every flip.
+	directPubPending map[string]string
+	directPubAt      map[string]time.Time
 	// deviceIDFile is the on-disk stable device identity; empty disables it
 	// (used in tests / read-only environments).
 	deviceIDFile string
@@ -388,30 +392,32 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 		}
 	}
 	return &Daemon{
-		cfg:           cfg,
-		configPath:    configPath,
-		apiManager:    NewAPIManager(ctx),
-		nets:          make(map[string]*netRuntime),
-		pendingRuns:   make(map[string]chan struct{}),
-		netErrs:       make(map[string]string),
-		relayServed:   make(map[string]string),
-		retryPending:  make(map[string]struct{}),
-		retryAttempts: make(map[string]int),
-		routeWake:     make(chan struct{}, 1),
-		relayEP:       make(map[string]string),
-		relayCands:    make(map[string][]string),
-		relayRTT:      make(map[string]int64),
-		relaySelAt:    make(map[string]int64),
-		obsList:       make(map[string][]string),
-		obsAt:         make(map[string]int64),
-		peerSeenAt:    make(map[string]int64),
-		selfPub:       sp,
-		endV6:         make(map[string]string),
-		directPub:     make(map[string]string),
-		nat:           newNatManager(cfg, ctx),
-		deviceIDFile:  DefaultDeviceIDFile,
-		ctx:           ctx,
-		cancel:        cancel,
+		cfg:              cfg,
+		configPath:       configPath,
+		apiManager:       NewAPIManager(ctx),
+		nets:             make(map[string]*netRuntime),
+		pendingRuns:      make(map[string]chan struct{}),
+		netErrs:          make(map[string]string),
+		relayServed:      make(map[string]string),
+		retryPending:     make(map[string]struct{}),
+		retryAttempts:    make(map[string]int),
+		routeWake:        make(chan struct{}, 1),
+		relayEP:          make(map[string]string),
+		relayCands:       make(map[string][]string),
+		relayRTT:         make(map[string]int64),
+		relaySelAt:       make(map[string]int64),
+		obsList:          make(map[string][]string),
+		obsAt:            make(map[string]int64),
+		peerSeenAt:       make(map[string]int64),
+		selfPub:          sp,
+		endV6:            make(map[string]string),
+		directPub:        make(map[string]string),
+		directPubPending: make(map[string]string),
+		directPubAt:      make(map[string]time.Time),
+		nat:              newNatManager(cfg, ctx),
+		deviceIDFile:     DefaultDeviceIDFile,
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 }
 
@@ -2673,10 +2679,32 @@ func (d *Daemon) publishDirectEndpoints(nid string, api *apiClient, token, nodeI
 	ep4, ep6, nat := pm.DirectEndpoints()
 	sig := ep4 + "|" + ep6 + "|" + nat
 	d.mu.Lock()
+	if d.directPub == nil {
+		d.directPub = make(map[string]string)
+	}
+	if d.directPubPending == nil {
+		d.directPubPending = make(map[string]string)
+		d.directPubAt = make(map[string]time.Time)
+	}
 	if d.directPub[nid] == sig {
+		delete(d.directPubPending, nid)
 		d.mu.Unlock()
 		return
 	}
+	// Hold a changed endpoint for a few seconds: a phone roaming between
+	// Wi-Fi and cellular flips the source address repeatedly and publishing
+	// every flip churns the peers' candidate lists for no benefit.
+	if d.directPubPending[nid] != sig {
+		d.directPubPending[nid] = sig
+		d.directPubAt[nid] = time.Now()
+		d.mu.Unlock()
+		return
+	}
+	if time.Since(d.directPubAt[nid]) < 3*time.Second {
+		d.mu.Unlock()
+		return
+	}
+	delete(d.directPubPending, nid)
 	d.directPub[nid] = sig
 	d.mu.Unlock()
 	log.Printf("path %s: publish direct endpoints v4=%q v6=%q nat=%s", nid, ep4, ep6, nat)

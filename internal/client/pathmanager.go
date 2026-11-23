@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	directRegisterInterval = 20 * time.Second
-	directLookupInterval   = 60 * time.Second
-	directLookupRetry      = 15 * time.Second
+	directRegisterInterval = 8 * time.Second
+	directLookupInterval   = 15 * time.Second
+	directLookupRetry      = 5 * time.Second
 	directProbeInterval    = 3 * time.Second
 	directUpgradeInterval  = 10 * time.Second
 	directPingInterval     = 5 * time.Second
@@ -1451,6 +1451,7 @@ func (pm *PathManager) noteDirectMapping(raw string) {
 	now := time.Now()
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
+	changed := !sameUDPAddr(pm.mappedAddr, addr)
 	if pm.mappedAddr != nil && now.Sub(pm.mappedAt) < 10*time.Minute {
 		if pm.mappedAddr.Port == addr.Port && pm.mappedAddr.IP.Equal(addr.IP) {
 			pm.natType = "cone"
@@ -1465,6 +1466,18 @@ func (pm *PathManager) noteDirectMapping(raw string) {
 	}
 	pm.mappedAddr = cloneUDPAddr(addr)
 	pm.mappedAt = now
+	if changed {
+		// Our public mapping changed (network switch or NAT rebind). Peers
+		// still hold the old endpoint, so re-register immediately and restart
+		// the punch instead of waiting for the slow cadence.
+		for _, dp := range pm.directPeers {
+			dp.lastLookup = time.Time{}
+			dp.lastProbe = time.Time{}
+		}
+		for _, l := range pm.relayLinks {
+			l.nextRegister = time.Time{}
+		}
+	}
 	if s := addr.String(); s != pm.lastMapLog {
 		pm.lastMapLog = s
 		log.Printf("path %s: relay-observed mapping=%s nat=%s", pm.nid, s, pm.natType)
