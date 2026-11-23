@@ -55,10 +55,10 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/s-shidi/snet-client:v1.2.4
+ghcr.io/s-shidi/snet-client:latest
 ```
 
-镜像 tag 统一为 `vX.Y.Z`（与 Git tag 相同，带 `v` 前缀）；`latest` 跟随最新稳定版。自 `v1.2.4` 起不再提供无 `v` 前缀的镜像 tag，旧 compose 里的 `snet-client:1.2.3` 需改为 `snet-client:v1.2.4`。
+镜像 tag 统一为 `vX.Y.Z`（与 Git tag 相同，带 `v` 前缀），`latest` 跟随最新稳定版。生产环境建议固定版本，例如 `ghcr.io/s-shidi/snet-client:v1.2.4`。自 `v1.2.4` 起不再提供无 `v` 前缀的镜像 tag，旧 compose 里的 `snet-client:1.2.3` 需改为 `snet-client:v1.2.4`。
 
 Web 控制台：
 
