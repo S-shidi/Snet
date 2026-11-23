@@ -13,12 +13,22 @@ import (
 // VPN is active, which disabled the whole IPv6 direct path on Android.
 var advertisedIPv6 atomic.Value
 
+// lastAdvertisedLog remembers the last injected value so the log only reports
+// changes (the Android shell refreshes it every 10s).
+var lastAdvertisedLog atomic.Value
+
 var lastV6Dump atomic.Int64
 
 // SetAdvertisedIPv6 overrides the address published as this node's IPv6 direct
 // endpoint. Empty clears the override and falls back to interface enumeration.
 func SetAdvertisedIPv6(addr string) {
-	advertisedIPv6.Store(strings.TrimSpace(addr))
+	addr = strings.TrimSpace(addr)
+	advertisedIPv6.Store(addr)
+	prev, _ := lastAdvertisedLog.Load().(string)
+	if addr != prev {
+		lastAdvertisedLog.Store(addr)
+		log.Printf("ipv6: platform override=%q", addr)
+	}
 }
 
 func advertisedIPv6Value() string {

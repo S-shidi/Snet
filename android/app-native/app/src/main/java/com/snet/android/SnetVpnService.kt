@@ -35,6 +35,7 @@ class SnetVpnService : VpnService() {
     private val watchdog = Handler(Looper.getMainLooper())
     private var inactiveChecks = 0
     private var v6Ticks = 0
+    private var lastLocalV6 = ""
     private val watchdogRunnable = object : Runnable {
         override fun run() {
             if (!isRunning) return
@@ -278,10 +279,19 @@ class SnetVpnService : VpnService() {
                     val raw = ip.address
                     if (raw.isNotEmpty() && (raw[0].toInt() and 0xfe) == 0xfc) continue // ULA fc00::/7
                     val host = ip.hostAddress ?: continue
+                    if (host != lastLocalV6) {
+                        lastLocalV6 = host
+                        Log.i(TAG, "local IPv6: $host")
+                    }
                     SnetCore.setLocalIPv6(host)
                     return
                 }
             }
+            if (lastLocalV6 != "") {
+                lastLocalV6 = ""
+                Log.i(TAG, "local IPv6: none (underlying network)")
+            }
+            SnetCore.setLocalIPv6("")
         } catch (e: Exception) {
             Log.w(TAG, "local IPv6 lookup failed", e)
         }
