@@ -1,0 +1,17 @@
+# SNET firmware web entry points.
+#
+# The router image uses nginx (not uhttpd). The default page must be the Snet
+# console, and the stock OpenWrt LuCI UI must not be reachable.
+location = / {
+    return 302 /snet/;
+}
+location = /index.html {
+    return 302 /snet/;
+}
+# Block LuCI (its locations are included from luci.locations).
+location ^~ /cgi-bin/ {
+    return 404;
+}
+location ^~ /luci-static/ {
+    return 404;
+}

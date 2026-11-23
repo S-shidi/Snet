@@ -26,7 +26,8 @@ for c in go python3 curl tar npm npx debugfs e2fsck sha256sum; do need "$c"; don
 echo "==> building SNET armv7 overlay"
 rm -rf "$WORK"
 mkdir -p "$WORK/overlay/usr/bin" "$WORK/overlay/www/snet" \
-  "$WORK/overlay/etc/init.d" "$WORK/overlay/etc/uci-defaults" "$WORK/overlay/etc/config" "$CACHE" "$OUT"
+  "$WORK/overlay/etc/init.d" "$WORK/overlay/etc/uci-defaults" "$WORK/overlay/etc/config" \
+  "$WORK/overlay/etc/nginx/conf.d" "$CACHE" "$OUT"
 LDFLAGS="-s -w -X github.com/S-shidi/snet/shared/buildinfo.Version=${VERSION} -X github.com/S-shidi/snet/shared/buildinfo.Commit=wankecloud-repack -X github.com/S-shidi/snet/shared/buildinfo.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 (
   cd "$ROOT"
@@ -43,6 +44,7 @@ cp "$ROOT/shared/web/index.html" "$ROOT/shared/web/styles.css" "$ROOT/shared/web
 cp "$HW_DIR/files/etc/init.d/snetd" "$WORK/overlay/etc/init.d/snetd"
 cp "$HW_DIR/files/etc/uci-defaults/99-snet-setup.sh" "$WORK/overlay/etc/uci-defaults/99-snet-setup.sh"
 cp "$HW_DIR/files/etc/config/uhttpd" "$WORK/overlay/etc/config/uhttpd"
+cp "$HW_DIR/files/etc/nginx/conf.d/00-snet.locations" "$WORK/overlay/etc/nginx/conf.d/00-snet.locations"
 chmod 0755 "$WORK/overlay/usr/bin/snetd" "$WORK/overlay/usr/bin/snetctl" \
   "$WORK/overlay/etc/init.d/snetd" "$WORK/overlay/etc/uci-defaults/99-snet-setup.sh"
 
@@ -99,6 +101,7 @@ write $WORK/overlay/www/snet/snet-logo.svg /www/snet/snet-logo.svg
 write $WORK/overlay/etc/init.d/snetd /etc/init.d/snetd
 write $WORK/overlay/etc/uci-defaults/99-snet-setup.sh /etc/uci-defaults/99-snet-setup.sh
 write $WORK/overlay/etc/config/uhttpd /etc/config/uhttpd
+write $WORK/overlay/etc/nginx/conf.d/00-snet.locations /etc/nginx/conf.d/00-snet.locations
 set_inode_field /usr/bin/snetd mode 0100755
 set_inode_field /usr/bin/snetctl mode 0100755
 set_inode_field /www/snet/app.js mode 0100644
@@ -108,6 +111,7 @@ set_inode_field /www/snet/snet-logo.svg mode 0100644
 set_inode_field /etc/init.d/snetd mode 0100755
 set_inode_field /etc/uci-defaults/99-snet-setup.sh mode 0100755
 set_inode_field /etc/config/uhttpd mode 0100644
+set_inode_field /etc/nginx/conf.d/00-snet.locations mode 0100644
 DEBUGFS
 debugfs -w -f "$WORK/debugfs.cmds" "$WORK/rootfs.ext4" >/dev/null
 e2fsck -f -y "$WORK/rootfs.ext4" >/dev/null || true
@@ -134,6 +138,7 @@ Base: shiyu1314/openwrt-onecloud 25.12 (pinned burn image)
 AmlImg: hzyitc/AmlImg $AMLIMG_COMMIT
 Network: eth0 DHCP client, hostname=snet; built-in DHCP server disabled.
 Root URL: https://<device-ip>/ redirects to https://<device-ip>/snet/
+The stock OpenWrt/LuCI web UI is disabled; Snet is the only web console.
 
 Physical reset:
   short press (<3s)  reboot
