@@ -203,6 +203,13 @@ func Stop() string {
 // GetStatus returns the daemon's /ctl/status JSON. When the daemon has not
 // started it returns a JSON object with an error field instead of an empty
 // string, so Kotlin can display a useful message.
+// SetLocalIPv6 injects the underlying network's global IPv6 address. Android
+// reports it through ConnectivityManager because Go's interface enumeration
+// can miss it while a VPN is active.
+func SetLocalIPv6(addr string) {
+	client.SetAdvertisedIPv6(addr)
+}
+
 func GetStatus() string {
 	mu.Lock()
 	running := daemon != nil

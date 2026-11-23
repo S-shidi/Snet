@@ -17,4 +17,6 @@ object SnetCore {
     fun clearTun(): String = Snetbind.clearAndroidTun()
 
     fun getStatus(): String = Snetbind.getStatus()
+
+    fun setLocalIPv6(addr: String) = Snetbind.setLocalIPv6(addr)
 }

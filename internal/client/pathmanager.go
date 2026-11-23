@@ -908,9 +908,13 @@ func (pm *PathManager) maintainDirect(now time.Time) {
 	if dconn == nil {
 		dconn = pm.ensureDirectConn(false)
 	}
-	if needV6 && hasV6 && dconn6 == nil {
+	// Open the v6 socket whenever a peer advertises a v6 candidate, even if
+	// local enumeration found no address: the OS picks the source and an
+	// injected address (Android) may arrive later.
+	if needV6 && dconn6 == nil {
 		dconn6 = pm.ensureDirectConn(true)
 	}
+	hasV6 = dconn6 != nil || localV6 != ""
 	if dconn == nil && dconn6 == nil {
 		return
 	}
@@ -1508,6 +1512,9 @@ func isPublicIPv6(ip net.IP) bool {
 }
 
 func firstGlobalIPv6() string {
+	if v := advertisedIPv6Value(); v != "" {
+		return v
+	}
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return ""
@@ -1530,6 +1537,7 @@ func firstGlobalIPv6() string {
 			}
 		}
 	}
+	dumpInterfaces()
 	return ""
 }
 

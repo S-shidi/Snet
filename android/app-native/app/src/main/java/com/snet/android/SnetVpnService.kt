@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -18,6 +20,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.io.File
+import java.net.Inet6Address
 
 /**
  * Owns the Android TUN interface and hands its fd to the gomobile daemon.
@@ -31,6 +34,7 @@ class SnetVpnService : VpnService() {
     private var tun: ParcelFileDescriptor? = null
     private val watchdog = Handler(Looper.getMainLooper())
     private var inactiveChecks = 0
+    private var v6Ticks = 0
     private val watchdogRunnable = object : Runnable {
         override fun run() {
             if (!isRunning) return
@@ -45,6 +49,11 @@ class SnetVpnService : VpnService() {
                     stopSelf()
                     return
                 }
+            }
+            v6Ticks++
+            if (v6Ticks >= 5) {
+                v6Ticks = 0
+                updateLocalIPv6()
             }
             watchdog.postDelayed(this, 2000)
         }
@@ -101,6 +110,8 @@ class SnetVpnService : VpnService() {
 
         isRunning = true
         inactiveChecks = 0
+        v6Ticks = 0
+        updateLocalIPv6()
         watchdog.removeCallbacks(watchdogRunnable)
         watchdog.postDelayed(watchdogRunnable, 2000)
         Log.i(TAG, "snetd started with TUN fd ${pfd.fd}")
@@ -135,6 +146,8 @@ class SnetVpnService : VpnService() {
         old.close()
         isRunning = true
         inactiveChecks = 0
+        v6Ticks = 0
+        updateLocalIPv6()
         watchdog.removeCallbacks(watchdogRunnable)
         watchdog.postDelayed(watchdogRunnable, 2000)
         Log.i(TAG, "TUN rebuilt with fd ${pfd.fd}")
@@ -244,9 +257,41 @@ class SnetVpnService : VpnService() {
         super.onDestroy()
     }
 
+    /**
+     * The VPN is IPv4-only and Go's interface enumeration can miss the
+     * carrier's global IPv6, so read it from the underlying network and hand it
+     * to the daemon. Without this the node never advertises a v6 endpoint and
+     * every IPv6 direct attempt is skipped.
+     */
+    private fun updateLocalIPv6() {
+        try {
+            val cm = getSystemService(ConnectivityManager::class.java) ?: return
+            for (network in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(network) ?: continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+                val lp = cm.getLinkProperties(network) ?: continue
+                for (link in lp.linkAddresses) {
+                    val ip = link.address
+                    if (ip !is Inet6Address) continue
+                    if (ip.isLoopbackAddress || ip.isLinkLocalAddress) continue
+                    val raw = ip.address
+                    if (raw.isNotEmpty() && (raw[0].toInt() and 0xfe) == 0xfc) continue // ULA fc00::/7
+                    val host = ip.hostAddress ?: continue
+                    SnetCore.setLocalIPv6(host)
+                    return
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "local IPv6 lookup failed", e)
+        }
+    }
+
     private fun stopVpn() {
         watchdog.removeCallbacks(watchdogRunnable)
         inactiveChecks = 0
+        v6Ticks = 0
+        SnetCore.setLocalIPv6("")
         val err = SnetCore.clearTun()
         if (err.isNotEmpty()) {
             Log.w(TAG, "SnetCore.stop: $err")
