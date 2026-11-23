@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
@@ -145,10 +146,24 @@ class SnetVpnService : VpnService() {
             .setSession("Snet")
             .setMtu(1320)
             .setBlocking(false)
+            // The overlay is IPv4-only. Without allowFamily, Android blocks
+            // IPv6 for apps inside an IPv4-only VPN, so the carrier's IPv6
+            // address becomes unreachable and IPv6 direct dials always fail.
+            .allowFamily(OsConstants.AF_INET6)
             .addDnsServer("1.1.1.1")
             .addDnsServer("8.8.8.8")
 
         addConfiguredNetworks(builder)
+
+        // Keep snetd's own transport sockets (relay links, direct candidates,
+        // probes) on the physical network. The ctl API is loopback-only, so
+        // excluding the app from the VPN does not affect the UI or the tunnel.
+        try {
+            builder.addDisallowedApplication(packageName)
+        } catch (e: Exception) {
+            Log.w(TAG, "cannot exclude app from VPN", e)
+        }
+
         return try {
             builder.establish()
         } catch (e: Exception) {
