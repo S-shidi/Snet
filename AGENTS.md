@@ -21,8 +21,9 @@
 Follow `docs/RELEASING.md` for tags, GHCR images, and rollback.
 
 - Client releases publish the Docker image to GHCR before the release is complete:
-  - `ghcr.io/s-shidi/snet-client:X.Y.Z`
+  - `ghcr.io/s-shidi/snet-client:vX.Y.Z`
   - `ghcr.io/s-shidi/snet-client:latest`
+- Docker image tags are always `vX.Y.Z` (with the `v`). Never push a bare `X.Y.Z` image tag.
 - Do not reference private registries, private IPs, server deployment paths, or server secrets in this repository.
 - Do not commit `.env` files, tokens, private keys, WireGuard exports, signing keystores, or generated binaries.
 

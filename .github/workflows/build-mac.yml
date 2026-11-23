@@ -10,6 +10,7 @@ on:
 
 jobs:
   build-mac:
+    if: ${{ !(github.ref_type == 'tag' && contains(github.ref_name, '-')) }}
     runs-on: macos-latest
     permissions:
       contents: write
