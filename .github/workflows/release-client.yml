@@ -109,3 +109,23 @@ jobs:
         with:
           files: Snet-v*-binaries.tar.gz
           fail_on_unmatched_files: true
+
+      - name: Append versioned release notes
+        if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          notes="docs/release-notes-${GITHUB_REF_NAME}.md"
+          if [ ! -f "$notes" ]; then
+            echo "no $notes; leaving generated notes as-is"
+            exit 0
+          fi
+          body="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json body -q .body)"
+          if printf '%s' "$body" | grep -q "release-notes-${GITHUB_REF_NAME}"; then
+            echo "notes already appended"
+            exit 0
+          fi
+          printf '%s\n\n' "$body" > /tmp/release-body.md
+          cat "$notes" >> /tmp/release-body.md
+          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --notes-file /tmp/release-body.md

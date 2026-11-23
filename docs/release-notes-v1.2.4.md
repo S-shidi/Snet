@@ -1,8 +1,4 @@
-# Snet v1.2.4 release notes
-
-Paste the block below into the GitHub Release body for `v1.2.4`.
-
----
+<!-- release-notes-v1.2.4 -->
 
 ## Breaking Change
 
