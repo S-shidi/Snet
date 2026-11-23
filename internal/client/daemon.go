@@ -350,6 +350,9 @@ type Daemon struct {
 	retryStop chan struct{}
 	// routeWake wakes poll loops to reapply routes after a per-route toggle.
 	routeWake chan struct{}
+	// routeSkipLogged remembers the last logged LAN-conflict set per network so
+	// the poll loop only reports a change, not every two seconds.
+	routeSkipLogged map[string]string
 	// androidTunFD holds the TUN file descriptor from VpnService on Android.
 	// When non-zero, bringUp uses NewTunnelFromFD instead of NewTunnel.
 	androidTunFD int
@@ -3919,12 +3922,22 @@ func (d *Daemon) routeEnabledCopy(nid string, routes []protocol.Route) []protoco
 // logSkippedRoutesLocked logs delegated routes that were deliberately not
 // installed because they overlap the host's physical LAN. The per-route
 // conflict is exposed to the UI through routeEnabledCopy; it must not put the
-// whole network into an error state. Caller must hold d.mu.
+// whole network into an error state. The message is only written when the set
+// changes, so the poll loop does not spam the log. Caller must hold d.mu.
 func (d *Daemon) logSkippedRoutesLocked(nid string, skipped []string) {
 	if len(skipped) == 0 {
+		delete(d.routeSkipLogged, nid)
 		return
 	}
-	log.Printf("network %s: 与本地局域网冲突，已跳过: %s", nid, strings.Join(skipped, ", "))
+	sig := strings.Join(skipped, ", ")
+	if d.routeSkipLogged == nil {
+		d.routeSkipLogged = make(map[string]string)
+	}
+	if d.routeSkipLogged[nid] == sig {
+		return
+	}
+	d.routeSkipLogged[nid] = sig
+	log.Printf("network %s: 与本地局域网冲突，已跳过: %s", nid, sig)
 }
 
 // logRelayGatewayRolesLocked reports the subnets this node forwards as the
