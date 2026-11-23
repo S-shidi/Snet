@@ -160,3 +160,27 @@ App 退出时先请求 `/ctl/shutdown`，再清理 launchd job 和残留 `snetd`
 - 关闭窗口直接退出
 - LaunchDaemon 继续负责 `snetd` 的免密启动
 - 如需菜单栏，等待 Wails v3 原生 SystemTray 后再评估
+
+## 9. macOS 26 图标白框
+
+**现象**
+
+在 macOS 26（Tahoe）启动台 / 访达中，Snet 的蓝色图标被缩小，外面多了一圈浅色底板。
+
+**原因**
+
+Tahoe 只原生渲染 Icon Composer 的 `.icon` 图标。只提供旧式 `.icns` 时，系统会检测到图标边缘的透明像素，把旧图标缩小后放进系统生成的浅色底板里。`build/appicon.png` / `icons.icns` 本身是满幅蓝色，但系统仍会这样处理。
+
+**解决方案**
+
+用仓库里的 `build/appicon.icon` 编译出 `Assets.car`，并在 `Info.plist` 声明：
+
+```xml
+<key>CFBundleIconName</key>
+<string>appicon</string>
+```
+
+- 本地 macOS 构建：`wails3` 的 `common:generate:icons` 任务会调用 actool 生成 `build/darwin/Assets.car`，打包任务会把它复制进 `Contents/Resources/`。
+- GitHub Actions：`Build macOS App` 工作流使用 `xcrun actool` 从 `build/appicon.icon` 生成 `Assets.car`。
+- 编译 `.icon` 需要 Xcode 26 / macOS 26 SDK；`Assets.car` 是构建产物，不提交到仓库。
+- `icons.icns` 继续保留，作为 macOS 15 及更早版本的图标和 DMG 卷图标。

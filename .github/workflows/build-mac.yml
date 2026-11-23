@@ -72,6 +72,32 @@ jobs:
           CGO_ENABLED=1 go build -tags desktop,production -trimpath -buildvcs=false \
             -ldflags "-w -s" -o Snet .
 
+      - name: Compile Icon Composer Icon
+        working-directory: ./desktop-mac-v3/build
+        run: |
+          set -euo pipefail
+          # macOS 26 renders the native blue icon only when the bundle contains
+          # an Icon Composer icon stack (Assets.car) and Info.plist declares
+          # CFBundleIconName. Otherwise Tahoe shrinks the legacy .icns onto a
+          # light plate. actool with .icon support ships in Xcode 26.
+          rm -f darwin/Assets.car
+          if ! xcrun actool appicon.icon \
+            --compile darwin \
+            --output-format human-readable-text \
+            --notices --warnings --errors \
+            --output-partial-info-plist "$RUNNER_TEMP/icon-partial.plist" \
+            --app-icon appicon \
+            --include-all-app-icons \
+            --enable-on-demand-resources NO \
+            --development-region en \
+            --target-device mac \
+            --minimum-deployment-target 10.13 \
+            --platform macosx; then
+            echo "actool failed: compiling appicon.icon requires Xcode 26 / macOS 26 SDK." >&2
+            exit 1
+          fi
+          test -f darwin/Assets.car
+
       - name: Manually Assemble .app Bundle
         working-directory: ./desktop-mac-v3
         run: |
@@ -89,6 +115,7 @@ jobs:
           cp ../dist/snetd-darwin-arm64 "$APP_DIR/Contents/Resources/snetd"
           cp scripts/install-daemon.sh "$APP_DIR/Contents/Resources/install-daemon.sh"
           cp build/darwin/icons.icns "$APP_DIR/Contents/Resources/icon.icns"
+          cp build/darwin/Assets.car "$APP_DIR/Contents/Resources/Assets.car"
           chmod +x "$APP_DIR/Contents/Resources/snetd" "$APP_DIR/Contents/Resources/install-daemon.sh"
 
           cat > "$APP_DIR/Contents/Info.plist" <<EOF
@@ -108,6 +135,8 @@ jobs:
               <string>APPL</string>
               <key>CFBundleIconFile</key>
               <string>icon.icns</string>
+              <key>CFBundleIconName</key>
+              <string>appicon</string>
               <key>CFBundleShortVersionString</key>
               <string>${{ steps.vars.outputs.VERSION }}</string>
               <key>CFBundleVersion</key>
