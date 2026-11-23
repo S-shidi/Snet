@@ -1811,7 +1811,7 @@ function openSettingsModal() {
       <section class="settings-group">
         <div class="settings-group-head"><h3>关于</h3><span>Snet</span></div>
         <div class="settings-card settings-about">
-          <p class="about-intro">无需公网 IP 的私有 WireGuard 网络，优先直连，必要时自动中继。</p>
+          <p class="about-intro">构建独属于您的私域网络，无论在何处，都能轻松直达家庭与公司网络，享受高速、安全、隐私的网络</p>
           <div class="about-meta">
             <span>作者 <b>S.shidi</b></span>
             <span>邮箱 <a href="mailto:s.shidi@gmail.com">s.shidi@gmail.com</a></span>
