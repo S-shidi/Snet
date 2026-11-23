@@ -2648,6 +2648,7 @@ func (d *Daemon) publishDirectEndpoints(nid string, api *apiClient, token, nodeI
 	}
 	d.directPub[nid] = sig
 	d.mu.Unlock()
+	log.Printf("path %s: publish direct endpoints v4=%q v6=%q nat=%s", nid, ep4, ep6, nat)
 	if err := api.SetDirectEndpointsFor(nid, nodeID, token, ep4, ep6, nat); err != nil {
 		log.Printf("publish direct endpoints %s: %v", nid, err)
 		d.mu.Lock()
