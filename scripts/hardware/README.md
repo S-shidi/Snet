@@ -65,8 +65,17 @@ dist/hardware/<device>/
 - `snetd` / `snetctl`
 - `shared/web` 构建出的 `/www/snet`
 - `/etc/init.d/snetd` procd 服务
-- `/etc/config/uhttpd` 默认首页
+- `/etc/config/uhttpd` 与 `/etc/config/nginx` 默认首页与 `snet.lan` 域名支持
+- `/etc/config/dhcp` 与 `/etc/dnsmasq.conf` 预置 `snet.lan` 静态解析
 - `/etc/uci-defaults/99-snet-setup.sh` 首次启动初始化
+
+## 访问控制台
+
+```text
+插上网线，在浏览器输入 http://snet.lan 即可访问 SNET 控制台。
+```
+
+如果 `snet.lan` 无法访问，请检查你的主路由器 DNS 设置，或手动使用设备 IP 访问。
 
 Image Builder 缓存默认在：
 

@@ -44,6 +44,9 @@ cp "$ROOT/shared/web/index.html" "$ROOT/shared/web/styles.css" "$ROOT/shared/web
 cp "$HW_DIR/files/etc/init.d/snetd" "$WORK/overlay/etc/init.d/snetd"
 cp "$HW_DIR/files/etc/uci-defaults/99-snet-setup.sh" "$WORK/overlay/etc/uci-defaults/99-snet-setup.sh"
 cp "$HW_DIR/files/etc/config/uhttpd" "$WORK/overlay/etc/config/uhttpd"
+cp "$HW_DIR/files/etc/config/dhcp" "$WORK/overlay/etc/config/dhcp"
+cp "$HW_DIR/files/etc/config/nginx" "$WORK/overlay/etc/config/nginx"
+cp "$HW_DIR/files/etc/dnsmasq.conf" "$WORK/overlay/etc/dnsmasq.conf"
 cp "$HW_DIR/files/etc/nginx/conf.d/00-snet.locations" "$WORK/overlay/etc/nginx/conf.d/00-snet.locations"
 chmod 0755 "$WORK/overlay/usr/bin/snetd" "$WORK/overlay/usr/bin/snetctl" \
   "$WORK/overlay/etc/init.d/snetd" "$WORK/overlay/etc/uci-defaults/99-snet-setup.sh"
@@ -92,6 +95,9 @@ rm /www/snet/styles.css
 rm /www/snet/snet-logo.svg
 rm /etc/init.d/snetd
 rm /etc/uci-defaults/99-snet-setup.sh
+rm /etc/config/dhcp
+rm /etc/config/nginx
+rm /etc/dnsmasq.conf
 write $WORK/overlay/usr/bin/snetd /usr/bin/snetd
 write $WORK/overlay/usr/bin/snetctl /usr/bin/snetctl
 write $WORK/overlay/www/snet/app.js /www/snet/app.js
@@ -101,6 +107,9 @@ write $WORK/overlay/www/snet/snet-logo.svg /www/snet/snet-logo.svg
 write $WORK/overlay/etc/init.d/snetd /etc/init.d/snetd
 write $WORK/overlay/etc/uci-defaults/99-snet-setup.sh /etc/uci-defaults/99-snet-setup.sh
 write $WORK/overlay/etc/config/uhttpd /etc/config/uhttpd
+write $WORK/overlay/etc/config/dhcp /etc/config/dhcp
+write $WORK/overlay/etc/config/nginx /etc/config/nginx
+write $WORK/overlay/etc/dnsmasq.conf /etc/dnsmasq.conf
 write $WORK/overlay/etc/nginx/conf.d/00-snet.locations /etc/nginx/conf.d/00-snet.locations
 set_inode_field /usr/bin/snetd mode 0100755
 set_inode_field /usr/bin/snetctl mode 0100755
@@ -111,6 +120,9 @@ set_inode_field /www/snet/snet-logo.svg mode 0100644
 set_inode_field /etc/init.d/snetd mode 0100755
 set_inode_field /etc/uci-defaults/99-snet-setup.sh mode 0100755
 set_inode_field /etc/config/uhttpd mode 0100644
+set_inode_field /etc/config/dhcp mode 0100644
+set_inode_field /etc/config/nginx mode 0100644
+set_inode_field /etc/dnsmasq.conf mode 0100644
 set_inode_field /etc/nginx/conf.d/00-snet.locations mode 0100644
 DEBUGFS
 debugfs -w -f "$WORK/debugfs.cmds" "$WORK/rootfs.ext4" >/dev/null
@@ -137,7 +149,8 @@ Version: $VERSION
 Base: shiyu1314/openwrt-onecloud 25.12 (pinned burn image)
 AmlImg: hzyitc/AmlImg $AMLIMG_COMMIT
 Network: eth0 DHCP client, hostname=snet; built-in DHCP server disabled.
-Root URL: https://<device-ip>/ redirects to https://<device-ip>/snet/
+Console access: 插上网线，在浏览器输入 http://snet.lan 即可访问 SNET 控制台。
+如果 snet.lan 无法访问，请检查你的主路由器 DNS 设置，或手动使用设备 IP 访问。
 The stock OpenWrt/LuCI web UI is disabled; Snet is the only web console.
 
 Physical reset:

@@ -78,7 +78,7 @@ bash scripts/hardware/build-firmware.sh --device NanoPi-R5C
 bash scripts/hardware/build-firmware.sh --all
 ```
 
-固件会注入 `snetd`、`snetctl`、共享 Web UI 和 procd 服务。
+固件会注入 `snetd`、`snetctl`、共享 Web UI、procd 服务以及预置域名 `snet.lan`（插上网线，在浏览器输入 `http://snet.lan` 即可访问 SNET 控制台；如果 `snet.lan` 无法访问，请检查你的主路由器 DNS 设置，或手动使用设备 IP 访问）。
 
 ## 从源码构建
 
