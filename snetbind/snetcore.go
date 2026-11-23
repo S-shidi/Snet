@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/S-shidi/snet/internal/client"
+	"github.com/S-shidi/snet/shared/buildinfo"
 )
 
 const (
@@ -31,6 +33,7 @@ const (
 
 var (
 	mu        sync.Mutex
+	logOnce   sync.Once
 	daemon    *client.Daemon
 	ctlToken  string
 	proxySrv  *http.Server
@@ -43,6 +46,14 @@ var (
 func Start(configDir string, tunFD int32, ctlPort int32) string {
 	mu.Lock()
 	defer mu.Unlock()
+
+	// gomobile does not install a log writer, so /ctl/logs and the in-app
+	// diagnostic export would be empty. Keep an in-memory tail and still write
+	// to stderr (logcat).
+	logOnce.Do(func() {
+		log.SetOutput(io.MultiWriter(client.LogWriter(), os.Stderr))
+	})
+	log.Printf("snetd %s starting (android, tun fd %d, ctl port %d)", buildinfo.String(), tunFD, ctlPort)
 
 	if configDir == "" {
 		return "配置目录不能为空"

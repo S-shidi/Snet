@@ -91,6 +91,7 @@ jobs:
             -target=android/arm64 \
             -androidapi 26 \
             -javapkg=com.snet.android \
+            -ldflags="-X github.com/S-shidi/snet/shared/buildinfo.Version=$(cat VERSION) -X github.com/S-shidi/snet/shared/buildinfo.Commit=$(git rev-parse --short HEAD) -X github.com/S-shidi/snet/shared/buildinfo.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o android/app-native/app/libs/snet.aar \
             ./snetbind
 
