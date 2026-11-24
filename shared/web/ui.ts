@@ -2341,11 +2341,9 @@ function openSettingsModal() {
           if (!latestRelease) {
             toast("无法连接更新服务器，请稍后重试", "err");
           } else if (hasNewClientVersion()) {
-            if (canSelfUpgradeClient()) {
-              await triggerClientUpgrade(true);
-            } else {
-              toast(`发现新版本 v${latestRelease.version}`);
-            }
+            toast(canSelfUpgradeClient()
+              ? `发现新版本 v${latestRelease.version}，可点击「立即升级」`
+              : `发现新版本 v${latestRelease.version}，请按下方命令升级`);
           } else {
             toast(`当前已是最新版本 (v${status?.version || latestRelease.version})`);
           }
@@ -2430,10 +2428,14 @@ function openSettingsModal() {
         btn.disabled = true;
         try {
           const text = await backend.logs();
-          // Android WebView does not save <a download> blobs; hand the text to
-          // the native shell, which writes a file and opens the share sheet.
+          // Desktop shells write the file themselves so the UI can show the
+          // exact path; Android WebView hands it to the share sheet, which does
+          // not save <a download> blobs.
           const bridge = (globalThis as any).SnetAndroid;
-          if (bridge && typeof bridge.saveDiagnosticLog === "function") {
+          if (backend.saveLog) {
+            const path = await backend.saveLog(text);
+            toast(path ? `诊断日志已保存到 ${path}` : "诊断日志已保存到下载目录");
+          } else if (bridge && typeof bridge.saveDiagnosticLog === "function") {
             if (!bridge.saveDiagnosticLog(text)) throw new Error("保存失败");
             toast("已生成日志，请在分享面板中选择保存位置");
           } else {
@@ -2444,7 +2446,7 @@ function openSettingsModal() {
             a.download = "snet-diagnostic.log";
             a.click();
             URL.revokeObjectURL(url);
-            toast("诊断日志已导出");
+            toast("诊断日志已导出到浏览器下载目录（snet-diagnostic.log）");
           }
         } catch (err) {
           toast(`导出日志失败: ${err}`, "err");
@@ -2917,14 +2919,14 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       </div>
       <div class="member-card-body">
         <div class="member-card-line"><span class="member-card-label">虚拟 IP</span><code>${esc(nd.ip || "-")}</code>${editIP}</div>
-        <div class="member-card-line">
+        <div class="member-card-line member-device-line">
           <span class="member-card-label">设备 ID</span>
           <button type="button" class="member-device-id" data-copy-device-id="${esc(nd.deviceId || "")}" title="${nd.deviceId ? "点击复制设备 ID" : "无设备 ID"}" ${nd.deviceId ? "" : "disabled"}>
             <code>${esc(nd.deviceId || "-")}</code>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="13" height="13" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
           </button>
         </div>
-        <div class="member-card-line">
+        <div class="member-card-line member-device-line">
           <span class="member-card-label">节点 ID</span>
           <button type="button" class="member-device-id" data-copy-node-id="${esc(nd.id || "")}" title="${nd.id ? "点击复制节点 ID" : "无节点 ID"}" ${nd.id ? "" : "disabled"}>
             <code>${esc(nd.id || "-")}</code>
@@ -3382,7 +3384,7 @@ function networkDetailHTML(n: NetInfo): string {
   const nat = n.relayPath?.natType || self?.natType || "unknown";
   const routes = ownerInfo[n.networkId]?.routes ?? r?.routes ?? [];
   const iconInvite = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M16 11h6"/></svg>';
-  const iconMore = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
+  const iconMore = '<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>';
   const snetServUrl = String(n.snetServUrl || "").trim();
   const customSnetServ = !!snetServUrl && !isOfficialServer(snetServUrl);
   const snetServLabel = (() => {
@@ -3392,7 +3394,7 @@ function networkDetailHTML(n: NetInfo): string {
     ? `<span class="pill custom-snet-serv" title="协调服务：${esc(snetServUrl)}">${esc(snetServLabel)}</span>`
     : "";
   const more = `<div class="detail-more">
-    <button type="button" class="btn ghost sm detail-action-icon" id="detail-more-btn" title="更多" aria-label="更多">${iconMore}</button>
+    <button type="button" class="btn ghost sm detail-action-label" id="detail-more-btn" title="更多" aria-label="更多">${iconMore}<span>更多</span></button>
     <div class="detail-more-menu" id="detail-more-menu" hidden>
       <button type="button" data-detail-act="detail">网络详情</button>
       ${canManage ? '<button type="button" data-detail-act="wg-export">生成 WireGuard 配置</button>' : ""}
@@ -3413,7 +3415,7 @@ function networkDetailHTML(n: NetInfo): string {
             <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
             <span class="slider"></span>
           </label>
-          ${canManage ? `<button type="button" class="btn ghost sm detail-action-icon" id="detail-invite" data-detail-act="invite" title="邀请" aria-label="邀请">${iconInvite}</button>` : ""}
+          ${canManage ? `<button type="button" class="btn ghost sm detail-action-label" id="detail-invite" data-detail-act="invite" title="邀请" aria-label="邀请">${iconInvite}<span>邀请</span></button>` : ""}
           ${more}
         </div>
       </div>

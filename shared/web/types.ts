@@ -237,6 +237,8 @@ export interface Backend {
   poke(target: string): Promise<void>;
   /** Fetch recent daemon diagnostic logs */
   logs(): Promise<string>;
+  /** Save diagnostic logs to the local filesystem and return the path */
+  saveLog?(text: string): Promise<string>;
   /** Ensure daemon is running (Desktop only, Web returns error) */
   ensureDaemon(): Promise<void>;
   /** Desktop supervisor state (Windows Wails only) */

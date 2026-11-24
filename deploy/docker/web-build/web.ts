@@ -238,6 +238,22 @@ const backend: Backend = {
     return res.text();
   },
 
+  async saveLog(text: string): Promise<string> {
+    if (!isWailsDesktop()) throw new Error("当前环境不支持保存日志到本地");
+    const res = await fetch("/desktop/save-log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const body = await res.text();
+    if (!res.ok) throw new Error(body || ("保存日志失败: HTTP " + res.status));
+    try {
+      return String(JSON.parse(body)?.path || "");
+    } catch {
+      return "";
+    }
+  },
+
   async ensureDaemon(): Promise<void> {
     if (!isWailsDesktop()) {
       throw new Error("Web 版无法管理后台服务，请手动启动 snetd");

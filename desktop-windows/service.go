@@ -291,6 +291,27 @@ func (p *ctlProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(p.service.UpgradeStatus())
 		return
 	}
+	if r.URL.Path == "/desktop/save-log" && r.Method == http.MethodPost {
+		var req struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Text == "" {
+			http.Error(w, "日志内容为空", http.StatusBadRequest)
+			return
+		}
+		path, err := saveDiagnosticLog(req.Text)
+		if err != nil {
+			http.Error(w, "保存日志失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"path": path})
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/ctl/") {
 		p.next.ServeHTTP(w, r)
 		return
@@ -303,4 +324,23 @@ func (p *ctlProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Header.Set("X-Ctl-Token", token)
 	r.Header.Del("X-Snet-Web")
 	p.proxy.ServeHTTP(w, r)
+}
+
+// saveDiagnosticLog writes the exported log to the user's Downloads folder so
+// the UI can tell the user exactly where it landed.
+func saveDiagnosticLog(text string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, "Downloads")
+	if st, statErr := os.Stat(dir); statErr != nil || !st.IsDir() {
+		dir = os.TempDir()
+	}
+	name := "snet-diagnostic-" + time.Now().Format("20060102-150405") + ".log"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
