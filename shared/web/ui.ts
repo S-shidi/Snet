@@ -321,7 +321,13 @@ function startDesktopUpgradePolling(): void {
     try {
       const st = await backend.desktopUpgradeStatus();
       applyUpgradeProgress(st);
-      if (st.state === "error" || st.state === "idle") {
+      if (st.state === "error") {
+        toast(st.error || "升级失败，请在设置中手动下载安装", "err");
+        if (desktopUpgradeTimer !== null) {
+          window.clearInterval(desktopUpgradeTimer);
+          desktopUpgradeTimer = null;
+        }
+      } else if (st.state === "idle") {
         if (desktopUpgradeTimer !== null) {
           window.clearInterval(desktopUpgradeTimer);
           desktopUpgradeTimer = null;
@@ -344,7 +350,7 @@ function startDesktopUpgradePolling(): void {
   }, 250);
 }
 
-async function triggerClientUpgrade(confirmFirst = true): Promise<void> {
+async function triggerClientUpgrade(): Promise<void> {
   if (!latestRelease || !hasNewClientVersion()) {
     toast("当前已是最新版本");
     return;
@@ -354,13 +360,11 @@ async function triggerClientUpgrade(confirmFirst = true): Promise<void> {
     renderAboutUpdateState(document);
     return;
   }
-  if (confirmFirst) {
-    const ok = await confirmDialog(
-      "发现新版本",
-      `发现新版本 v${targetVer}，是否立即升级？`,
-    );
-    if (!ok) return;
-  }
+
+  // Start directly: the upgrade button is already an explicit confirmation,
+  // and a nested confirm dialog would replace the settings modal that hosts
+  // the progress box, leaving the user with no status while the upgrade runs.
+  toast("正在后台下载更新，请保持 Snet 运行");
 
   const assetUrl = currentPlatformAssetUrl();
   if (isAndroidClient()) {
@@ -2368,7 +2372,7 @@ function openSettingsModal() {
 
       const upgradeBtn = body.querySelector<HTMLButtonElement>("#btn-do-upgrade");
       upgradeBtn?.addEventListener("click", async () => {
-        await triggerClientUpgrade(true);
+        await triggerClientUpgrade();
       });
 
       const copyDockerBtn = body.querySelector<HTMLButtonElement>("#btn-copy-docker-cmd");
@@ -3840,9 +3844,6 @@ function bindEvents() {
   $("#update-banner-link")?.addEventListener("click", (e) => {
     e.preventDefault();
     openSettingsModal();
-    if (canSelfUpgradeClient() && hasNewClientVersion()) {
-      void triggerClientUpgrade(true);
-    }
   });
   $("#empty-create")?.addEventListener("click", openCreateModal);
   $("#empty-join")?.addEventListener("click", openJoinModal);
