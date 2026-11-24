@@ -752,15 +752,15 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
       </div>
       <div class="net-side">
         <span class="pill ${cls}">${state}</span>
+        <div class="net-menu-wrap">
+          <button class="net-more" data-act="more" title="更多操作" aria-haspopup="menu">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+          </button>
+        </div>
         <label class="switch" title="${gone ? "该网络已删除" : linked ? "断开该网络" : "连接该网络"}">
           <input type="checkbox" data-act="toggle" ${n.active ? "checked" : ""} ${gone ? "disabled" : ""} />
           <span class="slider"></span>
         </label>
-        <div class="net-menu-wrap">
-          <button class="net-more" data-act="more" title="更多操作" aria-haspopup="menu">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
-          </button>
-        </div>
       </div>
     </div>
     ${err}
@@ -3428,12 +3428,12 @@ function networkDetailHTML(n: NetInfo): string {
         <div class="detail-title">${esc(n.name || n.networkId)}</div>
         ${serverBadge}
         <div class="detail-head-actions">
-          <label class="switch detail-conn-switch" title="连接 / 断开">
+          ${canManage ? `<button type="button" class="btn ghost sm detail-action-label" id="detail-invite" data-detail-act="invite" title="邀请" aria-label="邀请">${iconInvite}<span>邀请</span></button>` : ""}
+          ${more}
+          <label class="switch detail-conn-switch" title="连接 / 断开" aria-label="连接 / 断开">
             <input id="detail-net-toggle" type="checkbox" ${n.active ? "checked" : ""} ${n.serverState === "gone" ? "disabled" : ""} />
             <span class="slider"></span>
           </label>
-          ${canManage ? `<button type="button" class="btn ghost sm detail-action-label" id="detail-invite" data-detail-act="invite" title="邀请" aria-label="邀请">${iconInvite}<span>邀请</span></button>` : ""}
-          ${more}
         </div>
       </div>
       <div class="detail-meta-line">
