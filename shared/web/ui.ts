@@ -1295,22 +1295,28 @@ async function openNetworkSettings(nid: string) {
 
 /* ── Subnet route modal ───────────────────────────────────────── */
 async function openSubnetRouteModal(nid: string) {
-  const st = await backend.status();
+  const st = status ?? await backend.status();
   const net = (st?.networks ?? []).find((n) => n.networkId === nid);
   const canManage = !!net && canManageNetwork(net);
 
   // Owner view: the delegated relay routes of the network plus the nodes
-  // that can be picked as the gateway for a delegated subnet.
+  // that can be picked as the gateway for a delegated subnet. Use the cached
+  // ownerInfo snapshot when available so the modal opens immediately.
   let routes: RelayRoute[] = [];
   let nodes: NetNode[] = [];
   if (canManage) {
-    try {
-      const info = await backend.netinfo(nid);
-      ownerInfo[nid] = info;
+    let info: NetInfoDetail | undefined = ownerInfo[nid];
+    if (!info) {
+      try {
+        info = await backend.netinfo(nid);
+        ownerInfo[nid] = info;
+      } catch {
+        /* fall back to the peer snapshot below */
+      }
+    }
+    if (info) {
       routes = info.routes ?? [];
       nodes = (info.nodes ?? []) as unknown as NetNode[];
-    } catch {
-      /* fall back to the peer snapshot below */
     }
   }
   if (!nodes.length) {
@@ -1801,41 +1807,75 @@ async function openTransferModal(nid: string) {
     toast("当前平台不支持移交网络", "err");
     return;
   }
-  let detail: NetInfoDetail;
-  try {
-    detail = await backend.netinfo(nid);
-  } catch (err) {
-    toast(String(err), "err");
-    return;
-  }
   const selfIP = mine.ip;
   const selfDevice = status?.deviceId;
-  const targets = (detail.nodes ?? []).filter((nd) =>
-    !!nd.deviceId && nd.ip !== selfIP && nd.deviceId !== selfDevice && String(nd.role || "").toLowerCase() !== "owner");
-  if (!targets.length) {
-    toast("网内没有可接收创建者身份的设备", "err");
-    return;
-  }
-  const options = targets
-    .map((nd) => `<option value="${esc(nd.id)}">${esc(deviceLabelText(nd))} · ${esc(nd.ip)}${nd.online ? "" : "（离线）"}</option>`)
-    .join("");
+  const filterTargets = (nodes: ReadonlyArray<Partial<NetNode>> | undefined): NetNode[] =>
+    ((nodes ?? []) as NetNode[]).filter((nd) =>
+      !!nd.deviceId &&
+      !nd.isHub &&
+      nd.ip !== selfIP &&
+      nd.deviceId !== selfDevice &&
+      String(nd.role || "").toLowerCase() !== "owner");
+  const buildOptions = (targets: NetNode[]): string =>
+    targets
+      .map((nd) => `<option value="${esc(nd.id)}">${esc(deviceLabelText(nd))} · ${esc(nd.ip)}${nd.online ? "" : "（离线）"}</option>`)
+      .join("");
+
+  const cachedNodes = (ownerInfo[nid]?.nodes as unknown as NetNode[] | undefined) ?? peerDetails[nid]?.peers;
+  const initialTargets = filterTargets(cachedNodes);
+  const initialOptions = initialTargets.length
+    ? buildOptions(initialTargets)
+    : `<option value="">正在加载可移交设备…</option>`;
+
+  // Open the modal immediately using cached member data so clicking "移交网络"
+  // responds on the same frame; refresh from the server in the background.
   openModal({
     title: "移交网络",
     body: `<p class="hint">选择接收「创建者」身份的设备，移交后本设备变为普通成员。</p>
       <div class="form-field">
         <label for="transfer-target">目标设备</label>
-        <select id="transfer-target" class="form-control">${options}</select>
+        <select id="transfer-target" class="form-control" ${initialTargets.length ? "" : "disabled"}>${initialOptions}</select>
       </div>
       <p class="msg" id="transfer-result"></p>`,
-    footer: `<button data-close class="btn ghost">取消</button><button id="transfer-submit" class="btn">确认移交</button>`,
+    footer: `<button data-close class="btn ghost">取消</button><button id="transfer-submit" class="btn" ${initialTargets.length ? "" : "disabled"}>确认移交</button>`,
     onBody: (body) => {
       body.querySelector("[data-close]")?.addEventListener("click", closeModal);
+      const sel = body.querySelector<HTMLSelectElement>("#transfer-target")!;
+      const result = body.querySelector<HTMLElement>("#transfer-result")!;
       const submit = body.querySelector<HTMLButtonElement>("#transfer-submit")!;
+      let submitting = false;
+
+      void backend.netinfo(nid).then((detail) => {
+        ownerInfo[nid] = detail;
+        if (submitting || !body.isConnected) return;
+        const freshTargets = filterTargets(detail.nodes as unknown as NetNode[] | undefined);
+        if (!freshTargets.length) {
+          sel.innerHTML = `<option value="">暂无可接收创建者身份的设备</option>`;
+          sel.disabled = true;
+          submit.disabled = true;
+          result.className = "msg err";
+          result.textContent = "网内没有可接收创建者身份的设备";
+          return;
+        }
+        const prev = sel.value;
+        sel.innerHTML = buildOptions(freshTargets);
+        if (prev && freshTargets.some((nd) => nd.id === prev)) {
+          sel.value = prev;
+        }
+        sel.disabled = false;
+        submit.disabled = false;
+      }).catch((err) => {
+        if (submitting || !body.isConnected || initialTargets.length) return;
+        sel.innerHTML = `<option value="">加载失败</option>`;
+        result.className = "msg err";
+        result.textContent = `获取成员列表失败: ${String(err).replace(/^Error:\s*/, "")}`;
+      });
+
       submit.addEventListener("click", async () => {
-        const sel = body.querySelector<HTMLSelectElement>("#transfer-target")!;
-        const result = body.querySelector<HTMLElement>("#transfer-result")!;
         if (!sel.value) return;
+        submitting = true;
         submit.disabled = true;
+        sel.disabled = true;
         result.className = "msg";
         result.textContent = "移交中…";
         try {
@@ -1844,8 +1884,10 @@ async function openTransferModal(nid: string) {
           toast("已移交网络创建者身份");
           await refresh();
         } catch (err) {
+          submitting = false;
           result.className = "msg err";
           result.textContent = `移交失败: ${String(err).replace(/^Error:\s*/, "").replace(/^server \d+:\s*/, "")}`;
+          sel.disabled = false;
           submit.disabled = false;
         }
       });
@@ -3212,20 +3254,27 @@ async function leaveNetworkFromDetail(nid: string) {
 }
 
 async function openNetworkDetailModal(nid: string) {
-  try {
-    const r = await backend.netinfo(nid);
-    // The pairing code is never exposed to the user: redact it from the
-    // raw debug view.
-    const safe = { ...r, pairingCode: r.pairingCode ? "***" : "" };
-    openModal({
-      title: "网络详情",
-      wide: true,
-      body: `<pre class="json">${esc(JSON.stringify(safe, null, 2))}</pre>`,
-      footer: `<button data-close class="btn ghost">关闭</button>`,
-    });
-  } catch (e) {
-    toast(`获取网络详情失败: ${e}`, "err");
-  }
+  const formatSafe = (r: NetInfoDetail) =>
+    JSON.stringify({ ...r, pairingCode: r.pairingCode ? "***" : "" }, null, 2);
+  const cached = ownerInfo[nid];
+  openModal({
+    title: "网络详情",
+    wide: true,
+    body: `<pre class="json" id="net-detail-json">${cached ? esc(formatSafe(cached)) : "正在加载网络详情…"}</pre>`,
+    footer: `<button data-close class="btn ghost">关闭</button>`,
+    onBody: (body) => {
+      const pre = body.querySelector<HTMLElement>("#net-detail-json");
+      void backend.netinfo(nid).then((r) => {
+        ownerInfo[nid] = r;
+        if (pre && body.isConnected) pre.textContent = formatSafe(r);
+      }).catch((e) => {
+        if (!cached) {
+          if (pre && body.isConnected) pre.textContent = `获取网络详情失败: ${e}`;
+          toast(`获取网络详情失败: ${e}`, "err");
+        }
+      });
+    },
+  });
 }
 
 async function deleteNetworkFromDetail(nid: string, btn: HTMLButtonElement) {

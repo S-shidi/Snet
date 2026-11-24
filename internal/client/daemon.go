@@ -4369,12 +4369,26 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 	}
 	token := nc.Token
 	deviceID := d.cfg.DeviceID
+	cachedOwner := nc.Owner
 	d.mu.Unlock()
 
-	// Always ask for the member-safe view first: it is available to owners and
-	// members and carries the authoritative owner device + node roles. A local
-	// Owner flag can be stale after an admin transfers ownership, in either
-	// direction (old owner -> member, or member -> owner).
+	// Fast path for the owner: avoid two sequential server round-trips on
+	// every owner view/modal open. Fall back to the member-safe endpoint only
+	// when the server rejects owner access (e.g. after ownership transfer).
+	if cachedOwner {
+		if resp, ownerErr := api.NetworkInfo(nid, token); ownerErr == nil {
+			resp.Routes = d.routeEnabledCopy(nid, resp.Routes)
+			return resp, nil
+		} else {
+			var se *httpStatusErr
+			if !errors.As(ownerErr, &se) || (se.code != 401 && se.code != 403) {
+				return resp, wrapNetGone(ownerErr)
+			}
+		}
+	}
+
+	// Member view (or owner demotion fallback): available to owners and
+	// members and carries the authoritative owner device + node roles.
 	resp, err := api.MemberNetworkInfo(nid, token)
 	if err != nil {
 		return resp, wrapNetGone(err)
