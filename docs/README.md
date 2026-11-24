@@ -1,6 +1,6 @@
 # Snet Client 文档
 
-> 文档基线：客户端 `v1.2.6`。服务端、管理台和 relay 文档在独立的私有仓库，不在本仓库。
+> 文档基线：客户端 `v1.2.7`。服务端、管理台和 relay 文档在独立的私有仓库，不在本仓库。
 
 ## 客户端
 
@@ -25,7 +25,7 @@
 | 文档 | 用途 |
 |---|---|
 | [`RELEASING.md`](RELEASING.md) | 客户端与 shared 发布流程、tag、GHCR 与回滚 |
-| [`release-notes-v1.2.6.md`](release-notes-v1.2.6.md) | v1.2.6 发布说明（CI 自动追加到 Release） |
+| [`release-notes-v1.2.7.md`](release-notes-v1.2.7.md) | v1.2.7 发布说明（CI 自动追加到 Release） |
 
 ## 维护规则
 
