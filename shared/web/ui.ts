@@ -56,6 +56,20 @@ function isOfficialServer(addr: string): boolean {
   return !v || v === DEFAULT_SERVER.replace(/\/+$/, "");
 }
 
+function serverKey(addr: string): string {
+  let v = String(addr || "").trim() || DEFAULT_SERVER;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) v = "https://" + v;
+  return v.replace(/\/+$/, "").toLowerCase();
+}
+
+// One owned network per device per SnetServ: the same device may create
+// another network only on a different coordination server.
+function ownedNetworkOnServer(server: string): NetInfo | undefined {
+  const key = serverKey(server);
+  return (status?.networks ?? []).find((n) =>
+    n.owner && n.serverState !== "gone" && serverKey(n.snetServUrl || "") === key);
+}
+
 function compareClientVersions(a: string, b: string): number {
   const norm = (v: string) => v.replace(/^v/i, "").split(/[.-]/).map((x) => Number(x) || 0);
   const av = norm(a), bv = norm(b);
@@ -873,14 +887,13 @@ function renderNetworkTabs(nets: NetInfo[]) {
 }
 
 function openNetworkChooser() {
-  const hasOwner = (status?.networks ?? []).some((n) => n.owner && n.serverState !== "gone");
   openModal({
     title: "添加网络",
     body: `<div class="network-choice">
-      <button type="button" class="network-choice-card${hasOwner ? " disabled" : ""}" id="choice-create" ${hasOwner ? 'aria-disabled="true"' : ""}>
+      <button type="button" class="network-choice-card" id="choice-create">
         <span class="choice-icon">+</span>
         <b>创建新网络</b>
-        <small>${hasOwner ? "你已创建网络，不支持再创建" : "创建一个新的虚拟网络并邀请设备加入"}</small>
+        <small>创建一个新的虚拟网络并邀请设备加入（每个协调服务仅能创建一个）</small>
       </button>
       <button type="button" class="network-choice-card" id="choice-join">
         <span class="choice-icon">→</span>
@@ -891,7 +904,6 @@ function openNetworkChooser() {
     footer: `<button data-close class="btn ghost">取消</button>`,
     onBody: (body) => {
       body.querySelector("#choice-create")?.addEventListener("click", () => {
-        if (hasOwner) { toast("你已创建网络，不支持再创建", "warn"); return; }
         closeModal();
         openCreateModal();
       });
@@ -1829,7 +1841,7 @@ async function openTransferModal(nid: string) {
           await refresh();
         } catch (err) {
           result.className = "msg err";
-          result.textContent = `移交失败: ${err}`;
+          result.textContent = `移交失败: ${String(err).replace(/^Error:\s*/, "").replace(/^server \d+:\s*/, "")}`;
           submit.disabled = false;
         }
       });
@@ -1853,14 +1865,9 @@ function suggestedCreateSubnet(): string {
 
 function openCreateModal() {
   const s = loadSettings();
-  const hasOwner = (status?.networks ?? []).some((n) => n.owner && n.serverState !== "gone");
-  const hint = hasOwner
-    ? `<div class="form-warning">你已创建网络，不支持再创建。请先删除当前网络。</div>`
-    : "";
   openModal({
     title: "创建网络",
     body: `<div class="network-form">
-      ${hint}
       <div class="form-field">
         <label for="m-name">网络名称</label>
         <input id="m-name" class="form-control" type="text" placeholder="例如：家庭网络" maxlength="64" autofocus />
@@ -1878,11 +1885,12 @@ function openCreateModal() {
         <div class="form-field">
           <label for="m-server">协调服务（可选）</label>
           <input id="m-server" class="form-control" type="url" placeholder="留空使用官方 SnetServ" autocomplete="off" />
+          <p class="hint">每个协调服务仅能创建一个网络；如需再创建，请更换协调服务。</p>
         </div>
       </details>
       <p class="msg" id="m-result"></p>
     </div>`,
-    footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn" ${hasOwner ? "disabled" : ""}>创建网络</button>`,
+    footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn">创建网络</button>`,
     onBody: (body) => {
       const submit = body.querySelector<HTMLButtonElement>("#m-submit")!;
       const result = body.querySelector<HTMLElement>("#m-result")!;
@@ -1907,6 +1915,11 @@ function openCreateModal() {
           const subnet = chk.value;
           const server = (body.querySelector("#m-server") as HTMLInputElement)?.value.trim() || "";
           if (!name) throw new Error("请输入网络名称");
+          const owned = ownedNetworkOnServer(server);
+          if (owned) {
+            const label = owned.name || owned.networkId;
+            throw new Error(`该协调服务上你已创建网络「${label}」，每个协调服务仅能创建一个；请更换协调服务或先删除现有网络`);
+          }
           if (!(await confirmAndroidSingleNetwork("创建新网络"))) {
             submit.disabled = false;
             submit.innerHTML = "创建";

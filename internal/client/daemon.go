@@ -912,10 +912,16 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 	} else {
 		serverAddr = normalizeServer(serverAddr)
 	}
-	for _, nc := range d.cfg.Networks {
-		if nc.Owner && d.serverForConfigLocked(nc) == serverAddr {
-			return protocol.CreateNetworkResp{}, errors.New("该 SnetServ 上本设备已创建网络（每个服务器仅能创建一个）")
+	for nid, nc := range d.cfg.Networks {
+		if !nc.Owner || d.serverForConfigLocked(nc) != serverAddr {
+			continue
 		}
+		// A network already known to be deleted on the server must not keep
+		// blocking a replacement on the same server.
+		if st := d.serverState[nid]; st != nil && *st == "gone" {
+			continue
+		}
+		return protocol.CreateNetworkResp{}, errors.New("该 SnetServ 上本设备已创建网络（每个服务器仅能创建一个）")
 	}
 	if err := d.ensureKeys(port); err != nil {
 		return protocol.CreateNetworkResp{}, err
@@ -4768,13 +4774,13 @@ func (d *Daemon) Status() (map[string]any, error) {
 		"platform":         runtime.GOOS,
 		"upgradeSupported": UpgradeSupported(),
 		"deviceId":         d.cfg.DeviceID,
-		"deviceName":   d.cfg.DeviceName,
-		"wgPort":       d.cfg.WireguardPort,
-		"rxSpeed":      rxSpeed,
-		"txSpeed":      txSpeed,
-		"networks":     nets,
-		"pendingJoins": pending,
-		"natMapping":   d.nat.status(),
+		"deviceName":       d.cfg.DeviceName,
+		"wgPort":           d.cfg.WireguardPort,
+		"rxSpeed":          rxSpeed,
+		"txSpeed":          txSpeed,
+		"networks":         nets,
+		"pendingJoins":     pending,
+		"natMapping":       d.nat.status(),
 		// Relay switches: whether this device may act as a gateway for the
 		// network, and whether it honours the network's delegated routes.
 		"allowRelay":            d.cfg.RelayAllowed() && relayGatewaySupported(),
