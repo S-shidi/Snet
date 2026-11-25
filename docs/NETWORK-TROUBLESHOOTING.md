@@ -85,3 +85,12 @@ Relay v2 模式下 `probeLoop` 会跳过公网 IP 探测，`d.selfPub` / `Networ
 - `internal/client/pathmanager_test.go`
   - `TestPathManagerAcceptsGatewayMasqueradedPublicProbe`
   - `TestPathManagerStaleSelfPublicIPRecoversCone`
+
+## 成员连通性测试
+
+网络详情里的「测试」按钮由客户端守护进程执行，不使用系统 `ping`：
+
+- 每个在线网络会在其虚拟 IP 的 UDP `19433` 端口启动一个回显监听器；
+- 发起端从本机虚拟 IP 向目标成员发送 5 个探测包（间隔 90ms），按回复计算平均 RTT 与丢包率；
+- 若对端是旧版本没有回显监听器，则自动回退到一次短时 ICMP 测试；
+- 因此容器内没有 `CAP_NET_RAW`、或系统防火墙拦截 ICMP 时，只要两端都是当前版本，测试仍可正常返回结果。

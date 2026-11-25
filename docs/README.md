@@ -11,7 +11,7 @@
 | [`../deploy-prod/docker-client/README.md`](../deploy-prod/docker-client/README.md) | Docker / 群晖 NAS 客户端 |
 | [`../deploy-prod/manual-client/README.md`](../deploy-prod/manual-client/README.md) | 二进制 + systemd 客户端 |
 | [`MAC-DEV-NOTES.md`](MAC-DEV-NOTES.md) | macOS 客户端开发、签名与 LaunchDaemon |
-| [`NETWORK-TROUBLESHOOTING.md`](NETWORK-TROUBLESHOOTING.md) | 直连、中继、NAT、路由排障 |
+| [`NETWORK-TROUBLESHOOTING.md`](NETWORK-TROUBLESHOOTING.md) | 直连、中继、NAT、路由排障；成员测试 UDP `19433` |
 | [`ONLINE-STATUS-LOGIC.md`](ONLINE-STATUS-LOGIC.md) | 在线状态判定 |
 
 ## 硬件固件

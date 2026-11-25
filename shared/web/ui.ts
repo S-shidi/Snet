@@ -2953,7 +2953,7 @@ function memberCardsHTML(n: NetInfo, r: PeersResp | undefined, canManage: boolea
       ? `<button type="button" class="btn ghost sm member-poke" data-detail-poke="${esc(nd.id)}" data-poke-target="${esc(nd.ip || "")}" title="发送探测包唤醒节点"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>唤醒</button>`
       : "";
     const diag = !isSelf && canManage
-      ? `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-target="${esc(nd.ip || "")}">诊断</button>`
+      ? `<button type="button" class="btn ghost sm" data-detail-ping="${esc(nd.id)}" data-ping-nid="${esc(n.networkId)}" data-ping-target="${esc(nd.ip || "")}" title="测试与该设备的连接响应速度与丢包">测试</button>`
       : "";
     const kick = !isSelf && canManage
       ? `<button type="button" class="btn danger ghost sm" data-detail-kick="${esc(nd.id)}" ${nd.isHub ? 'data-hub="1"' : ""}>${nd.isHub ? "移除" : "踢出"}</button>`
@@ -3164,34 +3164,39 @@ function openEditIPModal(nid: string, nodeId: string, current: string) {
 }
 
 
-function showPingModal(text: string, cls: string) {
+function showTestResultModal(text: string, cls: string) {
+  const title = cls === "ok" ? "连接正常" : cls === "warn" ? "连接一般" : "连接异常";
   openModal({
-    title: "诊断结果",
-    body: `<div class="ping-modal ${esc(cls)}"><span class="ping-modal-icon">${cls === "ok" ? "✓" : "!"}</span><div><div class="ping-modal-title">${cls === "ok" ? "连接正常" : "诊断失败"}</div><div class="ping-modal-text">${esc(text)}</div></div></div>`,
+    title: "测试结果",
+    body: `<div class="ping-modal ${esc(cls)}"><span class="ping-modal-icon">${cls === "ok" ? "✓" : "!"}</span><div><div class="ping-modal-title">${title}</div><div class="ping-modal-text">${esc(text)}</div></div></div>`,
     footer: `<button data-close class="btn ghost">关闭</button>`,
   });
 }
 
-async function runPeerPing(btn: HTMLButtonElement) {
+async function runPeerTest(btn: HTMLButtonElement) {
   const target = btn.dataset.pingTarget || "";
+  const nid = btn.dataset.pingNid || detailNid || "";
   if (!target) {
-    showPingModal("诊断失败：无 IP", "err");
+    showTestResultModal("测试失败：无 IP", "err");
+    return;
+  }
+  if (!nid) {
+    showTestResultModal("测试失败：未找到网络", "err");
     return;
   }
   const original = btn.innerHTML;
   btn.disabled = true;
-  btn.innerHTML = `${SPIN} 诊断中…`;
+  btn.innerHTML = `${SPIN} 测试中…`;
   try {
-    const r = await backend.ping(target);
+    const r = await backend.probe(nid, target);
     const loss = Math.max(0, Number(r.loss) || 0);
     const avg = Math.max(0, Number(r.avgRtt) || 0);
-    if (loss >= 100) throw new Error("目标不可达");
     const cls = loss >= 50 || avg >= 200 ? "err" : loss > 0 || avg >= 80 ? "warn" : "ok";
-    showPingModal(`延迟: ${avg > 0 ? `${avg.toFixed(0)}ms` : "-"} / 丢包: ${loss.toFixed(0)}%`, cls);
+    const rtt = avg > 0 ? `${avg.toFixed(0)} ms` : "无响应";
+    showTestResultModal(`响应速度：${rtt}\n丢包：${loss.toFixed(0)}%`, cls);
   } catch (e) {
     const msg = String(e).replace(/^Error:\s*/, "") || "未知错误";
-    showPingModal(`诊断失败：${msg}`, "err");
-    toast(`诊断失败：${msg}`, "err");
+    showTestResultModal(`测试失败：${msg}`, "err");
   } finally {
     btn.disabled = false;
     btn.innerHTML = original;
@@ -3679,7 +3684,7 @@ function bindNetworkDetailEvents() {
     }
     const pingEl = target.closest<HTMLButtonElement>("[data-detail-ping]");
     if (pingEl) {
-      await runPeerPing(pingEl);
+      await runPeerTest(pingEl);
       return;
     }
     const renameEl = target.closest<HTMLButtonElement>("[data-detail-rename]");

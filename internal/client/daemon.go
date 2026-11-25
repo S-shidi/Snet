@@ -216,10 +216,17 @@ type netRuntime struct {
 	// deadSince tracks when a peer's relay path started being observed dead
 	// (unix seconds); zero means currently live/unknown.
 	deadSince map[string]int64
+	// probe echoes tunnel probe packets from other members so the UI can
+	// measure latency and loss without depending on ICMP.
+	probe *probeResponder
 }
 
 // shutdown tears down the path manager (if any) and the WireGuard tunnel.
 func (rt *netRuntime) shutdown() {
+	if rt.probe != nil {
+		rt.probe.Close()
+		rt.probe = nil
+	}
 	if rt.path != nil {
 		rt.path.Close()
 		rt.path = nil
@@ -1803,6 +1810,7 @@ func (d *Daemon) bringUp(nid string) error {
 		peerDirect: make(map[string]*peerDirect),
 		peerIDs:    make(map[string]string),
 	}
+	rt.probe = startProbeResponder(nc.IP)
 	d.nets[nid] = rt
 
 	endpoint, err := d.localEndpointForNetworkLocked(nid, nc.Port)

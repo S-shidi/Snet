@@ -77,6 +77,34 @@ func parsePingOutput(out string) (float64, float64) {
 	return loss, avg
 }
 
+// icmpPing runs the platform ping binary three times and returns loss percent
+// plus average RTT. It needs CAP_NET_RAW on Linux, so callers must treat a
+// failure as "not measurable" rather than "unreachable".
+func icmpPing(ctx context.Context, target string) (float64, float64, error) {
+	bin := pingBinary()
+	if bin == "" {
+		return 0, 0, errors.New("未找到 ping 命令")
+	}
+	args := []string{"-c", "3", "-W", "2"}
+	switch runtime.GOOS {
+	case "darwin":
+		// macOS ping waits in milliseconds.
+		args = []string{"-c", "3", "-W", "2000"}
+	case "windows":
+		// Windows uses -n for count and -w for timeout, both in milliseconds.
+		args = []string{"-n", "3", "-w", "2000"}
+	}
+	out, err := exec.CommandContext(ctx, bin, append(args, target)...).CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return 0, 0, fmt.Errorf("无法执行 ping：%w", err)
+	}
+	loss, avg := parsePingOutput(string(out))
+	if loss >= 100 {
+		return loss, avg, errors.New("目标不可达")
+	}
+	return loss, avg, nil
+}
+
 func (d *Daemon) logText(n int) string {
 	if d.configPath != "" {
 		path := filepath.Join(filepath.Dir(d.configPath), "snetd.log")
@@ -336,33 +364,35 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			writeCtlErr(w, 400, errors.New("target must be an IP address"))
 			return
 		}
-		bin := pingBinary()
-		if bin == "" {
+		if pingBinary() == "" {
 			writeCtlErr(w, 500, errors.New("诊断失败：容器内未找到 ping 命令，请更新客户端镜像"))
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 		defer cancel()
-		args := []string{"-c", "3", "-W", "2"}
-		switch runtime.GOOS {
-		case "darwin":
-			// macOS ping waits in milliseconds.
-			args = []string{"-c", "3", "-W", "2000"}
-		case "windows":
-			// Windows uses -n for count and -w for timeout, both in milliseconds.
-			args = []string{"-n", "3", "-w", "2000"}
-		}
-		out, err := exec.CommandContext(ctx, bin, append(args, target)...).CombinedOutput()
-		if err != nil && len(out) == 0 {
-			writeCtlErr(w, 500, fmt.Errorf("诊断失败：无法执行 ping：%w", err))
-			return
-		}
-		loss, avg := parsePingOutput(string(out))
-		if loss >= 100 {
-			writeCtlErr(w, 502, errors.New("诊断失败：目标不可达"))
+		loss, avg, err := icmpPing(ctx, target)
+		if err != nil {
+			writeCtlErr(w, 502, fmt.Errorf("诊断失败：%w", err))
 			return
 		}
 		writeCtlJSON(w, 200, map[string]any{"loss": loss, "avgRtt": avg})
+	})
+
+	mux.HandleFunc("POST /ctl/probe", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			NID    string `json:"nid"`
+			Target string `json:"target"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		res, err := d.Probe(strings.TrimSpace(req.NID), strings.TrimSpace(req.Target))
+		if err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		writeCtlJSON(w, 200, res)
 	})
 
 	// Poke sends a few UDP datagrams through the tunnel to force WireGuard to
