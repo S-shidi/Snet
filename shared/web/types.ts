@@ -231,8 +231,8 @@ export interface Backend {
   /** Rotate the invite link of a network (owner only); old links stop working */
   rotateInvite(nid: string): Promise<RotateInviteResp>;
   /** Detect local subnets */
-  /** Ping a peer IP and return loss percentage and average RTT */
-  ping(target: string): Promise<{ loss: number; avgRtt: number }>;
+  /** Test a peer over the tunnel and return loss percentage and average RTT */
+  probe(nid: string, target: string): Promise<{ loss: number; avgRtt: number; sent?: number; received?: number; method?: string }>;
   /** Send a short UDP probe through the tunnel to wake a peer */
   poke(target: string): Promise<void>;
   /** Fetch recent daemon diagnostic logs */

@@ -222,8 +222,8 @@ const backend: Backend = {
     return api("/rotate-invite", jsonPost("/rotate-invite", { nid }));
   },
 
-  async ping(target: string): Promise<{ loss: number; avgRtt: number }> {
-    return api("/ping", jsonPost("/ping", { target }));
+  async probe(nid: string, target: string): Promise<{ loss: number; avgRtt: number; sent?: number; received?: number; method?: string }> {
+    return api("/probe", jsonPost("/probe", { nid, target }));
   },
 
   async poke(target: string): Promise<void> {
