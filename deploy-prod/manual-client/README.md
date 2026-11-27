@@ -1,7 +1,7 @@
 # SNET 客户端手动部署（A/B 通用）
 
 > 客户端 A、B 均手动部署；不再使用 Docker MCP 自动部署。
-> 协调服务器固定为 `https://snet.uizhi.eu.org:8090`；`snetd`/`snetctl` 没有 `--server` 参数。
+> 协调服务器固定为 `https://snet.uizhi.eu.org:8090`；`snetd` 与 `snetctl` 的 daemon 管理命令没有 `--server` 参数（仅 `snetctl hub register` 显式传入 SnetServ 地址）。
 > 本目录只提供产物与步骤；实际部署由用户执行。
 
 ## 0. 产物

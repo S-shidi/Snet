@@ -44,6 +44,25 @@ Snet 是一个开箱即用的私有网络。离开公司或家之后，你仍然
 
 客户端首次启动后打开 Web 控制台，设置管理密码，然后通过邀请链接加入网络。在「设置 → 关于与更新」中可检查最新版本并一键升级（macOS 自动挂载 `.dmg` 替换应用并重启，Windows 静默运行 NSIS 安装器并重启，Android 自动下载 `.apk` 并调起系统安装器，Docker / Linux Web 端展示宿主机 `docker compose pull && docker compose up -d` 一键复制命令）。
 
+### 命令行（snetctl）
+
+`snetctl` 随二进制发行包和固件提供，可在没有 Web 控制台时管理本机 daemon，或把设备注册到启用了内置 Hub 的 SnetServ：
+
+```bash
+# 本机 daemon 状态（默认 http://127.0.0.1:19432）
+snetctl status
+
+# 注册到 Hub；device-id 需为 8-64 位字母、数字、'-' 或 '_'
+snetctl hub register \
+  --server https://snet.example.com \
+  --device-id <device-id> \
+  --network <network-slug> \
+  --token <device-token> \
+  --wg-endpoint 203.0.113.10:51820
+```
+
+`hub register` 调用 `POST /api/hub/register`，以 `X-Device-Token` 鉴权；`--wg-endpoint` 可省略。加 `--json` 输出服务端原始 JSON，可直接交给 `jq`。device-id 不合法时会在本地报错，不发送请求。
+
 ## Docker / NAS
 
 ```bash
