@@ -379,6 +379,9 @@ func main() {
 		}
 		fmt.Println("claimed")
 
+	case "hub":
+		hubCommand(args[1:])
+
 	default:
 		usage()
 	}
@@ -413,7 +416,8 @@ commands:
   rotate-invite --nid NID
   netinfo    --nid NID
   device-id  [--set ID]
-  claim      --nid NID`)
+  claim      --nid NID
+  hub register --server URL --device-id ID --network SLUG --token TOKEN [--wg-endpoint IP:PORT] [--json]`)
 	os.Exit(2)
 }
 
